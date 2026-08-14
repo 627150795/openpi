@@ -37,6 +37,7 @@ function visibilityHarness(
   ];
   const userMessages: Array<{ content: unknown; options: unknown }> = [];
   const setActiveCalls: string[][] = [];
+  let idle = options.idle ?? true;
 
   const pi = {
     events: { emit() {} },
@@ -82,7 +83,7 @@ function visibilityHarness(
     mode: options.mode ?? "rpc",
     hasUI: false,
     cwd: "/tmp/setup-visibility-test",
-    isIdle: () => options.idle ?? true,
+    isIdle: () => idle,
     model: undefined,
     ui: {
       confirm: async () => false,
@@ -112,6 +113,9 @@ function visibilityHarness(
       const command = commands.get(name);
       assert.ok(command, `missing command ${name}`);
       await command.handler(args, ctx);
+    },
+    setIdle(value: boolean) {
+      idle = value;
     },
   };
 }
@@ -188,6 +192,25 @@ test("follow-up while busy does not tear down on the prior turn settle", async (
   assert.equal(h.isActive(), true);
   // Current in-flight turn settles before the setup follow-up runs.
   await h.emit("agent_settled");
+  assert.equal(h.isActive(), true);
+  await h.emit("agent_start");
+  await h.emit("agent_settled");
+  assert.equal(h.isActive(), false);
+});
+
+test("overlapping openpi-setup follow-up survives the prior apply", async () => {
+  const h = visibilityHarness();
+  await h.emit("session_start");
+  await h.runCommand("openpi-setup", "关闭下一步预测");
+  await h.emit("agent_start");
+  h.setIdle(false);
+  await h.runCommand("openpi-setup", "开启下一步预测");
+  assert.deepEqual(h.userMessages[1]?.options, { deliverAs: "followUp" });
+  assert.equal(h.isActive(), true);
+  await h.emit("tool_execution_end", {
+    toolName: CONFIGURE_MY_PI_SETUP_TOOL_NAME,
+    isError: false,
+  });
   assert.equal(h.isActive(), true);
   await h.emit("agent_start");
   await h.emit("agent_settled");

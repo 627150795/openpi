@@ -266,7 +266,11 @@ export default function openPiSetup(pi: ExtensionAPI) {
   });
 
   pi.on("tool_execution_end", (event) => {
-    if (event.toolName === CONFIGURE_MY_PI_SETUP_TOOL_NAME && !event.isError) {
+    if (
+      episode === "active" &&
+      event.toolName === CONFIGURE_MY_PI_SETUP_TOOL_NAME &&
+      !event.isError
+    ) {
       endEpisode();
     }
   });

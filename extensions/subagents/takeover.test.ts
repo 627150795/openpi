@@ -117,7 +117,8 @@ test("dashboard box height follows its subagents and retains the old maximum", (
   const one = dashboard([snap("one")], 10);
   try {
     const lines = one.render(100);
-    assert.equal(lines.length, 4); // border, one agent, border, hints
+    // blank, border, one agent, border, blank, hints, blank
+    assert.equal(lines.length, 7);
     assert.equal(lines.filter((line) => line.includes("agent one")).length, 1);
   } finally {
     one.dispose();
@@ -129,7 +130,10 @@ test("dashboard box height follows its subagents and retains the old maximum", (
   );
   try {
     const lines = many.render(100);
-    assert.equal(lines.filter((line) => line.startsWith("│")).length, 5);
+    assert.equal(lines.filter((line) => line.startsWith("│")).length, 2);
+    // The three breathing rows are paid for by the body clamp: the overlay
+    // still never exceeds its old rows - 2 maximum.
+    assert.ok(lines.length <= 8, `height ${lines.length} > 8`);
   } finally {
     many.dispose();
   }
@@ -138,14 +142,65 @@ test("dashboard box height follows its subagents and retains the old maximum", (
 test("dashboard reserves a more row and shows each visible subagent", () => {
   const view = dashboard(
     Array.from({ length: 8 }, (_, i) => snap(`${i}`)),
-    10,
+    12,
   );
   try {
     const output = view.render(100).join("\n");
-    for (const id of ["0", "1", "2", "3"]) {
+    for (const id of ["0", "1", "2"]) {
       assert.match(output, new RegExp(`agent ${id}`));
     }
-    assert.match(output, /… 4 more/);
+    assert.match(output, /… 5 more/);
+  } finally {
+    view.dispose();
+  }
+});
+
+test("dashboard breathes: blank rows above, around the hints, and below", () => {
+  const view = dashboard([snap("one")]);
+  try {
+    const lines = view.render(100);
+    assert.equal(lines[0], "");
+    assert.equal(lines.at(-1), "");
+    const hints = lines.findIndex((line) => line.includes("select"));
+    assert.ok(hints > 0);
+    assert.equal(lines[hints - 1], "");
+    // The box's bottom border sits directly above the pre-hints blank row.
+    assert.ok(lines[hints - 2]!.startsWith("╰"));
+  } finally {
+    view.dispose();
+  }
+});
+
+test("dashboard total height never exceeds its old rows - 2 maximum", () => {
+  for (const rows of [10, 15, 24]) {
+    const view = dashboard(
+      Array.from({ length: 40 }, (_, i) => snap(`${i}`)),
+      rows,
+    );
+    try {
+      const lines = view.render(100);
+      assert.ok(
+        lines.length <= rows - 2,
+        `rows=${rows} height=${lines.length}`,
+      );
+    } finally {
+      view.dispose();
+    }
+  }
+});
+
+test("takeover view keeps its full-screen rows - 1 height budget", () => {
+  const running = snap("run", "running");
+  const view = new TakeoverView(
+    tui(20),
+    theme,
+    keys,
+    "run",
+    model([running]),
+    () => {},
+  );
+  try {
+    assert.equal(view.render(80).length, 19);
   } finally {
     view.dispose();
   }

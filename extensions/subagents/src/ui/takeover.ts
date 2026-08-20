@@ -37,10 +37,11 @@ function configuredKeys(
 
 /**
  * One spinner definition for the whole subagent UI: the dashboard glyph, the
- * takeover header, and the transcript's live tools must animate in step, so the
- * frames and their cadence live in `transcript.ts` and are imported here.
+ * takeover header, the below-editor strip, and the transcript's live tools
+ * must animate in step, so the frames and their cadence live in
+ * `transcript.ts` and are imported here.
  */
-function statusGlyph(
+export function statusGlyph(
   snap: SubagentSnapshot,
   theme: Theme,
   now = Date.now(),
@@ -284,12 +285,17 @@ export class SubagentDashboard implements Component {
     // One timestamp per frame so every row's spinner shows the same frame.
     const now = Date.now();
     const rows = this.tui.terminal.rows || 30;
-    const maxBodyHeight = Math.max(1, rows - 5);
+    // Three breathing rows (above, before the hints, below) join the border and
+    // hints as fixed chrome, so the body clamp shrinks by the same three rows
+    // and the overlay never exceeds its old rows - 2 maximum.
+    const maxBodyHeight = Math.max(1, rows - 8);
     const bodyHeight =
       subs.length > maxBodyHeight ? maxBodyHeight : Math.max(1, subs.length);
     const innerWidth = Math.max(0, width - 2);
 
     const lines: string[] = [];
+    // Breathing room: one blank row above the box.
+    lines.push("");
     const running = subs.filter((snap) => snap.status === "running").length;
     const done = subs.filter((snap) => snap.status === "done").length;
     const failed = subs.filter((snap) => snap.status === "error").length;
@@ -320,7 +326,8 @@ export class SubagentDashboard implements Component {
         theme.fg("border", "╯"),
     );
 
-    // Hints
+    // Hints, with one blank row on each side.
+    lines.push("");
     lines.push(
       truncateToWidth(
         theme.fg(
@@ -330,6 +337,7 @@ export class SubagentDashboard implements Component {
         width,
       ),
     );
+    lines.push("");
 
     return lines;
   }

@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { spinnerFrame } from "../subagents/src/ui/transcript.ts";
 
 type Theme = ExtensionContext["ui"]["theme"];
 
@@ -7,8 +8,6 @@ export interface ActivityCounts {
   done: number;
   failed: number;
 }
-
-const SQUARE = "■";
 
 /**
  * Settled work is an unread notice, not a session tally: `done`/`failed` stay
@@ -48,18 +47,24 @@ export function formatActivityStatus(
   theme: Theme,
   label: "subagents" | "workflows",
   counts: ActivityCounts,
+  now: number = Date.now(),
+  stripVisible = false,
 ) {
   const parts: string[] = [];
   if (counts.running > 0) {
-    parts.push(theme.fg("warning", `${SQUARE} ${counts.running} running`));
+    parts.push(
+      theme.fg("warning", `${spinnerFrame(now)} ${counts.running} running`),
+    );
   }
   if (counts.done > 0) {
-    parts.push(theme.fg("success", `${SQUARE} ${counts.done} done`));
+    parts.push(theme.fg("success", `✓ ${counts.done} done`));
   }
   if (counts.failed > 0) {
-    parts.push(theme.fg("error", `${SQUARE} ${counts.failed} failed`));
+    parts.push(theme.fg("error", `✗ ${counts.failed} failed`));
   }
-  parts.push(theme.fg("accent", `/${label}`) + theme.fg("dim", " to view"));
+  if (!stripVisible) {
+    parts.push(theme.fg("accent", `/${label}`) + theme.fg("dim", " to view"));
+  }
 
   return `${theme.fg("muted", `${label}:`)} ${parts.join(theme.fg("dim", " · "))}`;
 }

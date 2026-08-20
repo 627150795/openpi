@@ -1,0 +1,198 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { foldUserMessage, transformUserMarkdown } from "./index.ts";
+
+const MARKER = "… folded";
+
+const numberedLines = (count: number) =>
+  Array.from(
+    { length: count },
+    (_, i) => `line ${String(i + 1).padStart(2, "0")}`,
+  );
+
+const giantBlock = [
+  "```js",
+  ...Array.from({ length: 300 }, (_, i) => `console.log(${i});`),
+  "```",
+].join("\n");
+
+test("messages below both thresholds round-trip byte-identical", () => {
+  const messages = [
+    "hi",
+    "hello\n",
+    "a\r\nb",
+    "  spaced  \n\n",
+    "explanation\n```js\nfoo();\nbar();\n```\ndone",
+    "x".repeat(1200),
+    numberedLines(20).join("\n"),
+  ];
+  for (const message of messages) {
+    assert.equal(foldUserMessage(message), message);
+  }
+});
+
+test("a message at exactly the line threshold is unchanged", () => {
+  const message = numberedLines(20).join("\n");
+  assert.equal(foldUserMessage(message), message);
+});
+
+test("one line over the line threshold folds to a twelve-line preview", () => {
+  const message = numberedLines(21).join("\n");
+  const out = foldUserMessage(message);
+  assert.ok(out.startsWith("line 01"));
+  assert.ok(out.includes("line 12"));
+  assert.ok(!out.includes("line 13"));
+  assert.equal(out.split("\n").length, 13); // 12 preview lines + marker
+  assert.ok(
+    out.endsWith("… folded 9 lines · full content was sent to the model"),
+  );
+});
+
+test("a message at exactly the character threshold is unchanged", () => {
+  const message = "x".repeat(1200);
+  assert.equal(foldUserMessage(message), message);
+});
+
+test("one character over the character threshold folds", () => {
+  const message = "x".repeat(1201);
+  const out = foldUserMessage(message);
+  assert.ok(out.startsWith("x".repeat(1200) + "…"));
+  assert.ok(
+    out.endsWith("… folded 1 line · full content was sent to the model"),
+  );
+});
+
+test("long wrapped lines fold by character count, not just line count", () => {
+  // 20 lines of 61 chars: at the line threshold but 1239 chars overall.
+  const message = Array.from({ length: 20 }, () => "y".repeat(61)).join("\n");
+  const out = foldUserMessage(message);
+  assert.equal(out.split("\n").length, 13);
+  assert.ok(
+    out.endsWith("… folded 8 lines · full content was sent to the model"),
+  );
+});
+
+test("a single giant fenced block folds to its first content lines", () => {
+  const out = foldUserMessage(giantBlock);
+  assert.ok(out.startsWith("```js"));
+  assert.ok(out.includes("console.log(3);"));
+  assert.ok(!out.includes("console.log(4);"));
+  assert.equal(out.split("\n").length, 8); // fence + 4 lines + … + fence + marker
+  assert.ok(
+    out.endsWith("… folded 296 lines · full content was sent to the model"),
+  );
+});
+
+test("multiple fenced blocks fold per block while prose shares one budget", () => {
+  const message = [
+    "intro prose",
+    "```js",
+    ...Array.from({ length: 10 }, (_, i) => `js-${i};`),
+    "```",
+    "middle prose",
+    "```py",
+    ...Array.from({ length: 10 }, (_, i) => `py-${i}`),
+    "```",
+    "tail prose",
+  ].join("\n");
+  const out = foldUserMessage(message);
+  assert.ok(out.includes("intro prose"));
+  assert.ok(out.includes("js-3;"));
+  assert.ok(!out.includes("js-4;"));
+  assert.ok(out.includes("middle prose"));
+  assert.ok(out.includes("py-3"));
+  assert.ok(!out.includes("py-4"));
+  assert.ok(out.includes("tail prose"));
+  assert.ok(
+    out.endsWith("… folded 12 lines · full content was sent to the model"),
+  );
+});
+
+test("CRLF messages fold without losing their line endings", () => {
+  const message = Array.from(
+    { length: 21 },
+    (_, i) => `row ${String(i).padStart(2, "0")}`,
+  ).join("\r\n");
+  const out = foldUserMessage(message);
+  assert.ok(out.includes("row 00\r"));
+  assert.ok(out.includes("row 11\r"));
+  assert.ok(!out.includes("row 12"));
+  assert.ok(
+    out.endsWith("… folded 9 lines · full content was sent to the model"),
+  );
+});
+
+test("trailing newlines neither fold short messages nor pad the count", () => {
+  assert.equal(foldUserMessage("hello\n"), "hello\n");
+  assert.equal(foldUserMessage("hello\n\n"), "hello\n\n");
+  const withTrailing = `${numberedLines(21).join("\n")}\n`;
+  assert.ok(
+    foldUserMessage(withTrailing).endsWith(
+      "… folded 9 lines · full content was sent to the model",
+    ),
+  );
+});
+
+test("a fenced message under the thresholds is not folded at all", () => {
+  const message = "explanation\n```js\nfoo();\nbar();\n```\ndone";
+  assert.equal(foldUserMessage(message), message);
+});
+
+test("empty and whitespace-only messages are left alone", () => {
+  for (const message of ["", " ", "\n", "\t", "  \n  \n"]) {
+    assert.equal(foldUserMessage(message), message);
+  }
+});
+
+test("an unterminated fence folds conservatively as plain text", () => {
+  const message = [
+    "```js",
+    ...Array.from({ length: 30 }, (_, i) => `stmt ${i};`),
+  ].join("\n");
+  const out = foldUserMessage(message);
+  assert.ok(out.startsWith("```js"));
+  assert.ok(out.includes("stmt 10;"));
+  assert.ok(!out.includes("stmt 12;"));
+  assert.ok(
+    out.endsWith("… folded 19 lines · full content was sent to the model"),
+  );
+});
+
+test("a message over the threshold whose blocks all fit the preview stays in full", () => {
+  const block = ["```", "a", "b", "c", "d", "```"].join("\n");
+  const message = Array.from({ length: 5 }, () => block).join("\n");
+  assert.equal(foldUserMessage(message), message);
+});
+
+test("folding is pure: the input is untouched and repeat calls agree", () => {
+  const snapshot = giantBlock;
+  const first = foldUserMessage(giantBlock);
+  const second = foldUserMessage(giantBlock);
+  assert.equal(giantBlock, snapshot); // no mutation of the input
+  assert.equal(first, second); // deterministic
+  assert.notEqual(first, giantBlock); // but something was folded
+  assert.ok(first.length < giantBlock.length);
+});
+
+test("the transformer only folds finalized user messages", () => {
+  const message = numberedLines(21).join("\n");
+  assert.notEqual(
+    transformUserMarkdown(message, { messageType: "user", isStreaming: false }),
+    message,
+  );
+  const untouched = [
+    { messageType: "assistant", isStreaming: false },
+    { messageType: "assistant-thinking", isStreaming: false },
+    { messageType: "assistant", isStreaming: true },
+    { messageType: "user", isStreaming: true },
+  ];
+  for (const context of untouched) {
+    assert.equal(transformUserMarkdown(message, context), message);
+  }
+});
+
+test("the marker always states that the model received the full content", () => {
+  const out = foldUserMessage(giantBlock);
+  assert.ok(out.includes(MARKER));
+  assert.ok(out.includes("full content was sent to the model"));
+});

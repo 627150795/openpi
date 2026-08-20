@@ -142,7 +142,11 @@ export const PLAN_READY_ACTIONS = {
   continue: "Continue planning",
   current: "Implement in this session",
   fresh: "Start a fresh session",
+  off: "Turn plan mode off",
 } as const;
+
+/** Menu label for the same effect as `/plan done`. */
+const FINALIZE_NOW = "Finalize now";
 
 export function buildPlanImplementationPrompt(plan: string) {
   return [
@@ -257,11 +261,7 @@ export default function planMode(pi: ExtensionAPI) {
     if (!ctx.hasUI) return;
     ctx.ui.setStatus(
       "plan-mode",
-      readyPlan
-        ? "plan mode · ready"
-        : planning
-          ? "plan mode · read-only"
-          : undefined,
+      readyPlan ? "plan ready" : planning ? "plan mode" : undefined,
     );
   };
 
@@ -371,7 +371,23 @@ export default function planMode(pi: ExtensionAPI) {
       implementHere(ctx);
     } else if (choice === PLAN_READY_ACTIONS.fresh) {
       await implementFresh(ctx);
+    } else if (choice === PLAN_READY_ACTIONS.off) {
+      clearPlan(ctx);
+      ctx.ui.notify("Plan mode is off.", "info");
     }
+  };
+
+  const requestPlanFinalization = () => {
+    pi.sendMessage(
+      {
+        customType: "plan-finalize-requested",
+        content:
+          "Finalize the plan now. Resolve any remaining material ambiguity with ask_user; otherwise call plan_ready alone with the complete implementation-ready Markdown plan. Do not implement it.",
+        display: true,
+        details: {},
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
   };
 
   pi.registerTool({
@@ -462,16 +478,7 @@ export default function planMode(pi: ExtensionAPI) {
           ctx.ui.notify("Plan mode is not active.", "warning");
           return;
         }
-        pi.sendMessage(
-          {
-            customType: "plan-finalize-requested",
-            content:
-              "Finalize the plan now. Resolve any remaining material ambiguity with ask_user; otherwise call plan_ready alone with the complete implementation-ready Markdown plan. Do not implement it.",
-            display: true,
-            details: {},
-          },
-          { deliverAs: "followUp", triggerTurn: true },
-        );
+        requestPlanFinalization();
         return;
       }
 
@@ -481,10 +488,28 @@ export default function planMode(pi: ExtensionAPI) {
       }
 
       if (planning) {
-        ctx.ui.notify(
-          "Plan mode is already active. `/plan done` requests completion; `/plan off` cancels.",
-          "info",
+        if (!ctx.hasUI) {
+          ctx.ui.notify(
+            "Plan mode is already active. `/plan done` requests completion; `/plan off` cancels.",
+            "info",
+          );
+          return;
+        }
+        const choice = await ctx.ui.select(
+          "Plan Mode — choose what happens next",
+          [PLAN_READY_ACTIONS.continue, FINALIZE_NOW, PLAN_READY_ACTIONS.off],
         );
+        if (choice === PLAN_READY_ACTIONS.continue) {
+          ctx.ui.notify(
+            "Plan mode is already active. `/plan done` requests completion; `/plan off` cancels.",
+            "info",
+          );
+        } else if (choice === FINALIZE_NOW) {
+          requestPlanFinalization();
+        } else if (choice === PLAN_READY_ACTIONS.off) {
+          clearPlan(ctx);
+          ctx.ui.notify("Plan mode is off.", "info");
+        }
         return;
       }
 
@@ -510,7 +535,7 @@ export default function planMode(pi: ExtensionAPI) {
       return {
         block: true as const,
         reason:
-          "The plan is ready and the write gate remains closed. Wait for the user to choose the next action with `/plan`; do not call more tools.",
+          "The plan is ready and the write gate remains closed. Wait for the user to choose the next action with `/plan` or turn it off with `/plan off`; do not call more tools.",
       };
     }
     const batchDecision =

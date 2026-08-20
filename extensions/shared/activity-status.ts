@@ -1,5 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { spinnerFrame } from "../subagents/src/ui/transcript.ts";
+
+/**
+ * Still marker for the push-based footer status. It deliberately does not
+ * import the subagent spinner: `shared/` must not depend on a single
+ * extension's internals, and a pushed string cannot animate anyway.
+ */
+const RUNNING_MARK = "●";
 
 type Theme = ExtensionContext["ui"]["theme"];
 
@@ -43,17 +49,23 @@ export function hasActivity(counts: ActivityCounts) {
   return counts.running + counts.done + counts.failed > 0;
 }
 
+/**
+ * `ui.setStatus` stores a finished string and is only called when the watched
+ * work changes, so this line is NOT re-evaluated per frame. A spinner here
+ * would freeze on whatever frame the last event happened to land on, which
+ * reads as a hung UI. The animated glyph belongs to the strip, which owns a
+ * render loop; the footer states the count with a still marker.
+ */
 export function formatActivityStatus(
   theme: Theme,
   label: "subagents" | "workflows",
   counts: ActivityCounts,
-  now: number = Date.now(),
   stripVisible = false,
 ) {
   const parts: string[] = [];
   if (counts.running > 0) {
     parts.push(
-      theme.fg("warning", `${spinnerFrame(now)} ${counts.running} running`),
+      theme.fg("warning", `${RUNNING_MARK} ${counts.running} running`),
     );
   }
   if (counts.done > 0) {

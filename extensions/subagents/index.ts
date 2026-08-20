@@ -393,13 +393,7 @@ export default function (pi: ExtensionAPI) {
     ui.setStatus(
       "subagents",
       hasActivity(counts)
-        ? formatActivityStatus(
-            ui.theme,
-            "subagents",
-            counts,
-            Date.now(),
-            widgetVisible,
-          )
+        ? formatActivityStatus(ui.theme, "subagents", counts, widgetVisible)
         : undefined,
     );
   };

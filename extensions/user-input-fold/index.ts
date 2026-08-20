@@ -6,6 +6,12 @@
  * display keeps a short preview of the prose and of each fenced code block
  * and closes with a marker line stating how much was folded.
  *
+ * A fold that would hide nothing (or almost nothing) is skipped and the
+ * message rendered in full: hiding a handful of lines costs a marker row
+ * while saving almost no screen space, and char-heavy messages with few
+ * long lines do not shrink on screen when logical lines are removed —
+ * folding must hide at least MIN_FOLDED_LINES lines to earn its keep.
+ *
  * This is display-only. The transformer runs through Pi's
  * `registerMarkdownTransformer` hook, which changes only what the TUI
  * renders: the session file and the model context keep the full message
@@ -25,6 +31,8 @@ const PROSE_PREVIEW_LINES = 12;
 const BLOCK_PREVIEW_LINES = 4;
 /** Character budget for the prose part of a folded message. */
 const PROSE_PREVIEW_CHARS = 1_200;
+/** Only fold when at least this many lines would be hidden. */
+const MIN_FOLDED_LINES = 8;
 
 type Segment =
   | { kind: "prose"; lines: string[] }
@@ -81,8 +89,9 @@ function parseSegments(lines: string[]): Segment[] {
 
 /**
  * Return the Markdown Pi should render instead of a long user message.
- * Messages at or below both thresholds are returned unchanged. Pure: the
- * input string is never modified, and the model still sees the original.
+ * Messages at or below both thresholds — and messages whose fold would
+ * hide fewer than MIN_FOLDED_LINES lines — are returned unchanged. Pure:
+ * the input string is never modified, and the model still sees the original.
  */
 export function foldUserMessage(markdown: string): string {
   const totalLines = countLines(markdown);
@@ -121,8 +130,11 @@ export function foldUserMessage(markdown: string): string {
   }
 
   const foldedLines = totalLines - linesShown;
-  if (foldedLines <= 0) {
-    // Everything already fits the preview budgets; showing it all is honest.
+  if (foldedLines < MIN_FOLDED_LINES) {
+    // Folding must earn its keep. Hiding fewer lines than MIN_FOLDED_LINES
+    // costs a marker row, hides content, and saves almost nothing on screen
+    // (char-heavy messages with few long lines wrap regardless), so render
+    // the message in full instead.
     return markdown;
   }
   const noun = foldedLines === 1 ? "line" : "lines";

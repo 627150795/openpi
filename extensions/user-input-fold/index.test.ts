@@ -53,19 +53,52 @@ test("a message at exactly the character threshold is unchanged", () => {
   assert.equal(foldUserMessage(message), message);
 });
 
-test("one character over the character threshold folds", () => {
+test("one char over the char threshold with one line to hide is left alone", () => {
+  // Over the character threshold, but the fold would hide a single (mid-cut)
+  // line — far below the minimum-benefit gate, so it renders in full.
   const message = "x".repeat(1201);
-  const out = foldUserMessage(message);
-  assert.ok(out.startsWith("x".repeat(1200) + "…"));
-  assert.ok(
-    out.endsWith("… folded 1 line · full content was sent to the model"),
-  );
+  assert.equal(foldUserMessage(message), message);
 });
 
 test("long wrapped lines fold by character count, not just line count", () => {
   // 20 lines of 61 chars: at the line threshold but 1239 chars overall.
   const message = Array.from({ length: 20 }, () => "y".repeat(61)).join("\n");
   const out = foldUserMessage(message);
+  assert.equal(out.split("\n").length, 13);
+  assert.ok(
+    out.endsWith("… folded 8 lines · full content was sent to the model"),
+  );
+});
+
+test("a char-heavy message with only a few foldable lines stays unchanged", () => {
+  // Like the /openpi-setup prompt: short config-recap lines plus one very
+  // long guidance line. Over the char threshold, but the fold would only
+  // hide a handful of lines the user is meant to read.
+  const shortLines = Array.from(
+    { length: 15 },
+    (_, i) => `config line ${i}: ${"c".repeat(20)}`,
+  );
+  const message = [
+    "Configure the installed OpenPI package according to this request:",
+    ...shortLines,
+    "g".repeat(700),
+  ].join("\n");
+  assert.ok(message.length > 1200);
+  assert.ok(message.split("\n").length <= 20);
+  assert.equal(foldUserMessage(message), message);
+});
+
+test("folding must hide at least 8 lines to earn its keep", () => {
+  // 19 lines of 70 chars: char-triggered (1348 chars), fold would hide 7.
+  const sevenHidden = Array.from({ length: 19 }, () => "z".repeat(70)).join(
+    "\n",
+  );
+  assert.ok(sevenHidden.length > 1200);
+  assert.equal(foldUserMessage(sevenHidden), sevenHidden);
+
+  // 20 lines of 70 chars: char-triggered (1419 chars), fold hides exactly 8.
+  const eightHidden = `${sevenHidden}\n${"z".repeat(70)}`;
+  const out = foldUserMessage(eightHidden);
   assert.equal(out.split("\n").length, 13);
   assert.ok(
     out.endsWith("… folded 8 lines · full content was sent to the model"),

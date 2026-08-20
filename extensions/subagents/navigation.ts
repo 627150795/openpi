@@ -10,7 +10,8 @@ import {
 } from "../shared/activity-status.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "./src/domain.ts";
-import { formatContextUtilization } from "./src/format.ts";
+import { statusGlyph } from "./src/ui/takeover.ts";
+import { SPINNER_INTERVAL_MS } from "./src/ui/transcript.ts";
 
 export interface SubagentStripEntry {
   snapshot: SubagentSnapshot;
@@ -58,13 +59,10 @@ function statusColor(status: SubagentSnapshot["status"]) {
   return "error" as const;
 }
 
-function statusSquare(snapshot: SubagentSnapshot, theme: Theme) {
-  return theme.fg(statusColor(snapshot.status), "■");
-}
-
 /** One-line subagent manager entry with the same affordance as Workflow. */
 export class SubagentStripWidget {
-  private readonly timer: ReturnType<typeof setInterval>;
+  private timer?: ReturnType<typeof setInterval>;
+  private timerInterval = 0;
   private readonly tui: TUI;
   private readonly theme: Theme;
   private readonly strip: BelowEditorStripState;
@@ -80,12 +78,23 @@ export class SubagentStripWidget {
     this.theme = theme;
     this.strip = strip;
     this.getEntry = getEntry;
-    this.timer = setInterval(() => this.tui.requestRender(), 500);
+    this.refreshTimer(false);
+  }
+
+  /** A running subagent animates a spinner, so repaint at its cadence. */
+  private refreshTimer(running: boolean) {
+    const interval = running ? SPINNER_INTERVAL_MS : 500;
+    if (interval === this.timerInterval) return;
+    if (this.timer) clearInterval(this.timer);
+    this.timerInterval = interval;
+    this.timer = setInterval(() => this.tui.requestRender(), interval);
     this.timer.unref?.();
   }
 
   dispose() {
-    clearInterval(this.timer);
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    this.timerInterval = 0;
   }
 
   invalidate() {}
@@ -94,23 +103,23 @@ export class SubagentStripWidget {
     const entry = this.getEntry();
     if (!entry || width <= 0) return [];
     const { snapshot, counts } = entry;
-    const marker = this.strip.focused
+    this.refreshTimer(snapshot.status === "running");
+    // One glyph column: the focus marker when selected, the status glyph —
+    // spinner, ✓, ✗ — otherwise. Model and context stay in Pi's footer and
+    // the dashboard; this strip owns navigation and progress.
+    const glyph = this.strip.focused
       ? this.theme.fg("accent", "❯")
-      : this.theme.fg("dim", "○");
+      : statusGlyph(snapshot, this.theme);
     const titleText = normalizeSubagentTitle(snapshot.title, snapshot.id);
     const title = this.strip.focused
       ? this.theme.bold(this.theme.fg("accent", titleText))
       : this.theme.fg("text", titleText);
-    const model = snapshot.meta.modelLabel
-      ? cleanLine(snapshot.meta.modelLabel)
-      : undefined;
-    const left = ` ${marker} ${statusSquare(snapshot, this.theme)} ${title}${model ? this.theme.fg("dim", ` · ${model}`) : ""}`;
+    const left = ` ${glyph} ${title}`;
     const settled = counts.done + counts.failed;
     const total = counts.running + settled;
     const metrics = [
-      `${settled}/${total} agents`,
+      total > 1 ? `${settled}/${total} done` : "",
       formatElapsed(snapshot),
-      formatContextUtilization(snapshot.usage),
       this.strip.focused ? "enter open · ↑ back" : "↓ to manage",
     ]
       .filter((part): part is string => Boolean(part))

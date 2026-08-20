@@ -383,6 +383,9 @@ export default function (pi: ExtensionAPI) {
 
   const updateStatus = (manager: SubagentManagerShape) => {
     if (!ui) return;
+    // Refresh the strip first: when it is on screen it already carries the
+    // "↓ to manage" affordance, so the footer must not repeat the command.
+    updateSubagentWidget();
     const counts = unreadActivityCounts(
       manager.view.list(),
       settledAcknowledgedAt,
@@ -390,10 +393,15 @@ export default function (pi: ExtensionAPI) {
     ui.setStatus(
       "subagents",
       hasActivity(counts)
-        ? formatActivityStatus(ui.theme, "subagents", counts)
+        ? formatActivityStatus(
+            ui.theme,
+            "subagents",
+            counts,
+            Date.now(),
+            widgetVisible,
+          )
         : undefined,
     );
-    updateSubagentWidget();
   };
 
   const openDashboard = async (ctx: ExtensionContext, initialId?: string) => {

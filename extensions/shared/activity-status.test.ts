@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SPINNER_INTERVAL_MS } from "../subagents/src/ui/transcript.ts";
 import {
   formatActivityStatus,
   hasActivity,
@@ -55,12 +56,13 @@ test("a settle without a timestamp is treated as unread", () => {
 
 test("status text names its own view command", () => {
   assert.equal(
-    formatActivityStatus(identityTheme, "subagents", {
-      running: 1,
-      done: 2,
-      failed: 0,
-    }),
-    "subagents: ■ 1 running · ■ 2 done · /subagents to view",
+    formatActivityStatus(
+      identityTheme,
+      "subagents",
+      { running: 1, done: 2, failed: 0 },
+      0,
+    ),
+    "subagents: ⠋ 1 running · ✓ 2 done · /subagents to view",
   );
   assert.equal(
     formatActivityStatus(identityTheme, "workflows", {
@@ -68,6 +70,28 @@ test("status text names its own view command", () => {
       done: 0,
       failed: 3,
     }),
-    "workflows: ■ 3 failed · /workflows to view",
+    "workflows: ✗ 3 failed · /workflows to view",
   );
+});
+
+test("running work shares the spinner frame; strip visibility owns the hint", () => {
+  const counts = { running: 1, done: 0, failed: 0 };
+  const visible = formatActivityStatus(
+    identityTheme,
+    "subagents",
+    counts,
+    SPINNER_INTERVAL_MS, // frame 1
+    true,
+  );
+  assert.equal(visible, "subagents: ⠙ 1 running");
+  assert.doesNotMatch(visible, /to view/);
+
+  const hidden = formatActivityStatus(
+    identityTheme,
+    "subagents",
+    counts,
+    SPINNER_INTERVAL_MS,
+    false,
+  );
+  assert.equal(hidden, "subagents: ⠙ 1 running · /subagents to view");
 });

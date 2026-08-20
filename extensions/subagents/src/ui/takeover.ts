@@ -17,7 +17,12 @@ import { sanitizeTerminalText } from "../../../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "../domain.ts";
 import { formatContextUtilization } from "../format.ts";
 import type { SubagentReadModel } from "../manager.ts";
-import { TranscriptRenderer, buildTranscriptLines } from "./transcript.ts";
+import {
+  SPINNER_INTERVAL_MS,
+  TranscriptRenderer,
+  buildTranscriptLines,
+  spinnerFrame,
+} from "./transcript.ts";
 
 export function sanitizeSubagentDisplayLine(value: string) {
   return sanitizeTerminalText(value).replace(/\s+/g, " ").trim();
@@ -30,26 +35,55 @@ function configuredKeys(
   return keybindings.getKeys(binding).join("/") || "unbound";
 }
 
-function statusGlyph(snap: SubagentSnapshot, theme: Theme): string {
+/**
+ * One spinner definition for the whole subagent UI: the dashboard glyph, the
+ * takeover header, and the transcript's live tools must animate in step, so the
+ * frames and their cadence live in `transcript.ts` and are imported here.
+ */
+function statusGlyph(
+  snap: SubagentSnapshot,
+  theme: Theme,
+  now = Date.now(),
+): string {
   switch (snap.status) {
     case "running":
-      return theme.fg("warning", "■");
+      return theme.fg("warning", spinnerFrame(now));
     case "done":
-      return theme.fg("success", "■");
+      return theme.fg("success", "✓");
     case "error":
-      return theme.fg("error", "■");
+      return theme.fg("error", "✗");
   }
 }
 
-function statusWord(snap: SubagentSnapshot, theme: Theme): string {
-  switch (snap.status) {
-    case "running":
-      return theme.fg("warning", "running");
-    case "done":
-      return theme.fg("success", "done");
-    case "error":
-      return theme.fg("error", "failed");
+/**
+ * Tool names come from the child's own tool-call events, so they are as
+ * untrusted as their arguments and must be sanitized before reaching the
+ * terminal: `truncateToWidth` only ignores escape sequences while measuring.
+ */
+function runningActivity(snap: SubagentSnapshot) {
+  if (snap.status !== "running") return "";
+  const liveTool = snap.liveTools.at(-1);
+  if (liveTool) {
+    const name = sanitizeSubagentDisplayLine(liveTool.name);
+    const args = truncateToWidth(
+      sanitizeSubagentDisplayLine(liveTool.argsPreview ?? ""),
+      48,
+    );
+    return args ? `${name} · ${args}` : name;
   }
+  for (const item of [...snap.transcript].reverse()) {
+    if (item.kind === "toolResult") {
+      return sanitizeSubagentDisplayLine(item.name);
+    }
+    if (item.kind !== "assistant") continue;
+    const tool = [...item.parts]
+      .reverse()
+      .find((part) => part.type === "toolCall");
+    if (tool?.type === "toolCall") {
+      return sanitizeSubagentDisplayLine(tool.name);
+    }
+  }
+  return "";
 }
 
 // --- Entry points --------------------------------------------------------------
@@ -126,7 +160,7 @@ export function reconcileDashboardSelection(
   selection.id = subs[selection.index]?.id;
 }
 
-class SubagentDashboard implements Component {
+export class SubagentDashboard implements Component {
   private tui: TUI;
   private theme: Theme;
   private keybindings: KeybindingsManager;
@@ -135,7 +169,7 @@ class SubagentDashboard implements Component {
   private done: (value: string | null) => void;
 
   private closed = false;
-  private ticker: ReturnType<typeof setInterval>;
+  private ticker?: ReturnType<typeof setInterval>;
   private unsubChange: () => void;
 
   constructor(
@@ -152,19 +186,29 @@ class SubagentDashboard implements Component {
     this.view = view;
     this.selection = selection;
     this.done = done;
-    // Elapsed times, token counts, and statuses tick along at 1Hz.
-    this.ticker = setInterval(() => this.tui.requestRender(), 1000);
-    this.unsubChange = view.subscribe(() => this.tui.requestRender());
+    this.refreshTicker();
+    this.unsubChange = view.subscribe(() => {
+      this.refreshTicker();
+      this.tui.requestRender();
+    });
   }
 
   private subs(): ReadonlyArray<SubagentSnapshot> {
     return this.view.list();
   }
 
+  private refreshTicker() {
+    const interval = this.subs().some((snap) => snap.status === "running")
+      ? SPINNER_INTERVAL_MS
+      : 1000;
+    if (this.ticker) clearInterval(this.ticker);
+    this.ticker = setInterval(() => this.tui.requestRender(), interval);
+  }
+
   private cleanup() {
     if (this.closed) return false;
     this.closed = true;
-    clearInterval(this.ticker);
+    if (this.ticker) clearInterval(this.ticker);
     this.unsubChange();
     return true;
   }
@@ -237,45 +281,36 @@ class SubagentDashboard implements Component {
     const subs = this.subs();
     reconcileDashboardSelection(this.selection, subs);
 
+    // One timestamp per frame so every row's spinner shows the same frame.
+    const now = Date.now();
     const rows = this.tui.terminal.rows || 30;
-    // Render exactly terminal rows - 1 so the overlay covers the header,
-    // chat, editor, and extra footer lines while leaving pi's final footer
-    // row visible.
-    const bodyHeight = Math.max(6, rows - 5);
-    const innerWidth = width - 2;
+    const maxBodyHeight = Math.max(1, rows - 5);
+    const bodyHeight =
+      subs.length > maxBodyHeight ? maxBodyHeight : Math.max(1, subs.length);
+    const innerWidth = Math.max(0, width - 2);
 
     const lines: string[] = [];
-
-    // Header: title left, count right
-    const headerLeft = theme.fg("accent", theme.bold("Subagents"));
-    const headerRight = theme.fg(
-      "muted",
-      `${subs.length} agent${subs.length === 1 ? "" : "s"}`,
-    );
-    const headerPad = Math.max(
-      1,
-      width - visibleWidth(headerLeft) - visibleWidth(headerRight) - 4,
-    );
-    lines.push(
-      truncateToWidth(
-        `  ${headerLeft}${" ".repeat(headerPad)}${headerRight}  `,
-        width,
-      ),
-    );
-
-    // Top border with panel title
-    const settled = subs.filter((s) => s.status !== "running").length;
+    const running = subs.filter((snap) => snap.status === "running").length;
+    const done = subs.filter((snap) => snap.status === "done").length;
+    const failed = subs.filter((snap) => snap.status === "error").length;
+    const summary =
+      [
+        running > 0 ? `${running} running` : "",
+        done > 0 ? `${done} done` : "",
+        failed > 0 ? `${failed} failed` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ") || "no agents";
     lines.push(
       theme.fg("border", "╭") +
-        this.borderSegment(innerWidth, `agents · ${settled}/${subs.length}`) +
+        this.borderSegment(innerWidth, `Subagents · ${summary}`) +
         theme.fg("border", "╮"),
     );
 
-    // Rows
     const divider = theme.fg("border", "│");
-    const rowLines = this.renderRows(subs, innerWidth, bodyHeight);
-    for (let i = 0; i < bodyHeight; i++) {
-      lines.push(divider + this.pad(rowLines[i] ?? "", innerWidth) + divider);
+    const rowLines = this.renderRows(subs, innerWidth, bodyHeight, now);
+    for (const row of rowLines) {
+      lines.push(divider + this.pad(row, innerWidth) + divider);
     }
 
     // Bottom border
@@ -303,37 +338,40 @@ class SubagentDashboard implements Component {
     subs: ReadonlyArray<SubagentSnapshot>,
     width: number,
     height: number,
+    now: number,
   ): string[] {
     const theme = this.theme;
     const out: string[] = [];
 
-    // Scroll window around selection
+    const needsMore = subs.length > height && height > 1;
+    const visibleHeight = needsMore ? height - 1 : height;
+
+    // Scroll window around selection. The more indicator gets its own row, so
+    // it never replaces a selectable subagent.
     let start = 0;
-    if (subs.length > height) {
+    if (subs.length > visibleHeight) {
       start = Math.min(
-        Math.max(0, this.selection.index - Math.floor(height / 2)),
-        subs.length - height,
+        Math.max(0, this.selection.index - Math.floor(visibleHeight / 2)),
+        Math.max(0, subs.length - visibleHeight),
       );
     }
-    const visible = subs.slice(start, start + height);
+    const visible = subs.slice(start, start + visibleHeight);
 
     for (let i = 0; i < visible.length; i++) {
       const snap = visible[i];
       const index = start + i;
       const isSelected = index === this.selection.index;
 
-      // Left: marker, status square, title
       const marker = isSelected ? theme.fg("accent", "❯") : " ";
       const safeTitle = sanitizeSubagentDisplayLine(snap.title) || snap.id;
       const title = isSelected
         ? theme.fg("accent", safeTitle)
         : theme.fg("text", safeTitle);
-      const left = ` ${marker} ${statusGlyph(snap, theme)} ${title}`;
+      const activity = runningActivity(snap);
+      const prefix = ` ${marker} ${statusGlyph(snap, theme, now)} `;
 
-      // Right: backend · model · context utilization · elapsed · status
       const utilization = formatContextUtilization(snap.usage);
-      const dot = theme.fg("dim", " · ");
-      const rightParts = [
+      const metadata = [
         theme.fg("muted", snap.backend),
         theme.fg(
           "muted",
@@ -341,24 +379,45 @@ class SubagentDashboard implements Component {
         ),
         ...(utilization ? [theme.fg("muted", utilization)] : []),
         theme.fg("muted", formatElapsed(snap)),
-        statusWord(snap, theme),
       ];
-      const right = `${rightParts.join(dot)} `;
-
+      const dot = theme.fg("dim", " · ");
+      // Preserve elapsed and the activity-bearing left side longest. Shed the
+      // least useful metadata as a segment instead of clipping a joined tail.
+      while (
+        metadata.length > 1 &&
+        visibleWidth(metadata.join(dot)) > Math.max(0, width - 16)
+      ) {
+        metadata.shift();
+      }
+      const right = metadata.join(dot);
       const rightWidth = visibleWidth(right);
-      const leftMax = Math.max(0, width - rightWidth - 2);
-      const leftTruncated = truncateToWidth(left, leftMax);
-      const gap = Math.max(2, width - visibleWidth(leftTruncated) - rightWidth);
-      out.push(truncateToWidth(leftTruncated + " ".repeat(gap) + right, width));
+      const leftMax = Math.max(0, width - rightWidth - (right ? 2 : 0));
+      const activityLabel = activity ? theme.fg("muted", ` · ${activity}`) : "";
+      const left =
+        prefix +
+        truncateToWidth(
+          title,
+          Math.max(
+            0,
+            leftMax - visibleWidth(prefix) - visibleWidth(activityLabel),
+          ),
+        ) +
+        truncateToWidth(
+          activityLabel,
+          Math.max(0, leftMax - visibleWidth(prefix)),
+        );
+      const gap = right
+        ? Math.max(1, width - visibleWidth(left) - rightWidth)
+        : 0;
+      out.push(truncateToWidth(left + " ".repeat(gap) + right, width));
     }
 
-    if (start > 0) {
-      out[0] = truncateToWidth(theme.fg("dim", `   ... ${start} more`), width);
-    }
-    if (start + height < subs.length) {
-      out[out.length - 1] = truncateToWidth(
-        theme.fg("dim", `   ... ${subs.length - start - height} more`),
-        width,
+    if (needsMore) {
+      out.push(
+        truncateToWidth(
+          theme.fg("dim", `   … ${subs.length - visible.length} more`),
+          width,
+        ),
       );
     }
     return out;
@@ -371,7 +430,7 @@ class SubagentDashboard implements Component {
 
 const TRANSCRIPT_SCROLL_STEP = 6;
 
-class TakeoverView implements Component, Focusable {
+export class TakeoverView implements Component, Focusable {
   private tui: TUI;
   private theme: Theme;
   private keybindings: KeybindingsManager;
@@ -386,7 +445,7 @@ class TakeoverView implements Component, Focusable {
   private scrollOffset = 0;
   private unsubscribe: () => void;
   private renderTimer?: ReturnType<typeof setTimeout>;
-  private ticker: ReturnType<typeof setInterval>;
+  private ticker?: ReturnType<typeof setInterval>;
   private closed = false;
 
   private _focused = false;
@@ -414,9 +473,11 @@ class TakeoverView implements Component, Focusable {
     this.view = view;
     this.done = done;
     this.options = options;
-    this.unsubscribe = view.subscribeTo(id, () => this.scheduleRender());
-    // Elapsed time in the header ticks along at 1Hz.
-    this.ticker = setInterval(() => this.tui.requestRender(), 1000);
+    this.unsubscribe = view.subscribeTo(id, () => {
+      this.refreshTicker();
+      this.scheduleRender();
+    });
+    this.refreshTicker();
     this.input.onSubmit = (value: string) => {
       const text = value.trim();
       if (!text) return;
@@ -429,6 +490,13 @@ class TakeoverView implements Component, Focusable {
 
   private snap(): SubagentSnapshot | undefined {
     return this.view.get(this.id);
+  }
+
+  private refreshTicker() {
+    const interval =
+      this.snap()?.status === "running" ? SPINNER_INTERVAL_MS : 1000;
+    if (this.ticker) clearInterval(this.ticker);
+    this.ticker = setInterval(() => this.tui.requestRender(), interval);
   }
 
   private scheduleRender() {
@@ -445,7 +513,7 @@ class TakeoverView implements Component, Focusable {
     if (this.closed) return false;
     this.closed = true;
     this.unsubscribe();
-    clearInterval(this.ticker);
+    if (this.ticker) clearInterval(this.ticker);
     if (this.renderTimer) clearTimeout(this.renderTimer);
     this.renderTimer = undefined;
     return true;
@@ -504,59 +572,95 @@ class TakeoverView implements Component, Focusable {
 
   private viewportHeight(): number {
     const rows = this.tui.terminal.rows || 30;
-    // The complete view renders viewport + 7 chrome rows. Using rows - 8
-    // makes the overlay exactly terminal rows - 1.
-    return Math.max(6, rows - 8);
+    // Top rule, transcript rule, input, key hints, and bottom rule are five
+    // chrome rows. The overlay leaves Pi's final footer row visible.
+    return Math.max(1, rows - 6);
+  }
+
+  private rule(width: number, left = "", right = "") {
+    const fill = "─";
+    const available = Math.max(1, width);
+    const leftWidth = visibleWidth(left);
+    const rightWidth = visibleWidth(right);
+    if (!right || leftWidth + rightWidth + 2 > available) {
+      return truncateToWidth(
+        left + fill.repeat(Math.max(0, available - leftWidth)),
+        available,
+      );
+    }
+    return (
+      left +
+      fill.repeat(Math.max(1, available - leftWidth - rightWidth)) +
+      right
+    );
   }
 
   render(width: number): string[] {
     const theme = this.theme;
-    const border = theme.fg("borderAccent", "─".repeat(Math.max(1, width)));
+    const now = Date.now();
     const lines: string[] = [];
     const snap = this.snap();
 
     if (!snap) {
-      lines.push(border);
-      lines.push(theme.fg("dim", `${this.id} is no longer tracked`));
-      lines.push(border);
+      const border = theme.fg("borderAccent", "─".repeat(Math.max(1, width)));
+      lines.push(
+        border,
+        theme.fg("dim", `${this.id} is no longer tracked`),
+        border,
+      );
       return lines;
     }
 
-    lines.push(border);
+    const title = sanitizeSubagentDisplayLine(snap.title) || snap.id;
+    const headerLeft =
+      theme.fg("borderAccent", "─ ") +
+      statusGlyph(snap, theme, now) +
+      " " +
+      theme.fg("accent", theme.bold(title)) +
+      theme.fg("borderAccent", " ");
     const utilization = formatContextUtilization(snap.usage);
-    const header =
-      `${statusGlyph(snap, theme)} ` +
+    const metadata = [
+      ...(this.options?.badge
+        ? [theme.fg("muted", sanitizeSubagentDisplayLine(this.options.badge))]
+        : []),
       theme.fg(
-        "accent",
-        theme.bold(sanitizeSubagentDisplayLine(snap.title) || snap.id),
-      ) +
-      theme.fg("muted", ` · ${snap.status} · ${formatElapsed(snap)}`) +
-      (this.options?.badge
-        ? theme.fg(
-            "muted",
-            ` · ${sanitizeSubagentDisplayLine(this.options.badge)}`,
-          )
-        : "") +
-      theme.fg(
-        "dim",
-        ` · ${snap.backend}: ${sanitizeSubagentDisplayLine(snap.meta.modelLabel ?? "?") || "?"}`,
-      ) +
-      (utilization ? theme.fg("dim", ` · ${utilization}`) : "");
-    lines.push(truncateToWidth(header, width));
-    lines.push(border);
+        "muted",
+        sanitizeSubagentDisplayLine(snap.meta.modelLabel ?? "?") || "?",
+      ),
+      ...(utilization ? [theme.fg("muted", utilization)] : []),
+      theme.fg("muted", formatElapsed(snap)),
+    ];
+    const dot = theme.fg("dim", " · ");
+    while (
+      metadata.length > 1 &&
+      visibleWidth(headerLeft) + visibleWidth(metadata.join(dot)) + 2 > width
+    ) {
+      metadata.shift();
+    }
+    lines.push(
+      this.rule(
+        width,
+        truncateToWidth(
+          headerLeft,
+          Math.max(1, width - visibleWidth(metadata.join(dot)) - 2),
+        ),
+        metadata.join(dot),
+      ),
+    );
 
-    // Fixed-height transcript viewport. Error and scroll status consume rows
-    // inside the viewport so streaming/scrolling never changes overlay height.
+    // Fixed-height transcript viewport. Errors consume a row, but scroll state
+    // is represented by the following rule so its height never changes.
+    // `now` is shared with the header glyph so both spinners show one frame.
     const transcript = buildTranscriptLines(
       snap,
       width,
       theme,
       this.transcriptRenderer,
+      { now },
     );
     const viewport = this.viewportHeight();
     const errorRows = snap.errorText ? 1 : 0;
-    const scrollRows = this.scrollOffset > 0 ? 1 : 0;
-    const transcriptCapacity = Math.max(1, viewport - errorRows - scrollRows);
+    const transcriptCapacity = Math.max(1, viewport - errorRows);
     const maxOffset = Math.max(0, transcript.length - transcriptCapacity);
     if (this.scrollOffset > maxOffset) this.scrollOffset = maxOffset;
 
@@ -572,39 +676,33 @@ class TakeoverView implements Component, Focusable {
         ),
       );
     }
-
-    const capacity = Math.max(
-      1,
-      viewport - body.length - (this.scrollOffset > 0 ? 1 : 0),
-    );
     const end = transcript.length - this.scrollOffset;
-    const visible = transcript.slice(Math.max(0, end - capacity), end);
-    if (visible.length === 0) body.push(theme.fg("dim", "(no output yet)"));
+    const visible = transcript.slice(
+      Math.max(0, end - Math.max(1, viewport - body.length)),
+      end,
+    );
+    if (visible.length === 0) body.push(theme.fg("dim", "waiting for output…"));
     else body.push(...visible);
-
-    if (this.scrollOffset > 0) {
-      body.push(
-        truncateToWidth(
-          theme.fg("dim", `... ${this.scrollOffset} lines below · ↓/pgdn`),
-          width,
-        ),
-      );
-    }
     while (body.length < viewport) body.push("");
     lines.push(...body.slice(0, viewport));
 
-    lines.push(border);
+    lines.push(
+      this.rule(
+        width,
+        theme.fg("borderAccent", "─"),
+        this.scrollOffset > 0 ? theme.fg("dim", `↓ ${this.scrollOffset}`) : "",
+      ),
+    );
     lines.push(...this.input.render(width));
+    const hints = `${configuredKeys(this.keybindings, "tui.input.submit")} send · ${configuredKeys(this.keybindings, "app.interrupt")} back · ${configuredKeys(this.keybindings, "app.clear")} abort run · ${configuredKeys(this.keybindings, "tui.editor.cursorUp")}/${configuredKeys(this.keybindings, "tui.editor.cursorDown")} scroll · ${configuredKeys(this.keybindings, "tui.editor.pageUp")}/${configuredKeys(this.keybindings, "tui.editor.pageDown")} page`;
+    const compactHints = `${configuredKeys(this.keybindings, "tui.input.submit")} send · ${configuredKeys(this.keybindings, "app.interrupt")} back · ${configuredKeys(this.keybindings, "app.clear")} abort run · ${configuredKeys(this.keybindings, "tui.editor.cursorUp")}/${configuredKeys(this.keybindings, "tui.editor.cursorDown")} scroll`;
     lines.push(
       truncateToWidth(
-        theme.fg(
-          "dim",
-          `${configuredKeys(this.keybindings, "tui.input.submit")} send · ${configuredKeys(this.keybindings, "app.interrupt")} back · ${configuredKeys(this.keybindings, "app.clear")} abort run · ${configuredKeys(this.keybindings, "tui.editor.cursorUp")}/${configuredKeys(this.keybindings, "tui.editor.cursorDown")} scroll · ${configuredKeys(this.keybindings, "tui.editor.pageUp")}/${configuredKeys(this.keybindings, "tui.editor.pageDown")} page`,
-        ),
+        theme.fg("dim", visibleWidth(hints) <= width ? hints : compactHints),
         width,
       ),
     );
-    lines.push(border);
+    lines.push(this.rule(width, theme.fg("borderAccent", "─")));
     return lines;
   }
 

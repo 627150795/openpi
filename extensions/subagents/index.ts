@@ -95,8 +95,7 @@ import {
   SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS,
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
-import { createDeferredResultDelivery } from "./src/result-delivery.ts";
-import { resultDeliveryOptions } from "../background-terminals/src/result-delivery.ts";
+import { createSubagentResultDelivery } from "./src/result-delivery.ts";
 import {
   effectiveChildToolAllowlist,
   resolveStandaloneChildProjectTrust,
@@ -210,7 +209,7 @@ export function createSubagentResultDispatcher(
   pi: ExtensionAPI,
   outputFor: (snap: SubagentSnapshot) => string = truncatedOutput,
 ) {
-  return (snaps: readonly SubagentSnapshot[], wake: boolean) => {
+  return (snaps: readonly SubagentSnapshot[]) => {
     if (snaps.length === 0) return;
     const content = snaps
       .map((snap) =>
@@ -249,7 +248,7 @@ export function createSubagentResultDispatcher(
         display: false,
         details,
       },
-      resultDeliveryOptions(wake),
+      { deliverAs: "followUp", triggerTurn: true },
     );
   };
 }
@@ -322,8 +321,14 @@ export default function (pi: ExtensionAPI) {
   let requestWidgetRender: (() => void) | undefined;
   let navigationLayerRegistered = false;
   let dashboardOpen = false;
-  const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
   const dispatchResults = createSubagentResultDispatcher(pi);
+  const resultDelivery = createSubagentResultDelivery<SubagentSnapshot>({
+    isIdle: () => sessionContext?.isIdle() === true,
+    // Every unconsumed fire-and-forget result must reach the parent. The
+    // delivery coordinator batches results that settled while it was busy.
+    deliver: dispatchResults,
+  });
+  pi.on("agent_settled", () => resultDelivery.parentSettled());
   const hideLifecycleTools = () =>
     patchOwnedTools(pi, "subagents", {
       disable: OPENPI_TOOL_SURFACE.subagents.deferred,
@@ -436,25 +441,6 @@ export default function (pi: ExtensionAPI) {
     navigationLayerRegistered = true;
   };
 
-  /**
-   * `wake` decides whether this costs the model a turn. A subagent that
-   * settled while the model sits idle is the result it is waiting on. A
-   * backlog that piled up while it worked is not: waking once per stale
-   * subagent forces a turn each, and the model can only answer "that one
-   * already finished". `nextTurn` still enters context with the user's next
-   * message, without demanding a reply.
-   */
-  const deliverResults = (
-    snaps: readonly SubagentSnapshot[],
-    wake: boolean,
-  ) => {
-    dispatchResults(snaps, wake);
-  };
-
-  const flushResults = (wake: boolean) => {
-    deliverResults(resultDelivery.drain(), wake);
-  };
-
   const deliverBtwResult = (snap: SubagentSnapshot) => {
     // appendEntry is a synchronous SessionManager operation and emits an
     // entry_appended event, so it is safe while the parent is streaming and
@@ -500,10 +486,10 @@ export default function (pi: ExtensionAPI) {
     // subagent_wait can consume it before agent_settled flushes follow-ups.
     // Defer a copy: the live snapshot keeps mutating if the subagent is
     // restarted before the deferred result flushes.
+    // The delivery coordinator closes both sides of the wake-up race: it
+    // flushes now if the parent is already idle, otherwise the parent's next
+    // agent_settled edge rechecks this same pending Map.
     resultDelivery.defer({ ...snap, meta: { ...snap.meta } });
-    // Settled while the model sits idle: it has nothing else in flight, so
-    // this is the result it is waiting on — wake it.
-    if (sessionContext?.isIdle()) flushResults(true);
   };
 
   pi.on("session_start", (_event, ctx) => {
@@ -529,10 +515,6 @@ export default function (pi: ExtensionAPI) {
     settledAcknowledgedAt = Date.now();
     managerPromise?.then(updateStatus).catch(() => undefined);
   });
-
-  // These settled while the model was working on something else, so they go
-  // into context without forcing a turn per stale subagent.
-  pi.on("agent_settled", () => flushResults(false));
 
   pi.on("session_shutdown", async () => {
     if (navigationLayerRegistered) {

@@ -13,9 +13,9 @@ import {
   formatElapsed,
   formatTokens,
   statusColor,
-  statusSquare,
   type Theme,
   type WorkflowDetails,
+  type WorkflowStatus,
 } from "./model.ts";
 
 /** Workflow-named aliases preserve the public seam while sharing interaction. */
@@ -32,6 +32,13 @@ export interface WorkflowStripEntry {
 
 function cleanLine(value: string) {
   return sanitizeTerminalText(value).replace(/\s+/g, " ").trim();
+}
+
+/** One status glyph per run state; doubles as the focus marker when selected. */
+function statusGlyph(status: WorkflowStatus, theme: Theme) {
+  if (status === "completed") return theme.fg("success", "✓");
+  if (status === "running") return theme.fg("warning", "●");
+  return theme.fg("error", "x");
 }
 
 /** Live, one-line Claude-style workflow entry rendered below the editor. */
@@ -70,16 +77,16 @@ export class WorkflowStripWidget {
     const settled = done + failed;
     const usage = aggregateUsage(details.agents);
     const tokenCount = usage.input + usage.output;
-    const marker = this.strip.focused
+    const glyph = this.strip.focused
       ? this.theme.fg("accent", "❯")
-      : this.theme.fg("dim", "○");
+      : statusGlyph(details.status, this.theme);
     const displayName = cleanLine(details.name ?? entry.runId) || entry.runId;
     const name = this.strip.focused
       ? this.theme.bold(this.theme.fg("accent", displayName))
       : this.theme.fg("text", displayName);
     const rawContext = details.currentPhase ?? details.description;
     const context = rawContext ? cleanLine(rawContext) : undefined;
-    const left = ` ${marker} ${statusSquare(details.status, this.theme)} ${name}${context ? this.theme.fg("dim", ` · ${context}`) : ""}`;
+    const left = ` ${glyph} ${name}${context ? this.theme.fg("dim", ` · ${context}`) : ""}`;
     const right = renderNavigationMetrics(
       this.theme,
       [

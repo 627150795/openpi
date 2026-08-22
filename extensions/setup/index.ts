@@ -135,7 +135,7 @@ export function buildInteractiveSetupPrompt(options: {
     "- UI: the large header costs vertical space; the custom footer is a declarative dashboard. Presets: powerline (one-line ANSI256 blocks), powerline-mono (one-line high-contrast gray powerline), and compact (one-line plain text); the default is plain with cwd/git/pr on the left and model/context on the right. Style can also be set independently: plain, powerline, powerline-mono. Custom lines are a 2D layout of cwd/model/thinking/context/cache/cost/throughput/git/pr plus at most one flex per line for left/right alignment. Nerd Font only affects powerline separator glyphs; text stays readable without it. Changes apply immediately in the active TUI session.",
     "- Operational activity for Subagents, Workflows, and background terminals is core status and always remains visible whenever the custom footer is enabled.",
     "- Post-edit command: one optional shell command (maximum 500 characters) run in the background after a turn with successful Write/Edit operations (e.g. `npm run format`). Off by default, interactive TUI sessions only, failures surface as a notification. This is a single command, not an event-hook system.",
-    "- Result detail display: Subagent results, Bash operations, and Write/Edit operations can each default to full or compact. Compact Subagent results show only bounded status rows and keep raw child reports behind app.tools.expand; compact Bash and Write/Edit operations use folded previews. Ctrl+O expands compact output by default. Bash and Write/Edit default to compact. Recommend compact for users who do not usually inspect implementation details.",
+    "- Result detail display: Subagent results, Bash operations, and Write/Edit operations can each default to full or compact. Compact Subagent results show only bounded status rows and keep raw child reports behind app.tools.expand; compact Bash and Write/Edit operations use one-line semantic activity summaries. Read, grep, find, and ls use the same compact activity-row projection. Ctrl+O restores Pi's native full arguments, output, errors, diffs, and timing. Bash and Write/Edit default to compact. Recommend compact for users who scan activity first and inspect evidence on demand.",
     "- Agent role models: built-in explorer, implementer, reviewer, and advisor roles are shared by subagent_spawn and workflow agent_type, and inherit the parent model by default. Assign only an available registry model to an individual role when needed; clearing that role returns it to inheritance. Custom agent-type files still override a built-in role's complete definition.",
     "- Intercom: optional cross-session messaging is installed only after a native setup confirmation. It stays parent-only; Direct/Workflow children and Replay cannot use it. The status above is informational for this model-guided step—do not install packages or edit its config yourself.",
     "",
@@ -401,13 +401,13 @@ export default function openPiSetup(pi: ExtensionAPI) {
       bash_tool_display: Type.Optional(
         StringEnum(DETAIL_DISPLAYS, {
           description:
-            "How Bash commands and output render by default: compact keeps a one-line command plus a bounded output preview with a hidden-line count and expands with app.tools.expand; full keeps every command expanded. Omit to preserve the current value.",
+            "How Bash commands and output render by default: compact shows one semantic activity row with running/success/failure state; app.tools.expand restores Pi's native command, output, error, timing, and full-output metadata. Full keeps Pi's native rendering expanded by default. Omit to preserve the current value.",
         }),
       ),
       file_mutation_display: Type.Optional(
         StringEnum(DETAIL_DISPLAYS, {
           description:
-            "How Write/Edit content and diffs render by default: compact shows a Claude Code-style folded preview with a hidden-line count and expands with app.tools.expand; full keeps every operation expanded. Omit to preserve the current value.",
+            "How Write/Edit content and diffs render by default: compact shows one semantic activity row with path, status, and line/diff counts; app.tools.expand restores Pi's native preview, output, error, and diff. Full keeps Pi's native rendering expanded by default. Omit to preserve the current value.",
         }),
       ),
       subagent_role_models: Type.Optional(SUBAGENT_ROLE_MODELS_SCHEMA),

@@ -33,15 +33,15 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  type ExtensionAPI,
+  type ExtensionContext,
   getAgentDir,
   getMarkdownTheme,
   keyHint,
-  type ExtensionAPI,
   type SessionManager,
-  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
-import { Type, type Static } from "typebox";
+import { type Static, Type } from "typebox";
 import { formatActivityStatus } from "../shared/activity-status.ts";
 import { waitBounded } from "../shared/child-session.ts";
 import {
@@ -54,39 +54,29 @@ import {
   patchOwnedTools,
 } from "../shared/tool-surface.ts";
 import {
-  loadAgentTypes,
-  resolveAgentModel,
-  roleModelForAgentType,
-  selectSubagentModel,
-} from "../subagents/src/agent-types.ts";
-import {
   createWorktree,
   reclaimWorktree,
   type Worktree,
   type WorktreeCleanup,
 } from "../shared/worktree.ts";
 import {
+  loadAgentTypes,
+  resolveAgentModel,
+  roleModelForAgentType,
+  selectSubagentModel,
+} from "../subagents/src/agent-types.ts";
+import {
+  acceptanceInstruction,
+  acceptanceSchema,
+  applyAcceptance,
+  evaluateAcceptance,
+  parseAcceptanceContract,
+} from "./acceptance.ts";
+import {
   createWorkflowPersistence,
   loadJournal,
   persistWorkflowJson,
 } from "./artifacts.ts";
-import { createWorkflowHandoffRegistry } from "./handoff.ts";
-import {
-  classifyInterruptedInvocation,
-  createInvocationIdentity,
-  requestInvocation,
-  transitionInvocation,
-} from "./invocation-ledger.ts";
-import {
-  normalizeWorkflowOperatorKey,
-  WorkflowOperatorRegistry,
-} from "./operator.ts";
-import {
-  agentCallKey,
-  createReplayCache,
-  type JournalEntry,
-  type ReplayCache,
-} from "./journal.ts";
 import { RunController } from "./controller.ts";
 import {
   listPersistedRunIds,
@@ -95,35 +85,58 @@ import {
   sessionWorkflowRunIds,
   showWorkflowDashboard,
 } from "./dashboard.ts";
+import { createWorkflowHandoffRegistry } from "./handoff.ts";
+import {
+  classifyInterruptedInvocation,
+  createInvocationIdentity,
+  requestInvocation,
+  transitionInvocation,
+} from "./invocation-ledger.ts";
+import {
+  agentCallKey,
+  createReplayCache,
+  type JournalEntry,
+  type ReplayCache,
+} from "./journal.ts";
 import {
   extractMeta,
   prepareWorkflowScript,
   type WorkflowMeta,
 } from "./meta.ts";
 import {
+  type AgentRecord,
   agentContext,
   aggregateUsage,
   appendLog,
   countStates,
+  createUsageReader,
   emptyUsage,
   formatElapsed,
   formatUsage,
   isWorkflowRunId,
   phaseGroups,
+  refreshWorkflowGraph,
   resolveWorkflowRunTarget,
   resultJson,
+  SQUARE,
   sanitizeLine,
   sanitizeWorkflowDisplayLine,
   sanitizeWorkflowDisplayText,
   stateSquare,
   statusColor,
   statusWord,
-  createUsageReader,
-  refreshWorkflowGraph,
-  SQUARE,
-  type AgentRecord,
   type WorkflowDetails,
 } from "./model.ts";
+import {
+  WorkflowNavigationEditor,
+  type WorkflowStripEntry,
+  WorkflowStripState,
+  WorkflowStripWidget,
+} from "./navigation.ts";
+import {
+  normalizeWorkflowOperatorKey,
+  WorkflowOperatorRegistry,
+} from "./operator.ts";
 import {
   buildBackgroundWorkflowFollowUp,
   buildBackgroundWorkflowLaunchResult,
@@ -140,11 +153,10 @@ import {
   WORKFLOW_TOOL_DESCRIPTION,
 } from "./prompt.ts";
 import {
-  WorkflowNavigationEditor,
-  WorkflowStripState,
-  WorkflowStripWidget,
-  type WorkflowStripEntry,
-} from "./navigation.ts";
+  beginProcessReplayWorkspaceLease,
+  createReplayIdentity,
+  isReplaySafeAgentCall,
+} from "./replay-safety.ts";
 import {
   createWorkflowResources,
   runAgent,
@@ -152,24 +164,12 @@ import {
   type WorkflowAgentSessionFactory,
   type WorkflowModel,
 } from "./runner.ts";
-import {
-  beginProcessReplayWorkspaceLease,
-  createReplayIdentity,
-  isReplaySafeAgentCall,
-} from "./replay-safety.ts";
 import { runWorkflowSandbox } from "./sandbox.ts";
-import {
-  acceptanceInstruction,
-  acceptanceSchema,
-  applyAcceptance,
-  evaluateAcceptance,
-  parseAcceptanceContract,
-} from "./acceptance.ts";
+import { safeStringify, writeFileAtomic } from "./serialization.ts";
 import {
   finalizeWorktreeHandoff,
   prepareWorktreeHandoff,
 } from "./worktree-handoff.ts";
-import { safeStringify, writeFileAtomic } from "./serialization.ts";
 
 const PREVIEW_LENGTH = 200;
 const EMIT_INTERVAL_MS = 120;
@@ -382,7 +382,9 @@ function listRuns(
     }
     // Same reader as the dashboard and workflow_status: old-format runs are
     // normalized here too, so every surface reports one status per run.
-    const details = readPersistedWorkflowDetails(runId);
+    const details = readPersistedWorkflowDetails(runId, {
+      hydrateArtifacts: false,
+    });
     if (!details) continue;
     const touchedAt = Math.max(details.startedAt, details.finishedAt ?? 0);
     if (
@@ -413,8 +415,14 @@ function runDetailText(
   const runDir = path.join(getAgentDir(), "workflows", run.runId);
   const live = activeRuns.get(run.runId);
   if (live) return buildWorkflowResultMessage(live, runDir);
-  const details = readPersistedWorkflowDetails(run.runId);
-  if (details) return buildWorkflowResultMessage(details, runDir);
+  const details = readPersistedWorkflowDetails(run.runId, {
+    hydrateArtifacts: true,
+  });
+  if (details)
+    return buildWorkflowResultMessage(
+      recoverStaleWorkflowDetails(details),
+      runDir,
+    );
   return `Run ${run.runId} — ${run.status}`;
 }
 
@@ -1934,7 +1942,9 @@ export default function workflows(pi: ExtensionAPI) {
     const settled = settledRuns.get(resolution.runId);
     if (settled) return { ok: true, details: settled } as const;
 
-    const details = readPersistedWorkflowDetails(resolution.runId);
+    const details = readPersistedWorkflowDetails(resolution.runId, {
+      hydrateArtifacts: true,
+    });
     if (!details) {
       return {
         ok: false,

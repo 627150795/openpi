@@ -89,7 +89,8 @@ import {
 } from "./journal.ts";
 import { RunController } from "./controller.ts";
 import {
-  normalizePersistedWorkflowDetails,
+  listPersistedRunIds,
+  readPersistedWorkflowDetails,
   recoverStaleWorkflowDetails,
   sessionWorkflowRunIds,
   showWorkflowDashboard,
@@ -148,6 +149,7 @@ import {
   createWorkflowResources,
   runAgent,
   type ThinkingLevel,
+  type WorkflowAgentSessionFactory,
   type WorkflowModel,
 } from "./runner.ts";
 import {
@@ -171,6 +173,20 @@ import { safeStringify, writeFileAtomic } from "./serialization.ts";
 
 const PREVIEW_LENGTH = 200;
 const EMIT_INTERVAL_MS = 120;
+
+/**
+ * Test-only injection seam for execute-level tests: production never sets it.
+ * The underscore-prefixed setter name makes any accidental production use
+ * self-evidently wrong.
+ */
+let testAgentSessionFactory: WorkflowAgentSessionFactory | undefined;
+
+/** Test-only: override how workflow children create their agent sessions. */
+export function __setWorkflowTestAgentSessionFactory(
+  factory: WorkflowAgentSessionFactory | undefined,
+) {
+  testAgentSessionFactory = factory;
+}
 
 const THINKING_LEVELS = [
   "off",
@@ -348,15 +364,8 @@ function listRuns(
   referencedRunIds: ReadonlySet<string>,
   startedSince = 0,
 ): RunSummary[] {
-  const base = path.join(getAgentDir(), "workflows");
-  let names: string[] = [];
-  try {
-    names = fs.readdirSync(base).filter(isWorkflowRunId);
-  } catch {
-    // No runs yet.
-  }
   const summaries: RunSummary[] = [];
-  for (const runId of names) {
+  for (const runId of listPersistedRunIds()) {
     const live = activeRuns.get(runId);
     if (live) {
       const { done, failed } = countStates(live);
@@ -371,34 +380,28 @@ function listRuns(
       });
       continue;
     }
-    try {
-      const parsed = JSON.parse(
-        fs.readFileSync(path.join(base, runId, "workflow.json"), "utf8"),
-      ) as Partial<WorkflowDetails>;
-      const startedAt = parsed.startedAt ?? 0;
-      const touchedAt = Math.max(startedAt, parsed.finishedAt ?? 0);
-      if (
-        touchedAt < startedSince ||
-        (parsed.sessionId !== sessionId && !referencedRunIds.has(runId))
-      ) {
-        continue;
-      }
-      const agents = parsed.agents ?? [];
-      summaries.push({
-        runId,
-        name: parsed.name,
-        status:
-          parsed.status === "running"
-            ? "aborted"
-            : (parsed.status ?? "unknown"),
-        done: agents.filter((agent) => agent.state !== "running").length,
-        total: agents.length,
-        startedAt: parsed.startedAt ?? 0,
-        active: false,
-      });
-    } catch {
-      // Ignore unreadable artifacts because their session cannot be verified.
+    // Same reader as the dashboard and workflow_status: old-format runs are
+    // normalized here too, so every surface reports one status per run.
+    const details = readPersistedWorkflowDetails(runId);
+    if (!details) continue;
+    const touchedAt = Math.max(details.startedAt, details.finishedAt ?? 0);
+    if (
+      touchedAt < startedSince ||
+      (details.sessionId !== sessionId && !referencedRunIds.has(runId))
+    ) {
+      continue;
     }
+    recoverStaleWorkflowDetails(details);
+    const { done, failed } = countStates(details);
+    summaries.push({
+      runId,
+      name: details.name,
+      status: details.status,
+      done: done + failed,
+      total: details.agents.length,
+      startedAt: details.startedAt,
+      active: false,
+    });
   }
   return summaries.sort((a, b) => b.startedAt - a.startedAt);
 }
@@ -410,14 +413,9 @@ function runDetailText(
   const runDir = path.join(getAgentDir(), "workflows", run.runId);
   const live = activeRuns.get(run.runId);
   if (live) return buildWorkflowResultMessage(live, runDir);
-  try {
-    const parsed = JSON.parse(
-      fs.readFileSync(path.join(runDir, "workflow.json"), "utf8"),
-    ) as WorkflowDetails;
-    return buildWorkflowResultMessage(parsed, runDir);
-  } catch {
-    return `Run ${run.runId} — ${run.status}`;
-  }
+  const details = readPersistedWorkflowDetails(run.runId);
+  if (details) return buildWorkflowResultMessage(details, runDir);
+  return `Run ${run.runId} — ${run.status}`;
 }
 
 export default function workflows(pi: ExtensionAPI) {
@@ -1365,6 +1363,9 @@ export default function workflows(pi: ExtensionAPI) {
                   ...(sessionManager ? { sessionManager } : {}),
                   modelRegistry: ctx.modelRegistry,
                   ...(agentType?.tools ? { tools: agentType.tools } : {}),
+                  ...(testAgentSessionFactory
+                    ? { sessionFactory: testAgentSessionFactory }
+                    : {}),
                   ...(replayIdentity
                     ? {
                         replayFilesystemBoundary: {
@@ -1921,17 +1922,10 @@ export default function workflows(pi: ExtensionAPI) {
 
   /** Resolve one run from live, settled, or persisted state. */
   const resolveRunDetails = (target: string) => {
-    const base = path.join(getAgentDir(), "workflows");
-    let persistedIds: string[] = [];
-    try {
-      persistedIds = fs.readdirSync(base).filter(isWorkflowRunId);
-    } catch {
-      // In-memory runs remain inspectable without the artifact directory.
-    }
     const resolution = resolveWorkflowRunTarget(target, [
       ...activeRuns.keys(),
       ...settledRuns.keys(),
-      ...persistedIds,
+      ...listPersistedRunIds(),
     ]);
     if (!resolution.ok) return resolution;
 
@@ -1940,31 +1934,20 @@ export default function workflows(pi: ExtensionAPI) {
     const settled = settledRuns.get(resolution.runId);
     if (settled) return { ok: true, details: settled } as const;
 
-    try {
-      const parsed: unknown = JSON.parse(
-        fs.readFileSync(
-          path.join(base, resolution.runId, "workflow.json"),
-          "utf8",
-        ),
-      );
-      const details = normalizePersistedWorkflowDetails(
-        resolution.runId,
-        parsed,
-      );
-      if (!details) throw new Error("invalid workflow details");
-      // A run absent from activeRuns cannot still be running this session; a
-      // persisted "running" is a run that was hard-killed or missed the
-      // shutdown settle deadline.
-      return {
-        ok: true,
-        details: recoverStaleWorkflowDetails(details),
-      } as const;
-    } catch {
+    const details = readPersistedWorkflowDetails(resolution.runId);
+    if (!details) {
       return {
         ok: false,
         error: `Workflow run ${resolution.runId} could not be read.`,
       } as const;
     }
+    // A run absent from activeRuns cannot still be running this session; a
+    // persisted "running" is a run that was hard-killed or missed the
+    // shutdown settle deadline.
+    return {
+      ok: true,
+      details: recoverStaleWorkflowDetails(details),
+    } as const;
   };
 
   pi.registerTool({

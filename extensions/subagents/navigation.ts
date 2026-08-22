@@ -12,7 +12,7 @@ import {
 import { spinnerFrame } from "../shared/spinner.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "./src/domain.ts";
-import { contextPercent } from "./src/format.ts";
+import { contextPercent } from "../shared/context-utilization.ts";
 
 export interface SubagentStripEntry {
   snapshot: SubagentSnapshot;

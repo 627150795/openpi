@@ -339,7 +339,7 @@ Next-action Suggestion 是可选的：完整主 Agent Run 结束后，在空编�
 - 支持 `powerline`、`powerline-mono`、`compact`，也支持自定义多行布局；
 - 终端变窄时按优先级隐藏次要指标，不机械截断尾部；
 - Subagent 与 Workflow 活动时自动出现，空闲时不占空间；
-- Bash、Write/Edit 与 Subagent 结果可独立选择 `full` 或 `compact`；普通 `read`、`grep`、`find`、`ls` 以及 compact Bash/Write/Edit 默认显示一行语义活动摘要，包含目标、状态与关键规模；
+- Bash、Write/Edit 与 Subagent 结果可独立选择 `full` 或 `compact`；普通 `read`、`grep`、`find`、`ls` 以及 compact Bash/Write/Edit 默认显示一行语义活动摘要，包含目标、状态与关键规模；Nerd Font 可为读取、终端、编辑、搜索和目录动作显示 Codex 风格线框图标，未安装时动词与全部信息仍保持可读；
 - 折叠内容用 Pi 的 `app.tools.expand` 快捷键临时展开（默认 `Ctrl+O`），展开后直接恢复 Pi 原生参数、输出、错误、diff、耗时与 full-output 证据；
 - Git 状态本地刷新；只有显式运行 `/pr` 才查询 GitHub PR。
 

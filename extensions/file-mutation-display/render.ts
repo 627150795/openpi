@@ -177,6 +177,25 @@ function pendingVerb(name: string) {
   }
 }
 
+function activityIcon(name: string) {
+  switch (name) {
+    case "read":
+      return "\ueaa4"; // Nerd Fonts Codicon: book
+    case "bash":
+      return "\uea85"; // Nerd Fonts Codicon: terminal
+    case "write":
+    case "edit":
+      return "\uea73"; // Nerd Fonts Codicon: edit
+    case "grep":
+    case "find":
+      return "\uea6d"; // Nerd Fonts Codicon: search
+    case "ls":
+      return "\uea83"; // Nerd Fonts Codicon: folder
+    default:
+      return "✓";
+  }
+}
+
 function errorSummary(result: AgentToolResult<unknown> | undefined) {
   const lines = textOutput(result)
     .split(/\r?\n/)
@@ -221,7 +240,7 @@ function activityText(
     return `${theme.fg("error", "✕")} ${theme.fg("error", "Failed")}   ${row.target}${detail ? theme.fg("dim", ` · ${detail}`) : ""}`;
   }
   const detail = [row.detail, elapsed].filter(Boolean).join(" · ");
-  return `${theme.fg("success", "✓")} ${theme.fg("toolTitle", row.verb.padEnd(8))} ${row.target}${detail ? theme.fg("dim", `  ${detail}`) : ""}`;
+  return `${theme.fg("success", activityIcon(name))} ${theme.fg("toolTitle", row.verb.padEnd(8))} ${row.target}${detail ? theme.fg("dim", `  ${detail}`) : ""}`;
 }
 
 function activityComponent(

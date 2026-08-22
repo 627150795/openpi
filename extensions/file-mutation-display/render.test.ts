@@ -50,6 +50,7 @@ function modelSurfaceHash(definition: ToolDefinition<any, any, any>) {
 
 const fixtures: Array<{
   name: string;
+  icon: string;
   definition: ToolDefinition<any, any, any>;
   args: Record<string, any>;
   result: AgentToolResult<any>;
@@ -57,6 +58,7 @@ const fixtures: Array<{
 }> = [
   {
     name: "read",
+    icon: "\ueaa4",
     definition: createReadToolDefinition(cwd),
     args: { path: "src/long-file.ts", offset: 10, limit: 20 },
     result: {
@@ -67,6 +69,7 @@ const fixtures: Array<{
   },
   {
     name: "bash",
+    icon: "\uea85",
     definition: createBashToolDefinition(cwd),
     args: { command: 'rg -n "renderCall|renderResult" extensions' },
     result: {
@@ -77,6 +80,7 @@ const fixtures: Array<{
   },
   {
     name: "write",
+    icon: "\uea73",
     definition: createWriteToolDefinition(cwd),
     args: { path: "src/new.ts", content: "one\ntwo\nthree\n" },
     result: {
@@ -92,6 +96,7 @@ const fixtures: Array<{
   },
   {
     name: "edit",
+    icon: "\uea73",
     definition: createEditToolDefinition(cwd),
     args: {
       path: "README.md",
@@ -113,6 +118,7 @@ const fixtures: Array<{
   },
   {
     name: "grep",
+    icon: "\uea6d",
     definition: createGrepToolDefinition(cwd),
     args: { pattern: "renderCall", path: "extensions" },
     result: {
@@ -128,6 +134,7 @@ const fixtures: Array<{
   },
   {
     name: "find",
+    icon: "\uea6d",
     definition: createFindToolDefinition(cwd),
     args: { pattern: "**/*.ts", path: "extensions" },
     result: {
@@ -138,6 +145,7 @@ const fixtures: Array<{
   },
   {
     name: "ls",
+    icon: "\uea83",
     definition: createLsToolDefinition(cwd),
     args: { path: "extensions" },
     result: {
@@ -192,7 +200,7 @@ test("all activity tools render one semantic success row", () => {
     const definition = withActivityRenderer(fixture.definition);
     const lines = renderCollapsed(definition, fixture.args, fixture.result);
     assert.equal(lines.length, 1, fixture.name);
-    assert.match(lines[0] ?? "", /^✓ /, fixture.name);
+    assert.equal(lines[0]?.at(0), fixture.icon, fixture.name);
     assert.match(lines[0] ?? "", fixture.success, fixture.name);
   }
 });

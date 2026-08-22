@@ -73,7 +73,7 @@ import {
   registerEditorLayer,
   removeEditorLayer,
 } from "../shared/editor-layers.ts";
-import { formatContextUtilization } from "./src/format.ts";
+import { formatContextUtilization } from "../shared/context-utilization.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
   buildSubagentResultMessage,

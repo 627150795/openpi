@@ -191,10 +191,29 @@ test("an unterminated fence folds conservatively as plain text", () => {
   );
 });
 
-test("a message over the threshold whose blocks all fit the preview stays in full", () => {
+test("many individually short code blocks share one bounded preview budget", () => {
   const block = ["```", "a", "b", "c", "d", "```"].join("\n");
   const message = Array.from({ length: 5 }, () => block).join("\n");
-  assert.equal(foldUserMessage(message), message);
+  const out = foldUserMessage(message);
+  assert.notEqual(out, message);
+  assert.ok(out.split("\n").length <= 21);
+  assert.equal((out.match(/```/g) ?? []).length % 2, 0);
+  assert.ok(
+    out.endsWith("… folded 12 lines · full content was sent to the model"),
+  );
+});
+
+test("many truncated code blocks cannot make the folded output longer than the input", () => {
+  const block = ["```js", "a", "b", "c", "d", "e", "```"].join("\n");
+  const message = Array.from({ length: 100 }, () => block).join("\n");
+  const out = foldUserMessage(message);
+  assert.equal(message.split("\n").length, 700);
+  assert.ok(out.split("\n").length <= 21);
+  assert.ok(out.length < message.length);
+  assert.equal((out.match(/```/g) ?? []).length % 2, 0);
+  assert.ok(
+    out.endsWith("… folded 683 lines · full content was sent to the model"),
+  );
 });
 
 test("folding is pure: the input is untouched and repeat calls agree", () => {

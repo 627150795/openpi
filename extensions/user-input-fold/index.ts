@@ -31,6 +31,8 @@ const PROSE_PREVIEW_LINES = 12;
 const BLOCK_PREVIEW_LINES = 4;
 /** Character budget for the prose part of a folded message. */
 const PROSE_PREVIEW_CHARS = 1_200;
+/** Total rendered lines before the fold marker, across prose and code blocks. */
+const MAX_PREVIEW_LINES = 20;
 /** Only fold when at least this many lines would be hidden. */
 const MIN_FOLDED_LINES = 8;
 
@@ -41,13 +43,13 @@ type Segment =
 const FENCE_OPEN = /^ {0,3}`{3,}/;
 const FENCE_CLOSE = /^ {0,3}`{3,}[ \t]*$/;
 
-function countLines(markdown: string): number {
+function countLines(markdown: string) {
   const parts = markdown.split("\n");
   // A trailing newline ends the last line; it does not open a new one.
   return parts.at(-1) === "" ? parts.length - 1 : parts.length;
 }
 
-function splitLines(markdown: string): string[] {
+function splitLines(markdown: string) {
   const lines = markdown.split("\n");
   if (lines.at(-1) === "") lines.pop();
   return lines;
@@ -103,16 +105,33 @@ export function foldUserMessage(markdown: string): string {
   let linesShown = 0;
 
   for (const segment of parseSegments(splitLines(markdown))) {
+    const remainingLines = MAX_PREVIEW_LINES - preview.length;
+    if (remainingLines <= 0) break;
     if (segment.kind === "code") {
-      const shown = Math.min(segment.content.length, BLOCK_PREVIEW_LINES);
+      if (segment.content.length === 0) {
+        if (remainingLines < 2) break;
+        preview.push(segment.open, segment.close);
+        linesShown += 2;
+        continue;
+      }
+      // A partial block needs opening/closing fences plus an ellipsis. If that
+      // cannot fit, stop before the block instead of emitting broken Markdown.
+      if (remainingLines < 3) break;
+      let shown = Math.min(
+        segment.content.length,
+        BLOCK_PREVIEW_LINES,
+        remainingLines - 2,
+      );
+      const truncated = () => shown < segment.content.length;
+      while (truncated() && shown + 3 > remainingLines) shown -= 1;
       preview.push(segment.open, ...segment.content.slice(0, shown));
-      if (shown < segment.content.length) preview.push("…");
+      if (truncated()) preview.push("…");
       preview.push(segment.close);
       linesShown += 2 + shown;
       continue;
     }
     for (const line of segment.lines) {
-      if (proseLinesLeft <= 0) break;
+      if (proseLinesLeft <= 0 || preview.length >= MAX_PREVIEW_LINES) break;
       const cost = line.length + (preview.length > 0 ? 1 : 0);
       if (preview.length > 0 && cost > proseCharsLeft) break;
       if (preview.length === 0 && line.length > proseCharsLeft) {

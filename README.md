@@ -76,8 +76,9 @@ pi install npm:@tt-a1i/openpi
 OpenPI 会把长期进程放到后台，把独立任务交给隔离 Context 的 Pi Subagent，把多阶段依赖组织成 Workflow。状态会持续显示；完整运行可从 `/ps`、`/subagents` 和 `/workflows` 检查或终止。
 
 > [!TIP]
-> Capability discovery 默认 `explicit`：表述里需要出现明确的能力词才会加载对应组——
-> 「在后台 / 后台运行」→ 后台终端；「子代理 / 委派」→ Subagent；「Workflow / 多阶段编排」→ Workflow；「搜索」→ `fd`/`rg`。像上面示例那样把意图说清楚即可，不需要记住任何工具名。
+> Capability discovery 默认 `explicit`：明确说出能力意图才会加载对应组。
+> 例如「在后台运行 dev server」→ 后台终端；「用/使用子代理检查」→ Subagent；「用工作流编排」→ Workflow；「用 fd/rg 搜索」→ 搜索工具。
+> 关键是把意图说清楚（说「用子代理」「后台运行」这类带动作的短语），不需要记住任何工具名。
 
 > [!IMPORTANT]
 > 默认安装是安静的：不改主题、不绑定 Provider 或模型、不开启下一步预测，也不执行 post-edit 命令。Capability discovery 默认 `explicit`；只有用户通过 `/openpi-setup` 选择 `adaptive` 后，模型才会常驻看到一个小型发现网关并可自主加载额外能力。

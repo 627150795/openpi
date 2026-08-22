@@ -745,6 +745,10 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
           // both pass the check in that window. Cleared by RunStarted/settle,
           // or here when the backend rejects the send.
           entry.restarting = true;
+          // A backend that accepts the send but never starts the run would
+          // hold the slot forever; guard the restart window the same way the
+          // spawn path guards its pre-RunStarted window.
+          armWatchdog(entry);
           return entry.session.send(text).pipe(
             Effect.onError(() =>
               Effect.sync(() => {

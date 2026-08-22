@@ -434,3 +434,33 @@ test("a first response clears the watchdog so slower runs are not killed", async
     { firstResponseTimeoutMs: 250 },
   );
 });
+
+test("a restart whose run never starts is settled by the watchdog", async () => {
+  await withManager(
+    async (manager, runtime) => {
+      const snap = await runTool(runtime, manager.spawn("pi", task("First")));
+      await runTool(runtime, manager.waitFor([snap.id]));
+      assert.equal(manager.view.get(snap.id)?.status, "done");
+
+      // The backend accepts the send but the new run never emits RunStarted,
+      // so the restarting entry holds its slot with nothing to clear it.
+      await runTool(runtime, manager.send(snap.id, "HANG: stalled restart"));
+      await runTool(runtime, manager.waitFor([snap.id]));
+      const after = manager.view.get(snap.id);
+      assert.equal(after?.status, "error");
+      assert.match(
+        after?.errorText ?? "",
+        /no assistant response event.*provider request may be stalled/,
+      );
+
+      // The freed slot accepts a fresh spawn again.
+      const fresh = await runTool(
+        runtime,
+        manager.spawn("pi", task("ok after the stalled restart")),
+      );
+      await runTool(runtime, manager.waitFor([fresh.id]));
+      assert.equal(manager.view.get(fresh.id)?.status, "done");
+    },
+    { firstResponseTimeoutMs: 150 },
+  );
+});

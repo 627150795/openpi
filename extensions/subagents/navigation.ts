@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import {
   fitNavigationSides,
+  renderNavigationMetrics,
   type BelowEditorStripState,
 } from "../shared/below-editor-navigation.ts";
 import {
@@ -107,15 +108,16 @@ export class SubagentStripWidget {
     const left = ` ${marker} ${statusSquare(snapshot, this.theme)} ${title}${model ? this.theme.fg("dim", ` · ${model}`) : ""}`;
     const settled = counts.done + counts.failed;
     const total = counts.running + settled;
-    const metrics = [
-      `${settled}/${total} agents`,
-      formatElapsed(snapshot),
-      formatContextUtilization(snapshot.usage),
+    const right = renderNavigationMetrics(
+      this.theme,
+      [
+        `${settled}/${total} agents`,
+        formatElapsed(snapshot),
+        formatContextUtilization(snapshot.usage),
+      ],
       this.strip.focused ? "enter open · ↑ back" : "↓ to manage",
-    ]
-      .filter((part): part is string => Boolean(part))
-      .join(" · ");
-    const right = this.theme.fg(statusColor(snapshot.status), metrics);
+      snapshot.status === "running" ? undefined : statusColor(snapshot.status),
+    );
     return [fitNavigationSides(left, right, width)];
   }
 }

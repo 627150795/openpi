@@ -329,13 +329,9 @@ export default function (pi: ExtensionAPI) {
     deliver: dispatchResults,
   });
   pi.on("agent_settled", () => resultDelivery.parentSettled());
-  const hideLifecycleTools = () =>
+  const registerStableToolFamily = () =>
     patchOwnedTools(pi, "subagents", {
-      disable: OPENPI_TOOL_SURFACE.subagents.deferred,
-    });
-  const showLifecycleTools = () =>
-    patchOwnedTools(pi, "subagents", {
-      enable: OPENPI_TOOL_SURFACE.subagents.deferred,
+      enable: OPENPI_TOOL_SURFACE.subagents.entry,
     });
 
   const getRuntime = () => (runtime ??= createSubagentRuntime());
@@ -494,7 +490,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     refreshAgentTypes(ctx.cwd, ctx.isProjectTrusted());
-    hideLifecycleTools();
+    registerStableToolFamily();
     sessionContext = ctx;
     settledAcknowledgedAt = 0;
     if (ctx.hasUI) ui = ctx.ui;
@@ -767,8 +763,6 @@ export default function (pi: ExtensionAPI) {
         if (worktree) await reclaimWorktree(cwd, worktree).catch(() => {});
         throw error;
       }
-
-      showLifecycleTools();
 
       return {
         content: [

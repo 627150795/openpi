@@ -4,7 +4,7 @@
  * disposeAll → every process tree is killed).
  */
 
-import { Cause, type Effect, Exit, ManagedRuntime } from "effect";
+import { Cause, Exit, ManagedRuntime, type Effect } from "effect";
 import { TerminalManagerLive } from "./manager.ts";
 
 export function createTerminalRuntime() {

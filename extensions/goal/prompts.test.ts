@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createGoalSnapshot } from "./state.ts";
 import {
   budgetLimitPrompt,
   continuationPrompt,
   objectiveUpdatedPrompt,
 } from "./prompts.ts";
-import { createGoalSnapshot } from "./state.ts";
 
 const goal = {
   ...createGoalSnapshot(

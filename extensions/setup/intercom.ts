@@ -2,19 +2,19 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants, lstatSync, readFileSync } from "node:fs";
 import {
-  type FileHandle,
   lstat,
   mkdir,
   open,
   readFile,
+  type FileHandle,
 } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DefaultPackageManager,
   getAgentDir,
-  type ProgressEvent,
   SettingsManager,
+  type ProgressEvent,
 } from "@earendil-works/pi-coding-agent";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 

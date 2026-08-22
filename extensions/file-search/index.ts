@@ -10,23 +10,19 @@
  * executing, and report a clear error if it failed.
  */
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Cause, Data, Effect, Exit } from "effect";
-import { type Static, Type } from "typebox";
+import { Type, type Static } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
-import {
-  OPENPI_TOOL_SURFACE,
-  patchOwnedTools,
-} from "../shared/tool-surface.ts";
 import {
   buildFdArgs,
   buildRgArgs,
@@ -36,18 +32,17 @@ import {
   RG_MAX_COUNT_LIMIT,
 } from "./src/args.ts";
 import {
-  type BinaryEnv,
-  type BinarySource,
   currentTarget,
   liveBinaryEnv,
   managedBinDir,
-  type PlatformTarget,
-  type ResolvedBinary,
   resolveBinary,
   TOOL_SPECS,
+  type BinaryEnv,
+  type BinarySource,
+  type PlatformTarget,
+  type ResolvedBinary,
 } from "./src/binaries.ts";
-import { type CapturedOutput, formatCapturedOutput } from "./src/output.ts";
-import { discardCapturedOutput, executeSearchProcess } from "./src/process.ts";
+import { formatCapturedOutput, type CapturedOutput } from "./src/output.ts";
 import {
   FD_PARAMETER_DESCRIPTIONS,
   FD_PROMPT_GUIDELINES,
@@ -58,6 +53,11 @@ import {
   RG_PROMPT_SNIPPET,
   RG_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
+import { discardCapturedOutput, executeSearchProcess } from "./src/process.ts";
+import {
+  OPENPI_TOOL_SURFACE,
+  patchOwnedTools,
+} from "../shared/tool-surface.ts";
 
 export function makeBinaryInitializers(
   binDir: string,

@@ -1,5 +1,5 @@
-import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { Data, Effect } from "effect";
 import { sanitizeTerminalText } from "../../shared/terminal-text.ts";

@@ -3,9 +3,9 @@ import test from "node:test";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-  CHILD_TOOL_CALL_TIMEOUT_MS,
   createToolCallTimeoutGuard,
   runWithToolCallTimeout,
+  CHILD_TOOL_CALL_TIMEOUT_MS,
   ToolCallTimeoutError,
 } from "./tool-call-timeout.ts";
 

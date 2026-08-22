@@ -11,27 +11,27 @@ import {
   patchOwnedTools,
 } from "../shared/tool-surface.ts";
 import {
+  TASKS_ENTRY_TYPE,
+  TASKS_LIMITS,
+  TASK_STATUSES,
+  TaskRestoreError,
   applyTaskAdd,
   applyTaskUpdate,
   createSessionTasks,
   emptyTaskSnapshot,
   projectTasks,
   restoreTaskSnapshot,
-  TASK_STATUSES,
-  TASKS_ENTRY_TYPE,
-  TASKS_LIMITS,
   type TaskFilter,
   type TaskItem,
-  TaskRestoreError,
   type TaskSnapshot,
 } from "./tasks.ts";
 import {
   openTasksScreen,
+  TASK_WIDGET_LIMIT,
   renderTaskWidget,
   renderToolResult,
-  TASK_WIDGET_LIMIT,
-  type TaskToolDetails,
   taskCounts,
+  type TaskToolDetails,
 } from "./ui.ts";
 
 const TOOL_NAMES = ["tasks_add", "tasks_update", "tasks_list"] as const;

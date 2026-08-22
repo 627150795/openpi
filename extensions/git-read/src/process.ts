@@ -9,11 +9,12 @@
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Data, Effect } from "effect";
+import type { CapturedOutput } from "../../file-search/src/output.ts";
 import {
-  type CapturedOutput,
   discardCapturedOutput,
   executeSearchProcess,
 } from "../../file-search/src/process.ts";
+import { GIT_TIMEOUT_MS } from "./args.ts";
 
 export const GIT_CAPTURE_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -34,6 +35,7 @@ export interface GitOutcome {
 export function runGit(
   args: readonly string[],
   cwd: string,
+  timeoutMs = GIT_TIMEOUT_MS,
 ): Effect.Effect<GitOutcome, GitCommandError> {
   return Effect.gen(function* () {
     const result = yield* Effect.catchTags(
@@ -42,6 +44,7 @@ export function runGit(
         args,
         cwd,
         tempPrefix: "pi-git-",
+        maxCaptureBytes: GIT_CAPTURE_MAX_BYTES,
       }),
       {
         SearchProcessError: (error) =>
@@ -65,5 +68,14 @@ export function runGit(
       output: result.output,
       exitCode: result.code,
     } satisfies GitOutcome;
-  }).pipe(Effect.provide(NodeServices.layer));
+  }).pipe(
+    Effect.timeout(timeoutMs),
+    Effect.mapError((error) => {
+      if (error._tag === "GitCommandError") return error;
+      return new GitCommandError({
+        message: `git command timed out after ${timeoutMs}ms`,
+      });
+    }),
+    Effect.provide(NodeServices.layer),
+  );
 }

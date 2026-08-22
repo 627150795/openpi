@@ -11,6 +11,8 @@
  * read diffs their tool boundary otherwise excludes (issue #61).
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
@@ -22,6 +24,10 @@ import { Cause, Effect, Exit } from "effect";
 import { type Static, Type } from "typebox";
 import { formatCapturedOutput } from "../file-search/src/output.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
+import {
+  OPENPI_TOOL_SURFACE,
+  patchOwnedTools,
+} from "../shared/tool-surface.ts";
 import {
   buildDiffArgs,
   buildLogArgs,
@@ -152,6 +158,30 @@ function displayRevision(value: string | undefined, fallback = "HEAD") {
 }
 
 export default function gitReadTools(pi: ExtensionAPI) {
+  const resultDirectories = new Set<string>();
+  const rememberOutput = (outcome: GitOutcome) => {
+    if (outcome.output.fullOutputPath) {
+      resultDirectories.add(path.dirname(outcome.output.fullOutputPath));
+    }
+  };
+
+  pi.on("session_start", () => {
+    patchOwnedTools(pi, "gitRead", {
+      enable: OPENPI_TOOL_SURFACE.gitRead.entry,
+    });
+  });
+
+  pi.on("session_shutdown", () => {
+    for (const directory of resultDirectories) {
+      try {
+        fs.rmSync(directory, { recursive: true, force: true });
+      } catch {
+        // Temporary git artifacts are best-effort cleanup.
+      }
+    }
+    resultDirectories.clear();
+  });
+
   pi.registerTool<ReturnType<typeof showParameters>, GitToolDetails>({
     name: "git_show",
     label: "Git Show",
@@ -165,6 +195,7 @@ export default function gitReadTools(pi: ExtensionAPI) {
         Effect.gen(function* () {
           const args = buildShowArgs(params as GitShowParams);
           const outcome = yield* runGit(args, ctx.cwd);
+          rememberOutput(outcome);
           return gitResult(outcome, args.join(" "));
         }),
         signal ? { signal } : undefined,
@@ -176,14 +207,14 @@ export default function gitReadTools(pi: ExtensionAPI) {
       return new Text(`git show ${displayRevision(args.revision)}`, 0, 0);
     },
 
-    renderResult(result, { expanded }) {
+    renderResult(result, { expanded }, theme) {
       const details = result.details;
       let text = details?.command
         ? `showed ${details.lineCount ?? 0} lines`
         : "shown";
       if (details?.truncated) text += " (truncated)";
-      if (expanded && details?.fullOutputPath)
-        text += ` — full output: ${details.fullOutputPath}`;
+      if (expanded)
+        text += expandedResultPreview(result, details?.fullOutputPath, theme);
       return new Text(text, 0, 0);
     },
   });
@@ -201,6 +232,7 @@ export default function gitReadTools(pi: ExtensionAPI) {
         Effect.gen(function* () {
           const args = buildDiffArgs(params as GitDiffParams);
           const outcome = yield* runGit(args, ctx.cwd);
+          rememberOutput(outcome);
           return gitResult(outcome, args.join(" "));
         }),
         signal ? { signal } : undefined,
@@ -220,14 +252,14 @@ export default function gitReadTools(pi: ExtensionAPI) {
       return new Text(text, 0, 0);
     },
 
-    renderResult(result, { expanded }) {
+    renderResult(result, { expanded }, theme) {
       const details = result.details;
       let text = details?.command
         ? `${details.lineCount ?? 0} diff lines`
         : "diffed";
       if (details?.truncated) text += " (truncated)";
-      if (expanded && details?.fullOutputPath)
-        text += ` — full output: ${details.fullOutputPath}`;
+      if (expanded)
+        text += expandedResultPreview(result, details?.fullOutputPath, theme);
       return new Text(text, 0, 0);
     },
   });
@@ -245,6 +277,7 @@ export default function gitReadTools(pi: ExtensionAPI) {
         Effect.gen(function* () {
           const args = buildLogArgs(params as GitLogParams);
           const outcome = yield* runGit(args, ctx.cwd);
+          rememberOutput(outcome);
           return gitResult(outcome, args.join(" "));
         }),
         signal ? { signal } : undefined,
@@ -259,15 +292,39 @@ export default function gitReadTools(pi: ExtensionAPI) {
       return new Text(text, 0, 0);
     },
 
-    renderResult(result, { expanded }) {
+    renderResult(result, { expanded }, theme) {
       const details = result.details;
       let text = details?.command
-        ? `${details.lineCount ?? 0} commits`
+        ? `${details.lineCount ?? 0} output lines`
         : "logged";
       if (details?.truncated) text += " (truncated)";
-      if (expanded && details?.fullOutputPath)
-        text += ` — full output: ${details.fullOutputPath}`;
+      if (expanded)
+        text += expandedResultPreview(result, details?.fullOutputPath, theme);
       return new Text(text, 0, 0);
     },
   });
+}
+
+const EXPANDED_PREVIEW_LINES = 20;
+
+export function expandedResultPreview(
+  result: { content: { type: string; text?: string }[] },
+  fullOutputPath: string | undefined,
+  theme: { fg(color: string, text: string): string },
+) {
+  let text = "";
+  const content = result.content[0];
+  if (content?.type === "text" && content.text) {
+    const lines = sanitizeTerminalText(content.text).split("\n");
+    for (const line of lines.slice(0, EXPANDED_PREVIEW_LINES)) {
+      text += `\n${theme.fg("dim", line)}`;
+    }
+    if (lines.length > EXPANDED_PREVIEW_LINES) {
+      text += `\n${theme.fg("muted", `... ${lines.length - EXPANDED_PREVIEW_LINES} more lines`)}`;
+    }
+  }
+  if (fullOutputPath) {
+    text += `\n${theme.fg("dim", `Full output: ${sanitizeTerminalText(fullOutputPath)}`)}`;
+  }
+  return text;
 }

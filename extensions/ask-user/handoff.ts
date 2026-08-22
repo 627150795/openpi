@@ -3,9 +3,9 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { type Static, Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
-import { answerDraftFits, MAX_ANSWER_DRAFT_UTF8_BYTES } from "./limits.ts";
+import { MAX_ANSWER_DRAFT_UTF8_BYTES, answerDraftFits } from "./limits.ts";
 
 const COMPLETE = "Done — resume and verify";
 const UNABLE = "Unable to complete";

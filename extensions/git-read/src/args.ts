@@ -62,6 +62,13 @@ export class InvalidPathError extends Error {
   }
 }
 
+export class InvalidDiffCombinationError extends Error {
+  constructor(message: string) {
+    super(`Invalid git diff options: ${message}`);
+    this.name = "InvalidDiffCombinationError";
+  }
+}
+
 export interface GitShowParams {
   revision: string;
   path?: string;
@@ -73,6 +80,8 @@ export function buildShowArgs(params: GitShowParams): string[] {
   const args = [
     "show",
     "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
     "--format=fuller",
     params.revision.trim(),
   ];
@@ -95,10 +104,6 @@ export interface GitDiffParams {
 }
 
 export function buildDiffArgs(params: GitDiffParams): string[] {
-  const args = ["diff", "--no-color"];
-  if (params.staged) args.push("--cached");
-  if (params.stat) args.push("--stat");
-
   const from = params.from !== undefined ? revision(params.from) : undefined;
   if (params.from !== undefined && from === undefined) {
     throw new InvalidRevisionError(params.from);
@@ -107,6 +112,18 @@ export function buildDiffArgs(params: GitDiffParams): string[] {
   if (params.to !== undefined && to === undefined) {
     throw new InvalidRevisionError(params.to);
   }
+  if (params.to !== undefined && params.from === undefined) {
+    throw new InvalidDiffCombinationError("to requires from");
+  }
+  if (params.staged && (params.from !== undefined || params.to !== undefined)) {
+    throw new InvalidDiffCombinationError(
+      "staged cannot be combined with from or to",
+    );
+  }
+
+  const args = ["diff", "--no-color", "--no-ext-diff", "--no-textconv"];
+  if (params.staged) args.push("--cached");
+  if (params.stat) args.push("--stat");
 
   if (from !== undefined && to !== undefined) {
     // An explicit `--` separator is unnecessary for the range form; a
@@ -132,7 +149,7 @@ export interface GitLogParams {
 }
 
 export function buildLogArgs(params: GitLogParams): string[] {
-  const args = ["log", "--no-color"];
+  const args = ["log", "--no-color", "--no-ext-diff"];
   if (params.oneline !== false) args.push("--oneline");
   const limit = Math.min(
     GIT_LOG_MAX_LIMIT,

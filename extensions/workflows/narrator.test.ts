@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  type AgentRecord,
   appendLog,
-  createUsageReader,
   MAX_LOG_ENTRIES,
   MAX_LOG_TEXT,
   sanitizeLine,
   sanitizeWorkflowDisplayLine,
   sanitizeWorkflowDisplayText,
+  createUsageReader,
+  type AgentRecord,
   type WorkflowDetails,
 } from "./model.ts";
 import { runWorkflowSandbox } from "./sandbox.ts";

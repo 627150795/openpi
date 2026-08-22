@@ -11,8 +11,8 @@ import {
   createReplayCache,
   JOURNAL_MAX_BYTES,
   JOURNAL_VERSION,
-  type JournalEntry,
   parseJournal,
+  type JournalEntry,
 } from "./journal.ts";
 import {
   runWorkflowSandbox,

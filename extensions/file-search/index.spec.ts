@@ -1,17 +1,12 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, it } from "@effect/vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Writable } from "node:stream";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
 import { Effect, Fiber, FileSystem } from "effect";
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
-import {
-  expandedPreview,
-  installNotifications,
-  makeBinaryInitializers,
-} from "./index.ts";
 import {
   buildFdArgs,
   buildRgArgs,
@@ -19,17 +14,17 @@ import {
   normalizeSearchPath,
 } from "./src/args.ts";
 import {
-  type BinaryEnv,
   FD_INTEL_DARWIN_VERSION,
   InstallError,
   managedBinDir,
-  type ReleaseAsset,
-  type ResolvedBinary,
   readBoundedResponse,
   releaseAsset,
   resolveBinary,
   TOOL_SPECS,
   UnsupportedPlatformError,
+  type BinaryEnv,
+  type ReleaseAsset,
+  type ResolvedBinary,
 } from "./src/binaries.ts";
 import {
   COMPLETE_OUTPUT_MAX_BYTES,
@@ -37,6 +32,11 @@ import {
   formatOutput,
 } from "./src/output.ts";
 import { executeSearchProcess } from "./src/process.ts";
+import {
+  expandedPreview,
+  installNotifications,
+  makeBinaryInitializers,
+} from "./index.ts";
 
 // --- argument construction -------------------------------------------------
 

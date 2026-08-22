@@ -11,19 +11,19 @@
  */
 
 import {
-  type AgentSession,
-  type AgentSessionEvent,
-  type AgentSessionEventListener,
   createAgentSession,
   DefaultResourceLoader,
   defineTool,
-  type ExtensionAPI,
-  type ExtensionContext,
   SessionManager,
   SettingsManager,
+  type AgentSession,
+  type AgentSessionEvent,
+  type AgentSessionEventListener,
+  type ExtensionAPI,
+  type ExtensionContext,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import {
   bindChildSessionExtensions,
   childToolPolicy,
@@ -31,16 +31,16 @@ import {
   shutdownAndDisposeChildSession,
 } from "../shared/child-session.ts";
 import { createToolCallTimeoutGuard } from "../shared/tool-call-timeout.ts";
-import { type AgentUsage, emptyUsage, type TranscriptEntry } from "./model.ts";
+import { emptyUsage, type AgentUsage, type TranscriptEntry } from "./model.ts";
+import {
+  createReplayFilesystemBoundary,
+  type ReplayFilesystemBoundaryOptions,
+} from "./replay-safety.ts";
 import {
   buildWorkflowAgentPrompt,
   STRUCTURED_OUTPUT_SYSTEM_INSTRUCTION,
   STRUCTURED_OUTPUT_TOOL_DESCRIPTION,
 } from "./prompt.ts";
-import {
-  createReplayFilesystemBoundary,
-  type ReplayFilesystemBoundaryOptions,
-} from "./replay-safety.ts";
 import { safeStringify, truncateUtf8 } from "./serialization.ts";
 
 const AGENT_OUTPUT_MAX_BYTES = 64 * 1024;

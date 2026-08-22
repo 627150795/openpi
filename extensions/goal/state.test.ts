@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  GoalRestoreError,
   acknowledgeGoalCompletion,
   budgetLimitTransition,
   createGoalSnapshot,
   editGoalObjective,
-  GoalRestoreError,
-  type GoalSnapshot,
   markContinuationDispatched,
   recordBlockedAudit,
   recordGoalProgress,
@@ -15,6 +14,7 @@ import {
   setContinuationDeferred,
   transitionGoal,
   validateGoalSnapshot,
+  type GoalSnapshot,
 } from "./state.ts";
 
 const NOW = 1_000_000;

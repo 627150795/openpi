@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { BelowEditorStripState } from "../shared/below-editor-navigation.ts";
 import {
   normalizeSubagentTitle,
-  SubagentStripWidget,
   selectSubagentStripEntry,
+  SubagentStripWidget,
 } from "./navigation.ts";
 import type { SubagentSnapshot } from "./src/domain.ts";
 

@@ -2,17 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import {
+  visibleWidth,
   type EditorComponent,
   type TUI,
-  visibleWidth,
 } from "@earendil-works/pi-tui";
-import type { Theme, WorkflowDetails } from "./model.ts";
 import {
   WorkflowNavigationEditor,
   WorkflowStripState,
   WorkflowStripWidget,
   workflowStripInput,
 } from "./navigation.ts";
+import type { Theme, WorkflowDetails } from "./model.ts";
 
 test("Down focuses an available workflow only from an empty editor", () => {
   assert.equal(

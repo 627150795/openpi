@@ -5,8 +5,8 @@
 
 import * as os from "node:os";
 import {
-  type ExtensionContext,
   truncateHead,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { formatContextUtilization } from "../shared/context-utilization.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";

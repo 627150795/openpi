@@ -1,4 +1,5 @@
 import {
+  parse,
   type ArrayExpression,
   type ExportNamedDeclaration,
   type Expression,
@@ -7,7 +8,6 @@ import {
   type ObjectExpression,
   type Program,
   type Property,
-  parse,
   type VariableDeclaration,
 } from "acorn";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";

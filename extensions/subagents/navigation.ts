@@ -1,18 +1,18 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import {
-  type ActivityCounts,
-  unreadActivityCounts,
-} from "../shared/activity-status.ts";
-import {
-  type BelowEditorStripState,
   fitNavigationSides,
   renderNavigationMetrics,
+  type BelowEditorStripState,
 } from "../shared/below-editor-navigation.ts";
-import { contextPercent } from "../shared/context-utilization.ts";
+import {
+  unreadActivityCounts,
+  type ActivityCounts,
+} from "../shared/activity-status.ts";
 import { spinnerFrame } from "../shared/spinner.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "./src/domain.ts";
+import { contextPercent } from "../shared/context-utilization.ts";
 
 export interface SubagentStripEntry {
   snapshot: SubagentSnapshot;

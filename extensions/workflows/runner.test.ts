@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
-  type AgentSession,
-  type AgentSessionEvent,
-  type AgentSessionEventListener,
   DefaultResourceLoader,
   SessionManager,
   SettingsManager,
+  type AgentSession,
+  type AgentSessionEvent,
+  type AgentSessionEventListener,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -20,10 +20,10 @@ import {
   observeAssistantSettlement,
   recordToolExecutionTiming,
   runAgent,
-  type ToolExecutionTiming,
   transcriptFromMessages,
-  type WorkflowAgentSessionFactory,
   workflowChildTools,
+  type ToolExecutionTiming,
+  type WorkflowAgentSessionFactory,
 } from "./runner.ts";
 
 async function withTempDir(run: (directory: string) => Promise<void>) {

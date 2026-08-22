@@ -12,9 +12,9 @@ import { BackendRegistry, type SubagentBackend } from "./src/backend.ts";
 import { makeStubBackend } from "./src/backends/stub.ts";
 import type { BackendName, ParentContext, SpawnTask } from "./src/domain.ts";
 import {
+  makeSubagentManagerLayer,
   MAX_RUNNING,
   MAX_RUNNING_BTW,
-  makeSubagentManagerLayer,
   SubagentManager,
   type SubagentManagerConfig,
   type SubagentManagerShape,

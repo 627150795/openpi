@@ -6,7 +6,7 @@
  * ManagedRuntime.
  */
 
-import { Cause, type Effect, Exit, Layer, ManagedRuntime } from "effect";
+import { Cause, Exit, Layer, ManagedRuntime, type Effect } from "effect";
 import { BackendRegistry, type SubagentBackend } from "./backend.ts";
 import { piBackend } from "./backends/pi.ts";
 import type { BackendName } from "./domain.ts";

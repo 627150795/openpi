@@ -3,12 +3,12 @@ import test from "node:test";
 import {
   advanceDeliveredJobs,
   advanceJob,
-  type CronJob,
   dueJobs,
   formatInterval,
   MIN_INTERVAL_MS,
   parseCronCommand,
   parseDuration,
+  type CronJob,
 } from "./schedule.ts";
 
 test("parses duration units and rejects nonsense", () => {

@@ -4,17 +4,17 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Value } from "typebox/value";
-import { type AgentType, BUILT_IN_AGENT_TYPES } from "./src/agent-types.ts";
 import { MAX_RUNNING } from "./src/manager.ts";
 import {
   buildAgentTypeParameterDescription,
   buildSubagentSpawnResult,
   createAgentTypeParameterSchema,
-  SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS,
   SUBAGENT_SPAWN_PROMPT_GUIDELINES,
+  SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS,
   SUBAGENT_SPAWN_TOOL_DESCRIPTION,
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
+import { BUILT_IN_AGENT_TYPES, type AgentType } from "./src/agent-types.ts";
 
 test("the generated agent_type schema exposes each effective capability and effort default", () => {
   const parentOnlyType: AgentType = {

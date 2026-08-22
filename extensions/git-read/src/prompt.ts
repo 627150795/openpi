@@ -1,7 +1,7 @@
 /** Model-facing text for the read-only git tools. */
 
 export const GIT_SHOW_TOOL_DESCRIPTION =
-  "Show a git commit (message, author, and full patch) or, with path, the committed content of one file. Read-only.";
+  "Show a git commit (message, author, and patch), optionally limited to one repository path. Read-only.";
 
 export const GIT_SHOW_PROMPT_SNIPPET =
   "Inspect a specific git commit with git_show.";
@@ -14,7 +14,7 @@ export const GIT_SHOW_PROMPT_GUIDELINES = [
 export const GIT_SHOW_PARAMETER_DESCRIPTIONS = {
   revision:
     "Commit to show: a sha (>=4 hex chars), branch or tag name, or HEAD with ~ / ^ modifiers, e.g. HEAD, HEAD~2, main.",
-  path: "Optional relative path inside the repository. With it, git_show prints that file's content at the revision instead of the commit patch.",
+  path: "Optional relative path inside the repository. Limits the commit patch to this path; it does not read the file blob.",
 };
 
 export const GIT_DIFF_TOOL_DESCRIPTION =
@@ -30,8 +30,8 @@ export const GIT_DIFF_PROMPT_GUIDELINES = [
 ];
 
 export const GIT_DIFF_PARAMETER_DESCRIPTIONS = {
-  from: "Base revision. Omit both revisions to diff the worktree against the index (or HEAD when staged is true).",
-  to: "Compared revision. Give from alone to diff that revision against the worktree.",
+  from: "Base revision. With to, compares from...to from their merge base (PR-style). Omit both revisions to diff the worktree against the index.",
+  to: "Compared revision. Requires from and uses the merge-base range from...to. Give from alone to diff that revision against the worktree.",
   staged:
     "Compare the index (staged changes) against HEAD instead of the worktree.",
   stat: "Show a diffstat (files and line counts) instead of the full patch.",

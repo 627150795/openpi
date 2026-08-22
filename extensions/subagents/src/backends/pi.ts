@@ -23,15 +23,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Cause, Scope } from "effect";
 import { Effect, Queue, Stream } from "effect";
-import {
-  bindChildSessionExtensions,
-  CHILD_SHUTDOWN_TIMEOUT_MS,
-  childToolPolicy,
-  createChildResources,
-  shutdownAndDisposeChildSession,
-} from "../../../shared/child-session.ts";
-import { createToolCallTimeoutGuard } from "../../../shared/tool-call-timeout.ts";
-import { reclaimWorktree } from "../../../shared/worktree.ts";
 import { resolveAgentModel } from "../agent-types.ts";
 import type { SubagentBackend, SubagentSession } from "../backend.ts";
 import type {
@@ -41,6 +32,15 @@ import type {
   TranscriptPart,
 } from "../domain.ts";
 import { SendError, SpawnError } from "../domain.ts";
+import { createToolCallTimeoutGuard } from "../../../shared/tool-call-timeout.ts";
+import {
+  bindChildSessionExtensions,
+  CHILD_SHUTDOWN_TIMEOUT_MS,
+  childToolPolicy,
+  createChildResources,
+  shutdownAndDisposeChildSession,
+} from "../../../shared/child-session.ts";
+import { reclaimWorktree } from "../../../shared/worktree.ts";
 
 const DIRECT_WORKTREE_CLEANUP_TIMEOUT_MS = 4_000;
 

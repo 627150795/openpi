@@ -2,18 +2,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  TASKS_LIMITS,
+  TaskRestoreError,
+  TaskValidationError,
   applyTaskAdd,
   createSessionTasks,
   emptyTaskSnapshot,
   projectTasks,
   renderTaskList,
   restoreTaskSnapshot,
-  TASKS_LIMITS,
-  TaskRestoreError,
+  validateTaskSnapshot,
   type TaskSnapshot,
   type TaskStatus,
-  TaskValidationError,
-  validateTaskSnapshot,
 } from "./tasks.ts";
 
 function snapshot(

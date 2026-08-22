@@ -7,8 +7,8 @@ import {
   renderTaskSummary,
   renderTaskWidget,
   renderToolResult,
-  TASK_WIDGET_LIMIT,
   taskCounts,
+  TASK_WIDGET_LIMIT,
 } from "./ui.ts";
 
 // strikethrough is marked rather than dropped, so a test can assert which

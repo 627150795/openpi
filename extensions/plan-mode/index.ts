@@ -36,11 +36,11 @@ import {
   PLAN_MODE_CHANNEL,
   type PlanModeState,
 } from "../shared/plan-mode-state.ts";
-import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import {
   OPENPI_TOOL_SURFACE,
   patchOwnedTools,
 } from "../shared/tool-surface.ts";
+import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { planBashDecision } from "./bash-policy.ts";
 
 export const MAX_READY_PLAN_CHARS = 50_000;

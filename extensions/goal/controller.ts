@@ -10,15 +10,14 @@ import {
   objectiveUpdatedPrompt,
 } from "./prompts.ts";
 import {
+  GOAL_ENTRY_TYPE,
+  GoalRestoreError,
   acknowledgeGoalCompletion,
   budgetLimitTransition,
   canResumeGoal,
   clearBlockedAudit,
   editGoalObjective,
   emergencyLimitTransition,
-  GOAL_ENTRY_TYPE,
-  GoalRestoreError,
-  type GoalSnapshot,
   isGoalActive,
   isGoalVisible,
   markContinuationDispatched,
@@ -30,6 +29,7 @@ import {
   setContinuationDeferred,
   transitionGoal,
   validateGoalSnapshot,
+  type GoalSnapshot,
 } from "./state.ts";
 
 export const GOAL_CONTINUATION_TYPE = "goal-continuation";

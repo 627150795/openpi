@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseSuggestionResponse, reasoningOptions } from "./src/predictor.ts";
 import {
   buildSuggestionPrompt,
   SUGGESTION_SYSTEM_PROMPT,
 } from "./src/prompt.ts";
+import { parseSuggestionResponse, reasoningOptions } from "./src/predictor.ts";
 
 test("parses one bounded one-line suggestion and strips terminal controls", () => {
   assert.equal(

@@ -83,7 +83,7 @@ const themeText = (
 ): string => {
   if (kind === "title") return theme.fg("accent", theme.bold(text));
   if (kind === "subtitle") return theme.fg("dim", text);
-  if (kind === "rule") return theme.fg("border", text);
+  if (kind === "rule") return theme.fg("borderMuted", text);
   if (kind === "user") return theme.fg("accent", theme.bold(text));
   if (kind === "assistant") return theme.fg("warning", theme.bold(text));
   if (kind === "tool") return theme.fg("muted", theme.bold(text));
@@ -428,10 +428,10 @@ const renderPreview = (
       if (i >= thumbStart && i < thumbStart + thumbSize) {
         scrollChar = theme.fg("text", "█");
       } else {
-        scrollChar = theme.fg("border", "│");
+        scrollChar = theme.fg("borderMuted", "│");
       }
     } else {
-      scrollChar = theme.fg("border", "│");
+      scrollChar = theme.fg("borderMuted", "│");
     }
 
     visible.push(padAnsiRight(line, width - 1) + scrollChar);
@@ -464,7 +464,9 @@ async function listSessions(
   const sessions = await ctx.ui.custom<SessionInfoLike[] | null>(
     (tui, theme, _kb, done) => {
       const container = new Container();
-      const borderColor = (text: string) => theme.fg("border", text);
+      // Same tone as the split-pane frame and every other OpenPI panel; this
+      // was the last `border` call left in the package.
+      const borderColor = (text: string) => theme.fg("borderMuted", text);
 
       const loader = new CancellableLoader(
         tui,

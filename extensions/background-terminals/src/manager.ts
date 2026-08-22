@@ -12,7 +12,7 @@
  * and issue fire-and-forget kills without touching the Effect runtime.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -29,9 +29,9 @@ import {
   ConcurrencyLimitError,
   formatExit,
   SpawnError,
-  UnknownTerminalError,
   type TerminalSnapshot,
   type TerminalStatus,
+  UnknownTerminalError,
 } from "./domain.ts";
 import { OutputBuffer } from "./output.ts";
 

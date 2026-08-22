@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import uiCustomization, { buildFooterContent } from "./index.ts";
 import {
   GIT_INFO_CHANNEL,
   MODEL_INFO_CHANNEL,
 } from "../shared/dashboard-state.ts";
 import { SETUP_CONFIG_CHANGED_CHANNEL } from "../shared/setup-config.ts";
+import uiCustomization, { buildFooterContent } from "./index.ts";
 
 const identityTheme = {
   fg: (_name: string, text: string) => text,

@@ -12,7 +12,7 @@ import {
   formatExit,
   type TerminalSnapshot,
 } from "./domain.ts";
-import { MAX_RUNNING, type KillResult } from "./manager.ts";
+import { type KillResult, MAX_RUNNING } from "./manager.ts";
 
 /** bg_status stdout tail. */
 export const STATUS_STDOUT_MAX = 16 * 1024;

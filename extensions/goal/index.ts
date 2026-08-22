@@ -12,23 +12,23 @@ import {
 } from "../shared/tool-surface.ts";
 import { GOAL_CONTINUATION_TYPE, GoalController } from "./controller.ts";
 import {
-  GOAL_LIMITS,
   canResumeGoal,
   createGoalSnapshot,
-  isGoalUnfinished,
+  GOAL_LIMITS,
   type GoalInput,
   type GoalSnapshot,
+  isGoalUnfinished,
 } from "./state.ts";
 import {
   formatGoalElapsedSeconds,
   formatTokensCompact,
+  type GoalToolDetails,
   goalContinuationLabel,
   goalFooterText,
   renderGoalTool,
   statusColor,
   statusLabel,
   truncateGoalObjective,
-  type GoalToolDetails,
 } from "./ui.ts";
 
 const GOAL_USAGE = "Usage: /goal [<objective>|clear|edit|pause|resume]";

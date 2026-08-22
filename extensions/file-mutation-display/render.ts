@@ -1,9 +1,9 @@
 import { stripVTControlCharacters } from "node:util";
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
 import {
+  type Component,
   truncateToWidth,
   visibleWidth,
-  type Component,
 } from "@earendil-works/pi-tui";
 
 // Native Write/Edit renderings include their title and context rows. Three

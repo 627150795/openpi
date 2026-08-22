@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripVTControlCharacters } from "node:util";
+import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { SubagentSnapshot } from "./src/domain.ts";
 import {
-  SPINNER_INTERVAL_MS,
-  TranscriptRenderer,
   buildTranscriptLines,
+  SPINNER_INTERVAL_MS,
   sanitizeText,
   spinnerFrame,
   summarizeToolArgs,
+  TranscriptRenderer,
 } from "./src/ui/transcript.ts";
 
 initTheme("dark", false);

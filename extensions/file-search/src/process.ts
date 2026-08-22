@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Writable } from "node:stream";
@@ -8,7 +8,9 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { Data, Effect, FileSystem } from "effect";
-import { COMPLETE_OUTPUT_MAX_BYTES, type CapturedOutput } from "./output.ts";
+import { type CapturedOutput, COMPLETE_OUTPUT_MAX_BYTES } from "./output.ts";
+
+export type { CapturedOutput };
 
 const STDERR_MAX_BYTES = 64 * 1024;
 

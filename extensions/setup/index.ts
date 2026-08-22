@@ -1,19 +1,42 @@
+import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import {
+  applyFooterConfig,
+  CAPABILITY_DISCOVERY_MODES,
+  type CapabilityDiscoveryMode,
+  DETAIL_DISPLAYS,
+  FOOTER_ITEMS,
+  FOOTER_LAYOUT_ITEMS,
+  FOOTER_PRESETS,
+  FOOTER_STYLES,
+  type FooterLayoutItem,
+  type FooterPreset,
+  type FooterStyle,
+  formatSetupConfig,
+  hasSavedSetupConfig,
+  loadSetupConfig,
+  MAX_WORKFLOW_AGENT_CALLS,
+  MAX_WORKFLOW_CONCURRENCY,
+  type MyPiSetupConfig,
+  POST_EDIT_COMMAND_MAX_CHARS,
+  REASONING_LEVELS,
+  SETUP_CONFIG_CHANGED_CHANNEL,
+  updateSetupConfig,
+} from "../shared/setup-config.ts";
+import {
+  OPENPI_SETUP_EPISODE_CHANNEL,
+  type OpenPiSetupEpisodeState,
+} from "../shared/setup-episode-state.ts";
 import {
   SUBAGENT_ROLE_NAMES,
   type SubagentRoleModel,
   type SubagentRoleModels,
 } from "../shared/subagent-roles.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
-import {
-  OPENPI_SETUP_EPISODE_CHANNEL,
-  type OpenPiSetupEpisodeState,
-} from "../shared/setup-episode-state.ts";
 import { patchOwnedTools } from "../shared/tool-surface.ts";
 import {
   formatPiIntercomStatus,
@@ -21,29 +44,6 @@ import {
   installPiIntercom,
   type PiIntercomStatus,
 } from "./intercom.ts";
-import {
-  applyFooterConfig,
-  CAPABILITY_DISCOVERY_MODES,
-  DETAIL_DISPLAYS,
-  FOOTER_ITEMS,
-  FOOTER_LAYOUT_ITEMS,
-  FOOTER_PRESETS,
-  FOOTER_STYLES,
-  formatSetupConfig,
-  hasSavedSetupConfig,
-  loadSetupConfig,
-  updateSetupConfig,
-  MAX_WORKFLOW_AGENT_CALLS,
-  MAX_WORKFLOW_CONCURRENCY,
-  POST_EDIT_COMMAND_MAX_CHARS,
-  REASONING_LEVELS,
-  SETUP_CONFIG_CHANGED_CHANNEL,
-  type FooterLayoutItem,
-  type CapabilityDiscoveryMode,
-  type FooterPreset,
-  type FooterStyle,
-  type MyPiSetupConfig,
-} from "../shared/setup-config.ts";
 
 const subagentRoleModelValueSchema = Type.Union([
   Type.Object(

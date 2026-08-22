@@ -4,15 +4,15 @@ import type {
   KeybindingsManager,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { SubagentSnapshot } from "./src/domain.ts";
 import type { SubagentReadModel } from "./src/manager.ts";
 import {
-  reconcileDashboardSelection,
-  sanitizeSubagentDisplayLine,
-  SubagentDashboard,
-  TakeoverView,
   type DashboardSelection,
+  reconcileDashboardSelection,
+  SubagentDashboard,
+  sanitizeSubagentDisplayLine,
+  TakeoverView,
 } from "./src/ui/takeover.ts";
 
 const theme = {

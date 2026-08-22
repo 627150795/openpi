@@ -13,13 +13,13 @@
  * network. `liveBinaryEnv` is the real implementation.
  */
 
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Crypto, Data, Effect, Encoding, FileSystem, Stream } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";

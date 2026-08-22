@@ -17,8 +17,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
   GIT_INFO_CHANNEL,
-  isGitInfoState,
   type GitInfoState,
+  isGitInfoState,
 } from "../shared/dashboard-state.ts";
 import gitInfo from "./index.ts";
 

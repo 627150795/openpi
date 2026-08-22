@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Cause, Exit, Layer, ManagedRuntime, type Effect } from "effect";
+import { Cause, type Effect, Exit, Layer, ManagedRuntime } from "effect";
 import { CommandRunner, CommandRunnerLive } from "./process.ts";
 
 const AppLayer = CommandRunnerLive.pipe(Layer.provide(NodeServices.layer));

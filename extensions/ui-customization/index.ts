@@ -10,20 +10,20 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import {
-  loadSetupConfig,
-  SETUP_CONFIG_CHANGED_CHANNEL,
-} from "../shared/setup-config.ts";
-import {
   emptyGitInfoState,
   emptyModelInfoState,
   GIT_INFO_CHANNEL,
-  MODEL_INFO_CHANNEL,
-  REFRESH_CHANNEL,
+  type GitInfoState,
   isGitInfoState,
   isModelInfoState,
-  type GitInfoState,
+  MODEL_INFO_CHANNEL,
   type ModelInfoState,
+  REFRESH_CHANNEL,
 } from "../shared/dashboard-state.ts";
+import {
+  loadSetupConfig,
+  SETUP_CONFIG_CHANGED_CHANNEL,
+} from "../shared/setup-config.ts";
 import { formatDirectory, renderFooter } from "./footer.ts";
 
 export { buildFooterContent, formatDirectory, renderFooter } from "./footer.ts";

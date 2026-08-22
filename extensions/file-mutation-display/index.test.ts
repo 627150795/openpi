@@ -6,10 +6,10 @@ import test from "node:test";
 import {
   createAgentSession,
   DefaultResourceLoader,
+  type ExtensionContext,
   initTheme,
   SessionManager,
   SettingsManager,
-  type ExtensionContext,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import fileMutationDisplay from "./index.ts";

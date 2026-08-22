@@ -8,15 +8,15 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type {
+  GitInfoState,
+  ModelInfoState,
+} from "../shared/dashboard-state.ts";
+import type {
   FooterItem,
   FooterLayoutItem,
   FooterLines,
   FooterStyle,
 } from "../shared/setup-config.ts";
-import type {
-  GitInfoState,
-  ModelInfoState,
-} from "../shared/dashboard-state.ts";
 
 // eslint-disable-next-line no-control-regex
 const OSC_PATTERN =

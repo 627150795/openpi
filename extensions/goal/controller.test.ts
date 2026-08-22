@@ -5,11 +5,11 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-  GoalController,
   countAssistantTokens,
+  GoalController,
   lastAssistantStopReason,
 } from "./controller.ts";
-import { GOAL_LIMITS, createGoalSnapshot, transitionGoal } from "./state.ts";
+import { createGoalSnapshot, GOAL_LIMITS, transitionGoal } from "./state.ts";
 
 function harness(options: { sendMessage?: () => void } = {}) {
   const entries: { customType: string; data: unknown }[] = [];

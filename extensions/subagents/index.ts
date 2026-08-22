@@ -46,11 +46,50 @@ import {
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
+  formatActivityStatus,
+  hasActivity,
+  unreadActivityCounts,
+} from "../shared/activity-status.ts";
+import {
+  BelowEditorNavigationEditor,
+  BelowEditorStripState,
+} from "../shared/below-editor-navigation.ts";
+import {
+  effectiveChildToolAllowlist,
+  resolveStandaloneChildProjectTrust,
+} from "../shared/child-session.ts";
+import { formatContextUtilization } from "../shared/context-utilization.ts";
+import {
+  registerEditorLayer,
+  removeEditorLayer,
+} from "../shared/editor-layers.ts";
+import {
+  PLAN_MODE_CHANNEL,
+  type PlanModeState,
+  planModeAllowsDeclaredTools,
+  planModeChildTools,
+} from "../shared/plan-mode-state.ts";
+import { loadSetupConfig } from "../shared/setup-config.ts";
+import {
+  OPENPI_TOOL_SURFACE,
+  patchOwnedTools,
+} from "../shared/tool-surface.ts";
+import {
+  createWorktree,
+  reclaimWorktree,
+  type Worktree,
+} from "../shared/worktree.ts";
+import {
+  normalizeSubagentTitle,
+  SubagentStripWidget,
+  selectSubagentStripEntry,
+} from "./navigation.ts";
+import {
+  type AgentType,
   formatAgentTypeDiagnostics,
   loadAgentTypes,
   roleModelForAgentType,
   selectSubagentModel,
-  type AgentType,
 } from "./src/agent-types.ts";
 import { deriveBtwTitle, isModelVisible } from "./src/by-the-way.ts";
 import {
@@ -60,27 +99,13 @@ import {
   REASONING_EFFORTS,
   type SubagentSnapshot,
 } from "./src/domain.ts";
-import {
-  formatActivityStatus,
-  hasActivity,
-  unreadActivityCounts,
-} from "../shared/activity-status.ts";
-import {
-  OPENPI_TOOL_SURFACE,
-  patchOwnedTools,
-} from "../shared/tool-surface.ts";
-import {
-  registerEditorLayer,
-  removeEditorLayer,
-} from "../shared/editor-layers.ts";
-import { formatContextUtilization } from "../shared/context-utilization.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
   buildSubagentResultMessage,
-  createAgentTypeParameterSchema,
   buildSubagentSendResult,
   buildSubagentSpawnResult,
   buildSubagentSpawnToolDescription,
+  createAgentTypeParameterSchema,
   SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS,
   SUBAGENT_CANCEL_TOOL_DESCRIPTION,
   SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS,
@@ -97,35 +122,10 @@ import {
 } from "./src/prompt.ts";
 import { createSubagentResultDelivery } from "./src/result-delivery.ts";
 import {
-  effectiveChildToolAllowlist,
-  resolveStandaloneChildProjectTrust,
-} from "../shared/child-session.ts";
-import {
-  BelowEditorNavigationEditor,
-  BelowEditorStripState,
-} from "../shared/below-editor-navigation.ts";
-import { loadSetupConfig } from "../shared/setup-config.ts";
-import {
-  PLAN_MODE_CHANNEL,
-  planModeAllowsDeclaredTools,
-  planModeChildTools,
-  type PlanModeState,
-} from "../shared/plan-mode-state.ts";
-import {
-  createWorktree,
-  reclaimWorktree,
-  type Worktree,
-} from "../shared/worktree.ts";
-import {
   createSubagentRuntime,
   runTool,
   type SubagentRuntime,
 } from "./src/runtime.ts";
-import {
-  normalizeSubagentTitle,
-  selectSubagentStripEntry,
-  SubagentStripWidget,
-} from "./navigation.ts";
 import { openSubagentPicker, openSubagentTakeover } from "./src/ui/takeover.ts";
 import {
   buildWaitResultPreview,

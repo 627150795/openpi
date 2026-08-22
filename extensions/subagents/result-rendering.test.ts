@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  initTheme,
   type EntryRenderer,
   type ExtensionAPI,
+  initTheme,
 } from "@earendil-works/pi-coding-agent";
 
 initTheme("dark", false);

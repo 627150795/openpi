@@ -5,14 +5,22 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+  PLAN_MODE_CHANNEL,
+  type PlanModeState,
+} from "../shared/plan-mode-state.ts";
+import {
+  OPENPI_SETUP_EPISODE_CHANNEL,
+  type OpenPiSetupEpisodeState,
+} from "../shared/setup-episode-state.ts";
 import askUser, {
   type AskUserAnswer,
   type AskUserInput,
-  MAX_ANSWER_DRAFT_UTF8_BYTES,
   answerDraftFits,
   formatAnswers,
   formatPreviewLine,
   formatReviewAnswer,
+  MAX_ANSWER_DRAFT_UTF8_BYTES,
 } from "./index.ts";
 import {
   prospectiveAnswerDraftFits,
@@ -22,14 +30,6 @@ import {
   ASK_USER_PROMPT_GUIDELINES,
   buildAskUserResultMessage,
 } from "./prompt.ts";
-import {
-  PLAN_MODE_CHANNEL,
-  type PlanModeState,
-} from "../shared/plan-mode-state.ts";
-import {
-  OPENPI_SETUP_EPISODE_CHANNEL,
-  type OpenPiSetupEpisodeState,
-} from "../shared/setup-episode-state.ts";
 
 test("interaction tools follow overlapping Plan and Setup modes", () => {
   let active = ["read", "third_party_tool"];

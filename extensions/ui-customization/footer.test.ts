@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import type {
+  GitInfoState,
+  ModelInfoState,
+} from "../shared/dashboard-state.ts";
 import {
   DEFAULT_FOOTER_LINES,
   normalizeFooterLines,
@@ -8,15 +12,11 @@ import {
 import {
   buildFooterContent,
   buildSegmentCatalog,
+  type FooterSegment,
   fitSegmentsToWidth,
   renderFooter,
   resolveLineSegments,
-  type FooterSegment,
 } from "./footer.ts";
-import type {
-  GitInfoState,
-  ModelInfoState,
-} from "../shared/dashboard-state.ts";
 
 const theme = {
   fg: (_name: string, text: string) => text,

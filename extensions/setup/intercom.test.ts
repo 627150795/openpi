@@ -4,8 +4,8 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   formatPiIntercomStatus,
   inspectPiIntercom,

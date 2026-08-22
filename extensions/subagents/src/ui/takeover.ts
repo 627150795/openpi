@@ -13,6 +13,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { Input, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { formatContextUtilization } from "../../../shared/context-utilization.ts";
 import {
   hintLine,
   panelFrame,
@@ -20,7 +21,6 @@ import {
 } from "../../../shared/screen-chrome.ts";
 import { sanitizeTerminalText } from "../../../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "../domain.ts";
-import { formatContextUtilization } from "../../../shared/context-utilization.ts";
 import type { SubagentReadModel } from "../manager.ts";
 import {
   buildTranscriptLines,

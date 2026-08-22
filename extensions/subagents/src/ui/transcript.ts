@@ -6,12 +6,12 @@
 
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
+  type DefaultTextStyle,
   Markdown,
+  type MarkdownOptions,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
-  type DefaultTextStyle,
-  type MarkdownOptions,
 } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "../../../shared/terminal-text.ts";
 import type { SubagentSnapshot, TranscriptItem } from "../domain.ts";
@@ -21,6 +21,7 @@ const MAX_CACHED_WIDTHS_PER_ITEM = 2;
 // The spinner lives in shared/ so strips outside this extension animate in
 // step; the re-export keeps this module's historical import surface intact.
 import { spinnerFrame } from "../../../shared/spinner.ts";
+
 export {
   SPINNER_FRAMES,
   SPINNER_INTERVAL_MS,

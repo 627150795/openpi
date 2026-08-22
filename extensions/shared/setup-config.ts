@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, watch, type Stats } from "node:fs";
+import { existsSync, readFileSync, type Stats, watch } from "node:fs";
 import {
   link,
   mkdir,
-  readFile,
   readdir,
+  readFile,
   rename,
   stat,
   unlink,
@@ -965,7 +965,7 @@ export function formatSetupConfig(
   ].join("\n");
 }
 
-export { isFooterItem, isFooterLayoutItem, isFooterStyle, isFooterPreset };
+export { isFooterItem, isFooterLayoutItem, isFooterPreset, isFooterStyle };
 
 /**
  * Read-modify-write against the document as it is on disk right now, so a

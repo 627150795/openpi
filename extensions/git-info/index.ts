@@ -6,19 +6,19 @@ import { Effect, Fiber, Schedule } from "effect";
 import {
   emptyGitInfoState,
   GIT_INFO_CHANNEL,
-  REFRESH_CHANNEL,
   type PullRequestInfo,
+  REFRESH_CHANNEL,
 } from "../shared/dashboard-state.ts";
 import {
   loadChangedFiles,
   showChangedFiles,
 } from "./src/changed-files-view.ts";
-import { runCommand, type CommandRunner } from "./src/process.ts";
+import { type CommandRunner, runCommand } from "./src/process.ts";
 import { makeRefreshCoordinator } from "./src/refresh-coordinator.ts";
 import {
   createRuntime,
-  runEffect,
   type GitInfoRuntime,
+  runEffect,
 } from "./src/runtime.ts";
 
 const POLL_INTERVAL_MS = 5_000;

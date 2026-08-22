@@ -5,18 +5,18 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { SUBAGENT_ROLE_NAMES } from "../shared/subagent-roles.ts";
 import {
   OPENPI_SETUP_EPISODE_CHANNEL,
   type OpenPiSetupEpisodeState,
 } from "../shared/setup-episode-state.ts";
+import { SUBAGENT_ROLE_NAMES } from "../shared/subagent-roles.ts";
 import setupExtension, {
   applySubagentRoleModelUpdates,
   buildInteractiveSetupPrompt,
   buildSetupSuccessText,
   CONFIGURE_MY_PI_SETUP_TOOL_NAME,
-  shouldOfferPiIntercom,
   SUBAGENT_ROLE_MODELS_SCHEMA,
+  shouldOfferPiIntercom,
 } from "./index.ts";
 
 type Handler = (

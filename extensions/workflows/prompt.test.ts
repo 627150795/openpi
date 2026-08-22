@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { type AgentRecord, emptyUsage, type WorkflowDetails } from "./model.ts";
 import {
   buildBackgroundWorkflowFollowUp,
   buildBackgroundWorkflowLaunchResult,
@@ -10,7 +11,6 @@ import {
   WORKFLOW_STOP_TOOL_DESCRIPTION,
   WORKFLOW_TOOL_DESCRIPTION,
 } from "./prompt.ts";
-import { emptyUsage, type AgentRecord, type WorkflowDetails } from "./model.ts";
 
 test("background follow-up uses a sentence lead-in, not the old bracket form", () => {
   const msg = buildBackgroundWorkflowFollowUp({

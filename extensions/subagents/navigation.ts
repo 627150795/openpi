@@ -106,20 +106,28 @@ export class SubagentStripWidget {
     const glyph = this.strip.focused
       ? this.theme.fg("accent", "❯")
       : statusGlyph(snapshot, this.theme, Date.now());
-    const titleText = normalizeSubagentTitle(snapshot.title, snapshot.id);
-    const title = this.strip.focused
-      ? this.theme.bold(this.theme.fg("accent", titleText))
-      : this.theme.fg("text", titleText);
+    // A name only means something when it names the only active subagent; with
+    // several, an aggregate label is honest and the counts carry the detail.
+    const total = counts.running + counts.done + counts.failed;
+    const single = total === 1;
+    const labelText = single
+      ? normalizeSubagentTitle(snapshot.title, snapshot.id)
+      : "subagents";
+    const label = this.strip.focused
+      ? this.theme.bold(this.theme.fg("accent", labelText))
+      : this.theme.fg("text", labelText);
     // The footer already shows the session model; the takeover view keeps the
     // per-subagent model, so the one-line strip stays title-only.
-    const left = ` ${glyph} ${title}`;
+    const left = ` ${glyph} ${label}`;
     // Worded counts read at a glance; the selected run's own state comes
-    // first so the emphasis colour always lands on the matching count.
+    // first so the emphasis colour always lands on the matching count. A lone
+    // subagent needs no count — the glyph and label already say it.
     const donePart = counts.done > 0 ? `${counts.done} done` : undefined;
     const failedPart =
       counts.failed > 0 ? `${counts.failed} failed` : undefined;
-    const activity =
-      counts.running > 0
+    const activity = single
+      ? []
+      : counts.running > 0
         ? [`${counts.running} running`]
         : snapshot.status === "error"
           ? [failedPart, donePart]
@@ -133,7 +141,9 @@ export class SubagentStripWidget {
         percent === undefined ? undefined : `${percent}% ctx`,
       ],
       this.strip.focused ? "enter open · ↑ back" : "↓ to manage",
-      snapshot.status === "running" ? undefined : statusColor(snapshot.status),
+      single || snapshot.status === "running"
+        ? undefined
+        : statusColor(snapshot.status),
     );
     return [fitNavigationSides(left, right, width)];
   }

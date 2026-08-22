@@ -11,7 +11,7 @@ import {
 } from "../shared/activity-status.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "./src/domain.ts";
-import { formatContextUtilization } from "./src/format.ts";
+import { contextPercent } from "./src/format.ts";
 
 export interface SubagentStripEntry {
   snapshot: SubagentSnapshot;
@@ -59,8 +59,11 @@ function statusColor(status: SubagentSnapshot["status"]) {
   return "error" as const;
 }
 
-function statusSquare(snapshot: SubagentSnapshot, theme: Theme) {
-  return theme.fg(statusColor(snapshot.status), "■");
+/** One status glyph per run state; doubles as the focus marker when selected. */
+function statusGlyph(snapshot: SubagentSnapshot, theme: Theme) {
+  if (snapshot.status === "running") return theme.fg("warning", "●");
+  if (snapshot.status === "done") return theme.fg("success", "✓");
+  return theme.fg("error", "x");
 }
 
 /** One-line subagent manager entry with the same affordance as Workflow. */
@@ -95,25 +98,34 @@ export class SubagentStripWidget {
     const entry = this.getEntry();
     if (!entry || width <= 0) return [];
     const { snapshot, counts } = entry;
-    const marker = this.strip.focused
+    const glyph = this.strip.focused
       ? this.theme.fg("accent", "❯")
-      : this.theme.fg("dim", "○");
+      : statusGlyph(snapshot, this.theme);
     const titleText = normalizeSubagentTitle(snapshot.title, snapshot.id);
     const title = this.strip.focused
       ? this.theme.bold(this.theme.fg("accent", titleText))
       : this.theme.fg("text", titleText);
-    const model = snapshot.meta.modelLabel
-      ? cleanLine(snapshot.meta.modelLabel)
-      : undefined;
-    const left = ` ${marker} ${statusSquare(snapshot, this.theme)} ${title}${model ? this.theme.fg("dim", ` · ${model}`) : ""}`;
-    const settled = counts.done + counts.failed;
-    const total = counts.running + settled;
+    // The footer already shows the session model; the takeover view keeps the
+    // per-subagent model, so the one-line strip stays title-only.
+    const left = ` ${glyph} ${title}`;
+    // Worded counts read at a glance; the selected run's own state comes
+    // first so the emphasis colour always lands on the matching count.
+    const donePart = counts.done > 0 ? `${counts.done} done` : undefined;
+    const failedPart =
+      counts.failed > 0 ? `${counts.failed} failed` : undefined;
+    const activity =
+      counts.running > 0
+        ? [`${counts.running} running`]
+        : snapshot.status === "error"
+          ? [failedPart, donePart]
+          : [donePart, failedPart];
+    const percent = contextPercent(snapshot.usage);
     const right = renderNavigationMetrics(
       this.theme,
       [
-        `${settled}/${total} agents`,
+        ...activity,
         formatElapsed(snapshot),
-        formatContextUtilization(snapshot.usage),
+        percent === undefined ? undefined : `${percent}% ctx`,
       ],
       this.strip.focused ? "enter open · ↑ back" : "↓ to manage",
       snapshot.status === "running" ? undefined : statusColor(snapshot.status),

@@ -37,6 +37,19 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
     "fd",
     "rg",
     "subagent_spawn",
+    "subagent_wait",
+    "subagent_cancel",
+    "subagent_send",
+    "subagent_check",
+    "subagent_list",
+    "workflow",
+    "workflow_stop",
+    "workflow_status",
+    "bg_start",
+    "bg_status",
+    "bg_list",
+    "bg_kill",
+    "bg_watch",
   ];
   let active = [...available];
   const tools = new Map<string, CapturedTool>();
@@ -83,6 +96,15 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
     });
     patchOwnedTools(pi, "subagents", {
       enable: OPENPI_TOOL_SURFACE.subagents.entry,
+    });
+    // The real extensions disable their deferred lifecycle tools on
+    // session_start (hideLifecycleTools); replicate that so the harness
+    // matches production wiring and tools only appear via capability loads.
+    patchOwnedTools(pi, "workflows", {
+      disable: OPENPI_TOOL_SURFACE.workflows.deferred,
+    });
+    patchOwnedTools(pi, "background", {
+      disable: OPENPI_TOOL_SURFACE.background.deferred,
     });
   });
   return {
@@ -148,6 +170,15 @@ test("the gateway does not add an ineffective resident adoption guideline", () =
   assert.equal(h.tool().promptGuidelines, undefined);
 });
 
+test("the gateway exposes a provider-portable string enum for capability groups", () => {
+  const parameters = JSON.parse(JSON.stringify(harness().tool().parameters));
+
+  assert.deepEqual(parameters.properties.groups.items, {
+    type: "string",
+    enum: ["search", "delegate", "workflow", "background", "session"],
+  });
+});
+
 test("the gateway stays within its compact provider-surface budget", () => {
   const tool = harness().tool();
   const serialized = JSON.stringify({
@@ -189,6 +220,11 @@ test("an explicit subagent request loads delegation directly", () => {
     "edit",
     "write",
     "subagent_spawn",
+    "subagent_wait",
+    "subagent_cancel",
+    "subagent_send",
+    "subagent_check",
+    "subagent_list",
   ]);
   assert.match(JSON.stringify(results), /skills\/subagents\/SKILL\.md/);
 });
@@ -201,6 +237,38 @@ test("common Chinese and multi-agent delegation requests are explicit intent", (
     h.before(prompt);
 
     assert.ok(h.active().includes("subagent_spawn"), prompt);
+  }
+});
+
+test("the README quick-start example and its advertised phrases load capabilities", () => {
+  // The flagship README example: both clauses must be explicit intent.
+  const example = harness();
+  example.start();
+  example.before(
+    "在后台启动前端 dev server；用子代理并行检查 API 主链路和测试覆盖；\n结果回来后汇总风险，主会话不要原地等待。",
+  );
+  const active = example.active();
+  assert.ok(active.includes("bg_start"), "example loads background terminals");
+  assert.ok(active.includes("subagent_spawn"), "example loads subagents");
+
+  // Every phrase the README TIP advertises as a trigger must actually match.
+  const advertised: Array<[string, string]> = [
+    ["在后台运行 dev server", "bg_start"],
+    ["用子代理检查", "subagent_spawn"],
+    ["使用子代理检查", "subagent_spawn"],
+    ["用工作流编排", "workflow"],
+    ["使用工作流编排", "workflow"],
+    ["用 fd 搜索", "fd"],
+    ["使用 rg 搜索", "rg"],
+  ];
+  for (const [phrase, tool] of advertised) {
+    const h = harness();
+    h.start();
+    h.before(phrase);
+    assert.ok(
+      h.active().includes(tool),
+      `README-advertised phrase ${JSON.stringify(phrase)} should load ${tool}, got: ${h.active().join(",")}`,
+    );
   }
 });
 

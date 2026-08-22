@@ -73,7 +73,7 @@ import {
   registerEditorLayer,
   removeEditorLayer,
 } from "../shared/editor-layers.ts";
-import { formatContextUtilization } from "./src/format.ts";
+import { formatContextUtilization } from "../shared/context-utilization.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
   buildSubagentResultMessage,
@@ -95,8 +95,7 @@ import {
   SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS,
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
-import { createDeferredResultDelivery } from "./src/result-delivery.ts";
-import { resultDeliveryOptions } from "../background-terminals/src/result-delivery.ts";
+import { createSubagentResultDelivery } from "./src/result-delivery.ts";
 import {
   effectiveChildToolAllowlist,
   resolveStandaloneChildProjectTrust,
@@ -210,7 +209,7 @@ export function createSubagentResultDispatcher(
   pi: ExtensionAPI,
   outputFor: (snap: SubagentSnapshot) => string = truncatedOutput,
 ) {
-  return (snaps: readonly SubagentSnapshot[], wake: boolean) => {
+  return (snaps: readonly SubagentSnapshot[]) => {
     if (snaps.length === 0) return;
     const content = snaps
       .map((snap) =>
@@ -249,7 +248,7 @@ export function createSubagentResultDispatcher(
         display: false,
         details,
       },
-      resultDeliveryOptions(wake),
+      { deliverAs: "followUp", triggerTurn: true },
     );
   };
 }
@@ -278,7 +277,7 @@ function renderSubagentResult(
   }
 
   const failed = details.status === "error";
-  const icon = failed ? theme.fg("error", "x") : theme.fg("success", "■");
+  const icon = failed ? theme.fg("error", "x") : theme.fg("success", "✓");
   const header =
     `${icon} ` +
     theme.fg("accent", theme.bold(`subagent ${details.id ?? "?"}`)) +
@@ -322,15 +321,17 @@ export default function (pi: ExtensionAPI) {
   let requestWidgetRender: (() => void) | undefined;
   let navigationLayerRegistered = false;
   let dashboardOpen = false;
-  const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
   const dispatchResults = createSubagentResultDispatcher(pi);
-  const hideLifecycleTools = () =>
+  const resultDelivery = createSubagentResultDelivery<SubagentSnapshot>({
+    isIdle: () => sessionContext?.isIdle() === true,
+    // Every unconsumed fire-and-forget result must reach the parent. The
+    // delivery coordinator batches results that settled while it was busy.
+    deliver: dispatchResults,
+  });
+  pi.on("agent_settled", () => resultDelivery.parentSettled());
+  const registerStableToolFamily = () =>
     patchOwnedTools(pi, "subagents", {
-      disable: OPENPI_TOOL_SURFACE.subagents.deferred,
-    });
-  const showLifecycleTools = () =>
-    patchOwnedTools(pi, "subagents", {
-      enable: OPENPI_TOOL_SURFACE.subagents.deferred,
+      enable: OPENPI_TOOL_SURFACE.subagents.entry,
     });
 
   const getRuntime = () => (runtime ??= createSubagentRuntime());
@@ -387,9 +388,12 @@ export default function (pi: ExtensionAPI) {
       manager.view.list(),
       settledAcknowledgedAt,
     );
+    // In the TUI the below-editor strip already reports the same activity and
+    // carries the manage affordance, so a footer status line would repeat it.
+    const tui = sessionContext?.mode === "tui";
     ui.setStatus(
       "subagents",
-      hasActivity(counts)
+      !tui && hasActivity(counts)
         ? formatActivityStatus(ui.theme, "subagents", counts)
         : undefined,
     );
@@ -434,25 +438,6 @@ export default function (pi: ExtensionAPI) {
         ),
     });
     navigationLayerRegistered = true;
-  };
-
-  /**
-   * `wake` decides whether this costs the model a turn. A subagent that
-   * settled while the model sits idle is the result it is waiting on. A
-   * backlog that piled up while it worked is not: waking once per stale
-   * subagent forces a turn each, and the model can only answer "that one
-   * already finished". `nextTurn` still enters context with the user's next
-   * message, without demanding a reply.
-   */
-  const deliverResults = (
-    snaps: readonly SubagentSnapshot[],
-    wake: boolean,
-  ) => {
-    dispatchResults(snaps, wake);
-  };
-
-  const flushResults = (wake: boolean) => {
-    deliverResults(resultDelivery.drain(), wake);
   };
 
   const deliverBtwResult = (snap: SubagentSnapshot) => {
@@ -500,15 +485,15 @@ export default function (pi: ExtensionAPI) {
     // subagent_wait can consume it before agent_settled flushes follow-ups.
     // Defer a copy: the live snapshot keeps mutating if the subagent is
     // restarted before the deferred result flushes.
+    // The delivery coordinator closes both sides of the wake-up race: it
+    // flushes now if the parent is already idle, otherwise the parent's next
+    // agent_settled edge rechecks this same pending Map.
     resultDelivery.defer({ ...snap, meta: { ...snap.meta } });
-    // Settled while the model sits idle: it has nothing else in flight, so
-    // this is the result it is waiting on — wake it.
-    if (sessionContext?.isIdle()) flushResults(true);
   };
 
   pi.on("session_start", (_event, ctx) => {
     refreshAgentTypes(ctx.cwd, ctx.isProjectTrusted());
-    hideLifecycleTools();
+    registerStableToolFamily();
     sessionContext = ctx;
     settledAcknowledgedAt = 0;
     if (ctx.hasUI) ui = ctx.ui;
@@ -529,10 +514,6 @@ export default function (pi: ExtensionAPI) {
     settledAcknowledgedAt = Date.now();
     managerPromise?.then(updateStatus).catch(() => undefined);
   });
-
-  // These settled while the model was working on something else, so they go
-  // into context without forcing a turn per stale subagent.
-  pi.on("agent_settled", () => flushResults(false));
 
   pi.on("session_shutdown", async () => {
     if (navigationLayerRegistered) {
@@ -786,8 +767,6 @@ export default function (pi: ExtensionAPI) {
         throw error;
       }
 
-      showLifecycleTools();
-
       return {
         content: [
           {
@@ -831,8 +810,10 @@ export default function (pi: ExtensionAPI) {
       const meta = [details.harness, details.model]
         .filter(Boolean)
         .join(" \u00b7 ");
+      // A spawn adds an agent to the pool: a quiet plus, then the strip's
+      // spinner carries the running state from here on.
       return new Text(
-        `${theme.fg("success", "\u25cf")} ${theme.bold(details.title ?? details.id)} ${theme.fg("dim", meta)}`,
+        `${theme.fg("dim", "+")} ${theme.bold(details.title ?? details.id)} ${theme.fg("dim", meta)}`,
         0,
         0,
       );
@@ -1170,11 +1151,12 @@ export default function (pi: ExtensionAPI) {
     (entry, _options, theme) => {
       const data = entry.data;
       const failed = data?.status === "error";
+      const icon = failed ? theme.fg("error", "x") : theme.fg("success", "✓");
       return new Text(
-        `${theme.fg(failed ? "error" : "success", "\u25cf")} ` +
+        `${icon} ${theme.fg("accent", data?.title ?? "?")}` +
           theme.fg(
-            "muted",
-            `Agent "${data?.title ?? "?"}" ${failed ? "failed" : "finished"} \u00b7 ${data?.elapsed ?? "?"}`,
+            "dim",
+            ` ${failed ? "failed" : "finished"} · ${data?.elapsed ?? "?"}`,
           ),
         1,
         0,
@@ -1187,7 +1169,7 @@ export default function (pi: ExtensionAPI) {
     (entry, { expanded }, theme) => {
       const data = entry.data;
       const failed = data?.status === "error";
-      const icon = failed ? theme.fg("error", "x") : theme.fg("success", "■");
+      const icon = failed ? theme.fg("error", "x") : theme.fg("success", "✓");
       const header =
         `${icon} ` +
         theme.fg("accent", theme.bold(`by the way · ${data?.title ?? "?"}`)) +

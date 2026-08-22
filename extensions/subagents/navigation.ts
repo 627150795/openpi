@@ -2,15 +2,17 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import {
   fitNavigationSides,
+  renderNavigationMetrics,
   type BelowEditorStripState,
 } from "../shared/below-editor-navigation.ts";
 import {
   unreadActivityCounts,
   type ActivityCounts,
 } from "../shared/activity-status.ts";
+import { spinnerFrame } from "../shared/spinner.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "./src/domain.ts";
-import { formatContextUtilization } from "./src/format.ts";
+import { contextPercent } from "../shared/context-utilization.ts";
 
 export interface SubagentStripEntry {
   snapshot: SubagentSnapshot;
@@ -58,8 +60,15 @@ function statusColor(status: SubagentSnapshot["status"]) {
   return "error" as const;
 }
 
-function statusSquare(snapshot: SubagentSnapshot, theme: Theme) {
-  return theme.fg(statusColor(snapshot.status), "■");
+/**
+ * One status indicator per run state; doubles as the focus marker when
+ * selected. Running spins, in step with the dashboard and takeover headers.
+ */
+function statusGlyph(snapshot: SubagentSnapshot, theme: Theme, now: number) {
+  if (snapshot.status === "running")
+    return theme.fg("warning", spinnerFrame(now));
+  if (snapshot.status === "done") return theme.fg("success", "✓");
+  return theme.fg("error", "✗");
 }
 
 /** One-line subagent manager entry with the same affordance as Workflow. */
@@ -94,28 +103,48 @@ export class SubagentStripWidget {
     const entry = this.getEntry();
     if (!entry || width <= 0) return [];
     const { snapshot, counts } = entry;
-    const marker = this.strip.focused
+    const glyph = this.strip.focused
       ? this.theme.fg("accent", "❯")
-      : this.theme.fg("dim", "○");
-    const titleText = normalizeSubagentTitle(snapshot.title, snapshot.id);
-    const title = this.strip.focused
-      ? this.theme.bold(this.theme.fg("accent", titleText))
-      : this.theme.fg("text", titleText);
-    const model = snapshot.meta.modelLabel
-      ? cleanLine(snapshot.meta.modelLabel)
-      : undefined;
-    const left = ` ${marker} ${statusSquare(snapshot, this.theme)} ${title}${model ? this.theme.fg("dim", ` · ${model}`) : ""}`;
-    const settled = counts.done + counts.failed;
-    const total = counts.running + settled;
-    const metrics = [
-      `${settled}/${total} agents`,
-      formatElapsed(snapshot),
-      formatContextUtilization(snapshot.usage),
+      : statusGlyph(snapshot, this.theme, Date.now());
+    // A name only means something when it names the only active subagent; with
+    // several, an aggregate label is honest and the counts carry the detail.
+    const total = counts.running + counts.done + counts.failed;
+    const single = total === 1;
+    const labelText = single
+      ? normalizeSubagentTitle(snapshot.title, snapshot.id)
+      : "subagents";
+    const label = this.strip.focused
+      ? this.theme.bold(this.theme.fg("accent", labelText))
+      : this.theme.fg("text", labelText);
+    // The footer already shows the session model; the takeover view keeps the
+    // per-subagent model, so the one-line strip stays title-only.
+    const left = ` ${glyph} ${label}`;
+    // Worded counts read at a glance; the selected run's own state comes
+    // first so the emphasis colour always lands on the matching count. A lone
+    // subagent needs no count — the glyph and label already say it.
+    const donePart = counts.done > 0 ? `${counts.done} done` : undefined;
+    const failedPart =
+      counts.failed > 0 ? `${counts.failed} failed` : undefined;
+    const activity = single
+      ? []
+      : counts.running > 0
+        ? [`${counts.running} running`]
+        : snapshot.status === "error"
+          ? [failedPart, donePart]
+          : [donePart, failedPart];
+    const percent = contextPercent(snapshot.usage);
+    const right = renderNavigationMetrics(
+      this.theme,
+      [
+        ...activity,
+        formatElapsed(snapshot),
+        percent === undefined ? undefined : `${percent}% ctx`,
+      ],
       this.strip.focused ? "enter open · ↑ back" : "↓ to manage",
-    ]
-      .filter((part): part is string => Boolean(part))
-      .join(" · ");
-    const right = this.theme.fg(statusColor(snapshot.status), metrics);
+      single || snapshot.status === "running"
+        ? undefined
+        : statusColor(snapshot.status),
+    );
     return [fitNavigationSides(left, right, width)];
   }
 }

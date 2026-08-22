@@ -69,11 +69,16 @@ pi install npm:@tt-a1i/openpi
 重启 Pi，或在当前 Session 运行 `/reload`。然后直接描述真实任务：
 
 ```text
-启动前端 dev server；并行检查 API 主链路和测试覆盖；
+在后台启动前端 dev server；用子代理并行检查 API 主链路和测试覆盖；
 结果回来后汇总风险，主会话不要原地等待。
 ```
 
 OpenPI 会把长期进程放到后台，把独立任务交给隔离 Context 的 Pi Subagent，把多阶段依赖组织成 Workflow。状态会持续显示；完整运行可从 `/ps`、`/subagents` 和 `/workflows` 检查或终止。
+
+> [!TIP]
+> Capability discovery 默认 `explicit`：明确说出能力意图才会加载对应组。
+> 例如「在后台运行 dev server」→ 后台终端；「用/使用子代理检查」→ Subagent；「用工作流编排」→ Workflow；「用 fd/rg 搜索」→ 搜索工具。
+> 关键是把意图说清楚（说「用子代理」「后台运行」这类带动作的短语），不需要记住任何工具名。
 
 > [!IMPORTANT]
 > 默认安装是安静的：不改主题、不绑定 Provider 或模型、不开启下一步预测，也不执行 post-edit 命令。Capability discovery 默认 `explicit`；只有用户通过 `/openpi-setup` 选择 `adaptive` 后，模型才会常驻看到一个小型发现网关并可自主加载额外能力。
@@ -323,11 +328,13 @@ Next-action Suggestion 是可选的：完整主 Agent Run 结束后，在空编�
 
 ## 终端体验
 
-默认 Powerline Footer 把真实运行状态压进一行：
+默认 Footer 把真实运行状态压进一行，指标自带小图标（无需 Nerd Font):
 
 ```text
-cwd  model  thinking  context  cache  cost  throughput   git  PR
+📁 cwd  ⎇ git  PR                ✦ model  ◔ context
 ```
+
+`📁` 目录、`⎇` 分支、`✦` 模型；context 的圆环随占用率填充（`◔◑◕●`)。`thinking`、`cache`、`cost`、`throughput` 也是可选指标，可通过 `/openpi-setup` 加入自定义布局。
 
 - 支持 `powerline`、`powerline-mono`、`compact`，也支持自定义多行布局；
 - 终端变窄时按优先级隐藏次要指标，不机械截断尾部；
@@ -413,16 +420,68 @@ macOS/Linux arm64 与 x64 缺少二进制时，OpenPI 会从官方 Release 下�
 - npm 安装：`pi install npm:@tt-a1i/openpi`；
 - GitHub 安装：`pi install git:github.com/tt-a1i/openpi`。
 
-开发当前源码：
+#### 开发运行时：区分 npm 与当前源码
+
+npm 制品、GitHub 安装和本地 checkout 是三个不同的运行资产。源码目录更新、测试通过或版本号相同，都不能证明当前 Pi 已经加载这份代码。所有本地开发、Provider 兼容排查、手工 smoke 和 UI 验收都使用下面这一条证据链。
+
+**1. 先固定源码和加载来源**
+
+```bash
+git status --short --branch
+git rev-parse --short HEAD
+pi list
+```
+
+完成标准：知道正在修改哪个 checkout、分支和提交；`pi list` 中只有一个 OpenPI 来源，并能明确它是 npm、GitHub 还是某个本地绝对路径。其他 Pi package（例如 `pi-intercom`）不属于重复 OpenPI 来源。
+
+**2. 开发时让 Pi 直接加载当前 checkout**
 
 ```bash
 git clone https://github.com/tt-a1i/openpi.git ~/work/openpi
 cd ~/work/openpi
 bun install --frozen-lockfile
-pi install ~/work/openpi
+
+# 若 pi list 显示了旧 OpenPI，把变量设为它显示的 package spec 或绝对路径。
+OLD_OPENPI_SOURCE=/absolute/path/to/old/openpi
+pi remove "$OLD_OPENPI_SOURCE"
+pi install "$PWD"
+pi list
 ```
 
-安装或更新后重启 Pi，或运行 `/reload`。Host SDK 与 TypeBox 按 Pi Package 契约声明为 Peer Dependencies；仓库开发依赖不随包重复提供。
+已经安装当前 checkout 时，不需要反复 remove/install。切换分支或修改源码后，运行 `/reload` 或重启 Pi 才会重载扩展。`/reload` 之前的界面和工具集合只证明旧内存状态。
+
+完成标准：`pi list` 唯一的 OpenPI 路径就是当前 checkout，且该路径的 HEAD 与预期提交一致。不要修改 `~/.pi/agent/npm/node_modules/@tt-a1i/openpi` 来冒充源码修复。
+
+**3. 分层验证改动**
+
+```bash
+# 开发环：先运行与改动最接近的测试，并沿用 package.json 的 runner。
+node --test --experimental-strip-types path/to/relevant.test.ts
+bunx vitest run path/to/relevant.spec.ts
+
+# 仓库门禁：提交或交付前两项都要通过。
+bun run check
+bun run test
+```
+
+自动化通过只证明代码、类型和测试合同。涉及运行时或界面时，还要在已 `/reload` 的真实 Pi 中完成对应 smoke：
+
+- 工具或生命周期改动：在普通工具模式实际触发成功、失败和结束路径；
+- Provider 兼容改动：保留正常工具 Schema，不用 `--no-tools` 绕过问题；
+- UI 改动：在真实 TUI 触发目标状态并肉眼检查，必要时保存截图；
+- 配置改动：通过 `/openpi-setup` 写入，再核对无参数状态输出和实际行为。
+
+完成标准：分别记录 checkout HEAD、`pi list` 来源、专项测试、`bun run check`、完整测试和手工 smoke。没有执行的层级写成“未验证”，不能用另一层的绿色结果代替。
+
+**4. 保持工作区可恢复**
+
+- 开始前检查 dirty worktree；保存用户的未提交、未跟踪和 ignored 文件；
+- 本地 Benchmark、日志和原始结果可以通过 `.git/info/exclude` 隐藏，但 ignore 不是备份；
+- 使用 `git clean -nd` 只能预览普通未跟踪文件；不要运行会删除 ignored 资产的 `git clean -fdx`；
+- 稳定运行副本和开发 checkout 只有在确有隔离需求时才并存，并始终用 `pi list` 说明 Pi 加载哪一个；
+- 提交前复查 diff，确保本地配置、密钥、模型结果和评测原始数据没有进入版本控制。
+
+Host SDK 与 TypeBox 按 Pi Package 契约声明为 Peer Dependencies；仓库开发依赖不随包重复提供。
 
 ### 可选：顶层 Pi Session 通信
 
@@ -453,7 +512,7 @@ pi install npm:pi-intercom
 <details>
 <summary><strong>模型工具速查</strong></summary>
 
-Capability discovery 默认是 `explicit`：普通父 Session 不常驻任何 OpenPI 模型工具，首轮保持 Pi 原生 `read`、`bash`、`edit`、`write`。用户明确要求结构化搜索、Subagent、Workflow、后台进程或 Session Goal/Tasks 时，OpenPI 在 `before_agent_start` 直接加载对应能力组；明确询问 OpenPI capabilities/tools/features 时显示 `openpi_load_tools`。可通过 `/openpi-setup` 显式选择 `adaptive`：此时只让小型 `openpi_load_tools` 网关常驻，模型可在判断任务确实受益时自主加载一个能力组。该选择也授权模型启动该组内的昂贵工作，因此不作为默认值。条件句（例如 “If you delegate…”）不会被当成显式委派意图。能力组在当前 Session 内单调保持，避免反复增删工具破坏缓存。组内管理工具仍只在资源成功创建或状态确实存在后出现。Mode / Setup / Context 工具独立跟随实时状态显示和隐藏。Background、Subagent 与 Workflow 的 Skill 文件仍随包发布，但只在对应能力触发后提示读取，不常驻普通系统 Prompt。
+Capability discovery 默认是 `explicit`：普通父 Session 不常驻任何 OpenPI 模型工具，首轮保持 Pi 原生 `read`、`bash`、`edit`、`write`。用户明确要求结构化搜索、Subagent、Workflow、后台进程或 Session Goal/Tasks 时，OpenPI 在 `before_agent_start` 直接加载对应能力组；明确询问 OpenPI capabilities/tools/features 时显示 `openpi_load_tools`。可通过 `/openpi-setup` 显式选择 `adaptive`：此时只让小型 `openpi_load_tools` 网关常驻，模型可在判断任务确实受益时自主加载一个能力组。该选择也授权模型启动该组内的昂贵工作，因此不作为默认值。条件句（例如 “If you delegate…”）不会被当成显式委派意图。能力组在当前 Session 内单调保持，避免反复增删工具破坏缓存。Delegate 一经加载便一次性开放完整、稳定的 Subagent 工具族；资源不存在时由工具执行层明确返回空状态或 fail-closed，而不再按实例生命周期改变模型接口。其他组内管理工具仍只在资源成功创建或状态确实存在后出现。Mode / Setup / Context 工具独立跟随实时状态显示和隐藏。Background、Subagent 与 Workflow 的 Skill 文件仍随包发布，但只在对应能力触发后提示读取，不常驻普通系统 Prompt。
 
 普通产品默认采用 Pi-native execution：保留 Pi 原生完整历史、工具输出上限、Session compaction、显式 Bash timeout 与 provider loop，不再额外做固定事务投影、成功 Bash 二次裁剪、测试 timeout 改写、重复失败硬拦或恢复/轨迹提示。OpenPI 只保留独立的工作区安全边界：阻止未授权删除 pre-existing 路径，并从实际文件状态识别本轮通过原生写入、文字重定向或 literal `mkdir -p` 创建的 scratch，避免误拦其清理。旧执行策略仅保留为受 benchmark root 门控的实验 profile，不会进入普通 Session。
 
@@ -461,7 +520,7 @@ Capability discovery 默认是 `explicit`：普通父 Session 不常驻任何 Op
 | -------------------------------------------------------------------------------------------------------- | ------------------------------ | -------------------------------- |
 | `openpi_load_tools`                                                                                      | 列出或加载可选工具组           | 明确询问；或启用 `adaptive`      |
 | `bg_start`, `bg_status`, `bg_list`, `bg_watch`, `bg_kill`                                                | 后台进程生命周期               | 明确意图或 adaptive；启动后展开  |
-| `subagent_spawn`, `subagent_check`, `subagent_list`, `subagent_wait`, `subagent_send`, `subagent_cancel` | 独立子 Agent                   | 明确意图或 adaptive；创建后展开  |
+| `subagent_spawn`, `subagent_check`, `subagent_list`, `subagent_wait`, `subagent_send`, `subagent_cancel` | 独立子 Agent                   | 明确意图或 adaptive；整组稳定加载 |
 | `workflow`, `workflow_status`, `workflow_stop`                                                           | 动态多阶段编排与运行管理       | 明确意图或 adaptive；运行后展开  |
 | `tasks_add`, `tasks_update`, `tasks_list`                                                                | Session 工作项                 | 明确意图或 adaptive；存在后展开  |
 | `get_goal`, `create_goal`, `update_goal`                                                                 | Session Goal                   | 明确意图或 adaptive；存在后展开  |
@@ -568,4 +627,4 @@ npm 仍用于发布包的 `pack` / clean-install 验证，因为用户通过 npm
 
 `extensions/sessions/` 改编自 [jayshah5696/pi-agent-extensions](https://github.com/jayshah5696/pi-agent-extensions)。可选的顶层 Session 通信由 [pi-intercom](https://github.com/nicobailon/pi-intercom) 提供。完整第三方说明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
-本仓库目前没有项目级开源许可证；`THIRD_PARTY_NOTICES.md` 只记录第三方来源与各自许可，不等同于授予本项目使用许可。
+本项目以 MIT 许可证发布（见 [`LICENSE`](LICENSE)）；`THIRD_PARTY_NOTICES.md` 记录第三方来源与各自许可。

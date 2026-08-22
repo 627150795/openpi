@@ -1,7 +1,7 @@
 /**
  * Takeover UI for subagents (ported from v1, rendering from the synchronous
  * SubagentReadModel instead of live pi sessions):
- * - SubagentDashboard: full popup (overlay) listing all subagents.
+ * - SubagentDashboard: compact picker docked above the input, listing all subagents.
  * - TakeoverView: full interactive view of one subagent with an input line
  *   to steer/continue it.
  */
@@ -13,15 +13,20 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { Input, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  hintLine,
+  panelFrame,
+  type ScreenHint,
+} from "../../../shared/screen-chrome.ts";
 import { sanitizeTerminalText } from "../../../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "../domain.ts";
-import { formatContextUtilization } from "../format.ts";
+import { formatContextUtilization } from "../../../shared/context-utilization.ts";
 import type { SubagentReadModel } from "../manager.ts";
 import {
-  SPINNER_INTERVAL_MS,
-  TranscriptRenderer,
   buildTranscriptLines,
+  SPINNER_INTERVAL_MS,
   spinnerFrame,
+  TranscriptRenderer,
 } from "./transcript.ts";
 
 export function sanitizeSubagentDisplayLine(value: string) {
@@ -44,14 +49,19 @@ function statusGlyph(
   snap: SubagentSnapshot,
   theme: Theme,
   now = Date.now(),
+  selected = false,
 ): string {
+  // A selected row keeps its state glyph and borrows the accent tone, so the
+  // list never hides what is still running behind a selection marker.
+  const tone = (color: "warning" | "success" | "error") =>
+    selected ? ("accent" as const) : color;
   switch (snap.status) {
     case "running":
-      return theme.fg("warning", spinnerFrame(now));
+      return theme.fg(tone("warning"), spinnerFrame(now));
     case "done":
-      return theme.fg("success", "✓");
+      return theme.fg(tone("success"), "✓");
     case "error":
-      return theme.fg("error", "✗");
+      return theme.fg(tone("error"), "✗");
   }
 }
 
@@ -127,7 +137,14 @@ export async function openSubagentPicker(
         new SubagentDashboard(tui, theme, keybindings, view, selection, done),
       {
         overlay: true,
-        overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%" },
+        // Dock the picker just above the editor (editor + strip + footer ≈ 5
+        // rows) like a command palette, instead of covering the conversation.
+        overlayOptions: {
+          anchor: "bottom-center",
+          width: "100%",
+          maxHeight: "60%",
+          margin: { bottom: 5 },
+        },
       },
     );
 
@@ -139,7 +156,10 @@ export async function openSubagentPicker(
   }
 }
 
-// --- Dashboard (fullscreen overlay) ----------------------------------------------
+// --- Dashboard (picker docked above the input) ---------------------------------
+
+/** A picker is a glance, not a workspace: cap the list window and scroll. */
+const MAX_PICKER_ROWS = 10;
 
 export interface DashboardSelection {
   id?: string;
@@ -258,24 +278,6 @@ export class SubagentDashboard implements Component {
     }
   }
 
-  private pad(text: string, width: number): string {
-    const truncated = truncateToWidth(text, width);
-    return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
-  }
-
-  private borderSegment(width: number, title: string): string {
-    const theme = this.theme;
-    const label = title
-      ? ` ${truncateToWidth(title, Math.max(0, width - 3))} `
-      : "";
-    const labelWidth = visibleWidth(label);
-    return (
-      theme.fg("border", "─") +
-      (label ? theme.fg("text", label) : "") +
-      theme.fg("border", "─".repeat(Math.max(0, width - 1 - labelWidth)))
-    );
-  }
-
   render(width: number): string[] {
     const theme = this.theme;
     const subs = this.subs();
@@ -283,13 +285,14 @@ export class SubagentDashboard implements Component {
 
     // One timestamp per frame so every row's spinner shows the same frame.
     const now = Date.now();
+    // Docked above the editor, the panel borrows conversation space: cap the
+    // list window and scroll instead of growing toward the top of the screen.
     const rows = this.tui.terminal.rows || 30;
-    const maxBodyHeight = Math.max(1, rows - 5);
+    const maxBodyHeight = Math.min(Math.max(1, rows - 5), MAX_PICKER_ROWS);
     const bodyHeight =
       subs.length > maxBodyHeight ? maxBodyHeight : Math.max(1, subs.length);
     const innerWidth = Math.max(0, width - 2);
 
-    const lines: string[] = [];
     const running = subs.filter((snap) => snap.status === "running").length;
     const done = subs.filter((snap) => snap.status === "done").length;
     const failed = subs.filter((snap) => snap.status === "error").length;
@@ -301,37 +304,32 @@ export class SubagentDashboard implements Component {
       ]
         .filter(Boolean)
         .join(" · ") || "no agents";
-    lines.push(
-      theme.fg("border", "╭") +
-        this.borderSegment(innerWidth, `Subagents · ${summary}`) +
-        theme.fg("border", "╮"),
-    );
-
-    const divider = theme.fg("border", "│");
     const rowLines = this.renderRows(subs, innerWidth, bodyHeight, now);
-    for (const row of rowLines) {
-      lines.push(divider + this.pad(row, innerWidth) + divider);
-    }
-
-    // Bottom border
-    lines.push(
-      theme.fg("border", "╰") +
-        theme.fg("border", "─".repeat(innerWidth)) +
-        theme.fg("border", "╯"),
-    );
-
-    // Hints
-    lines.push(
-      truncateToWidth(
-        theme.fg(
-          "dim",
-          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.confirm")} take over · x abort · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
-        ),
+    const keys = (binding: Parameters<KeybindingsManager["getKeys"]>[0]) =>
+      configuredKeys(this.keybindings, binding);
+    // Shared chrome, so this panel and its hints read the same as /ps and
+    // /workflows. The frame is padded to the rows it was given, which keeps
+    // this view's content-fit height rather than reintroducing a fixed one.
+    return [
+      // One empty row of air between the conversation and the docked panel.
+      "",
+      ...panelFrame(theme, {
+        label: `Subagents · ${summary}`,
+        rows: rowLines,
+        width,
+        height: rowLines.length + 2,
+      }),
+      hintLine(
+        theme,
+        [
+          [`${keys("tui.select.up")}/${keys("tui.select.down")}/jk`, "select"],
+          [keys("tui.select.confirm"), "take over"],
+          ["x", "abort"],
+          [keys("tui.select.cancel"), "close"],
+        ],
         width,
       ),
-    );
-
-    return lines;
+    ];
   }
 
   private renderRows(
@@ -362,13 +360,15 @@ export class SubagentDashboard implements Component {
       const index = start + i;
       const isSelected = index === this.selection.index;
 
-      const marker = isSelected ? theme.fg("accent", "❯") : " ";
+      // One glyph column: a selected row tints its status glyph with the
+      // accent tone instead of stacking a second marker.
+      const glyph = statusGlyph(snap, theme, now, isSelected);
       const safeTitle = sanitizeSubagentDisplayLine(snap.title) || snap.id;
       const title = isSelected
         ? theme.fg("accent", safeTitle)
         : theme.fg("text", safeTitle);
       const activity = runningActivity(snap);
-      const prefix = ` ${marker} ${statusGlyph(snap, theme, now)} `;
+      const prefix = ` ${glyph} `;
 
       const utilization = formatContextUtilization(snap.usage);
       const metadata = [
@@ -694,13 +694,29 @@ export class TakeoverView implements Component, Focusable {
       ),
     );
     lines.push(...this.input.render(width));
-    const hints = `${configuredKeys(this.keybindings, "tui.input.submit")} send · ${configuredKeys(this.keybindings, "app.interrupt")} back · ${configuredKeys(this.keybindings, "app.clear")} abort run · ${configuredKeys(this.keybindings, "tui.editor.cursorUp")}/${configuredKeys(this.keybindings, "tui.editor.cursorDown")} scroll · ${configuredKeys(this.keybindings, "tui.editor.pageUp")}/${configuredKeys(this.keybindings, "tui.editor.pageDown")} page`;
-    const compactHints = `${configuredKeys(this.keybindings, "tui.input.submit")} send · ${configuredKeys(this.keybindings, "app.interrupt")} back · ${configuredKeys(this.keybindings, "app.clear")} abort run · ${configuredKeys(this.keybindings, "tui.editor.cursorUp")}/${configuredKeys(this.keybindings, "tui.editor.cursorDown")} scroll`;
+    const keys = (binding: Parameters<KeybindingsManager["getKeys"]>[0]) =>
+      configuredKeys(this.keybindings, binding);
+    const editing: ScreenHint[] = [
+      [keys("tui.input.submit"), "send"],
+      [keys("app.interrupt"), "back"],
+      [keys("app.clear"), "abort run"],
+      [
+        `${keys("tui.editor.cursorUp")}/${keys("tui.editor.cursorDown")}`,
+        "scroll",
+      ],
+    ];
+    // Same drop-the-page-hint fallback as before, measured on the styled line
+    // so the keys-brighter-than-labels styling cannot change what fits.
+    const full = hintLine(
+      theme,
+      [
+        ...editing,
+        [`${keys("tui.editor.pageUp")}/${keys("tui.editor.pageDown")}`, "page"],
+      ],
+      width,
+    );
     lines.push(
-      truncateToWidth(
-        theme.fg("dim", visibleWidth(hints) <= width ? hints : compactHints),
-        width,
-      ),
+      visibleWidth(full) <= width ? full : hintLine(theme, editing, width),
     );
     lines.push(this.rule(width, theme.fg("borderAccent", "─")));
     return lines;

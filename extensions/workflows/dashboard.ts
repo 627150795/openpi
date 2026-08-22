@@ -14,51 +14,57 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  getAgentDir,
   type ExtensionContext,
+  getAgentDir,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
   Key,
   matchesKey,
+  type TUI,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
-  type TUI,
 } from "@earendil-works/pi-tui";
-import { isAcceptanceLedger } from "./acceptance.ts";
 import {
-  agentContext,
-  countStates,
-  formatElapsed,
-  formatUsage,
-  aggregateUsage,
-  isWorkflowRunId,
-  MAX_LOG_TEXT,
-  phaseGroups,
-  resultJson,
-  resolveWorkflowRunTarget,
-  sanitizeLine,
-  shortenHome,
-  stateSquare,
-  statusColor,
-  statusWord,
-  SQUARE,
-  type Theme,
-  type AgentRecord,
-  type AgentUsage,
-  type PhaseGroup,
-  type TranscriptEntry,
-  type WorkflowDetails,
-  type WorkflowLogEntry,
-  workflowGraphRecords,
-} from "./model.ts";
+  panelFrame,
+  type ScreenHint,
+  screenTitleLine,
+  hintLine as sharedHintLine,
+} from "../shared/screen-chrome.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
+import { isAcceptanceLedger } from "./acceptance.ts";
 import { projectWorkflowGraph } from "./graph-projection.ts";
 import {
   classifyInterruptedInvocation,
   decodeInvocationRecord,
 } from "./invocation-ledger.ts";
+import {
+  type AgentRecord,
+  type AgentUsage,
+  agentContext,
+  aggregateUsage,
+  countStates,
+  formatElapsed,
+  formatUsage,
+  isWorkflowRunId,
+  MAX_LOG_TEXT,
+  type PhaseGroup,
+  phaseGroups,
+  resolveWorkflowRunTarget,
+  resultJson,
+  SQUARE,
+  sanitizeLine,
+  shortenHome,
+  stateSquare,
+  statusColor,
+  statusWord,
+  type Theme,
+  type TranscriptEntry,
+  type WorkflowDetails,
+  type WorkflowLogEntry,
+  workflowGraphRecords,
+} from "./model.ts";
 import { writeFileAtomic } from "./serialization.ts";
 
 const NOTICE_TTL_MS = 4000;
@@ -78,6 +84,80 @@ export interface RunEntry {
 
 function runsDir(): string {
   return path.join(getAgentDir(), "workflows");
+}
+
+/** Every persisted run id on disk; empty when no runs directory exists. */
+export function listPersistedRunIds(): string[] {
+  try {
+    return fs.readdirSync(runsDir()).filter(isWorkflowRunId);
+  } catch {
+    // No runs yet.
+  }
+  return [];
+}
+
+/** Hydrate the result/transcript side artifacts referenced by workflow.json. */
+function hydrateRunArtifacts(runId: string, details: WorkflowDetails) {
+  const runDir = path.join(runsDir(), runId);
+  if (details.resultArtifact) {
+    try {
+      details.result = JSON.parse(
+        fs.readFileSync(
+          path.join(runDir, path.basename(details.resultArtifact)),
+          "utf8",
+        ),
+      );
+    } catch {
+      // Keep the compact compatibility marker from workflow.json.
+    }
+  }
+  if (details.transcriptArtifact) {
+    try {
+      const transcripts = JSON.parse(
+        fs.readFileSync(
+          path.join(runDir, path.basename(details.transcriptArtifact)),
+          "utf8",
+        ),
+      ) as Record<string, unknown>;
+      for (const agent of details.agents) {
+        agent.transcript = normalizeTranscript(
+          transcripts[String(agent.index)],
+        );
+      }
+    } catch {
+      // Older or partially written artifacts simply lack transcripts.
+    }
+  }
+}
+
+export interface ReadPersistedRunOptions {
+  /** Hydrate result and transcript side artifacts referenced by workflow.json. */
+  hydrateArtifacts?: boolean;
+}
+
+/**
+ * The single read entry for a persisted workflow.json: parse, normalize
+ * (including runs written by older tooling), and optionally hydrate the side
+ * artifacts. Unreadable or invalid runs read as undefined. Stale "running"
+ * reconciliation stays with callers so selection filters can run on the
+ * recorded timestamps first (`recoverStaleWorkflowDetails`).
+ */
+export function readPersistedWorkflowDetails(
+  runId: string,
+  options: ReadPersistedRunOptions = {},
+): WorkflowDetails | undefined {
+  let details: WorkflowDetails | undefined;
+  try {
+    const raw: unknown = JSON.parse(
+      fs.readFileSync(path.join(runsDir(), runId, "workflow.json"), "utf8"),
+    );
+    details = normalizePersistedWorkflowDetails(runId, raw);
+  } catch {
+    return undefined;
+  }
+  if (!details) return undefined;
+  if (options.hydrateArtifacts) hydrateRunArtifacts(runId, details);
+  return details;
 }
 
 function isWorktreeCleanup(
@@ -389,69 +469,26 @@ export function loadRunEntries(
   /** Hide runs untouched by the current request; live runs always show. */
   startedSince = 0,
 ): RunEntry[] {
-  let names: string[] = [];
-  try {
-    names = fs.readdirSync(runsDir()).filter(isWorkflowRunId);
-  } catch {
-    // No runs yet.
-  }
   const entries: RunEntry[] = [];
-  for (const runId of names) {
+  for (const runId of listPersistedRunIds()) {
     const live = active.get(runId);
     if (live) {
       entries.push({ runId, details: live, live: true });
       continue;
     }
-    try {
-      const raw = JSON.parse(
-        fs.readFileSync(path.join(runsDir(), runId, "workflow.json"), "utf8"),
-      );
-      const details = normalizePersistedWorkflowDetails(runId, raw);
-      const touchedAt = Math.max(
-        details?.startedAt ?? 0,
-        details?.finishedAt ?? 0,
-      );
-      if (
-        details &&
-        touchedAt >= startedSince &&
-        (details.sessionId === sessionId || referencedRunIds.has(runId))
-      ) {
-        const runDir = path.join(runsDir(), runId);
-        if (details.resultArtifact) {
-          try {
-            details.result = JSON.parse(
-              fs.readFileSync(
-                path.join(runDir, path.basename(details.resultArtifact)),
-                "utf8",
-              ),
-            );
-          } catch {
-            // Keep the compact compatibility marker from workflow.json.
-          }
-        }
-        if (details.transcriptArtifact) {
-          try {
-            const transcripts = JSON.parse(
-              fs.readFileSync(
-                path.join(runDir, path.basename(details.transcriptArtifact)),
-                "utf8",
-              ),
-            ) as Record<string, unknown>;
-            for (const agent of details.agents) {
-              agent.transcript = normalizeTranscript(
-                transcripts[String(agent.index)],
-              );
-            }
-          } catch {
-            // Older or partially written artifacts simply lack transcripts.
-          }
-        }
-        recoverStaleWorkflowDetails(details);
-        entries.push({ runId, details, live: false });
-      }
-    } catch {
-      // Skip unreadable runs.
+    const details = readPersistedWorkflowDetails(runId, {
+      hydrateArtifacts: true,
+    });
+    if (!details) continue;
+    const touchedAt = Math.max(details.startedAt, details.finishedAt ?? 0);
+    if (
+      touchedAt < startedSince ||
+      (details.sessionId !== sessionId && !referencedRunIds.has(runId))
+    ) {
+      continue;
     }
+    recoverStaleWorkflowDetails(details);
+    entries.push({ runId, details, live: false });
   }
   return entries.sort((a, b) => b.details.startedAt - a.details.startedAt);
 }
@@ -887,23 +924,7 @@ export class WorkflowDashboard {
     width: number,
     height: number,
   ): string[] {
-    const theme = this.theme;
-    const inner = Math.max(0, width - 2);
-    const border = (s: string) => theme.fg("borderMuted", s);
-    const titleText = truncateToWidth(` ${title} `, Math.max(0, inner - 2));
-    const dashes = Math.max(0, inner - visibleWidth(titleText) - 1);
-    const lines: string[] = [
-      border("╭─") + titleText + border("─".repeat(dashes) + "╮"),
-    ];
-    const bodyHeight = Math.max(0, height - 2);
-    for (let i = 0; i < bodyHeight; i++) {
-      const row = rows[i] ?? "";
-      const clipped = truncateToWidth(row, inner, "…");
-      const pad = Math.max(0, inner - visibleWidth(clipped));
-      lines.push(border("│") + clipped + " ".repeat(pad) + border("│"));
-    }
-    lines.push(border("╰" + "─".repeat(inner) + "╯"));
-    return lines;
+    return panelFrame(this.theme, { label: title, rows, width, height });
   }
 
   /** Scroll window keeping `selected` visible. */
@@ -924,25 +945,21 @@ export class WorkflowDashboard {
     return this.keybindings.getKeys(binding).join("/") || "unbound";
   }
 
-  private hintLine(hint: string, width: number): string {
-    const theme = this.theme;
-    if (this.notice)
-      return truncateToWidth(theme.fg("accent", ` ${this.notice}`), width);
-    return truncateToWidth(theme.fg("dim", ` ${hint}`), width);
+  private hintLine(hints: readonly ScreenHint[], width: number): string {
+    return sharedHintLine(this.theme, hints, width, this.notice);
   }
 
   private renderList(width: number, height: number): string[] {
     const theme = this.theme;
     const lines: string[] = [];
-    const header = this.split(
-      " " + theme.bold(theme.fg("accent", "Workflows")),
-      theme.fg(
-        "dim",
-        `${this.entries.length} run${this.entries.length === 1 ? "" : "s"} `,
+    lines.push(
+      screenTitleLine(
+        theme,
+        "Workflows",
+        `${this.entries.length} run${this.entries.length === 1 ? "" : "s"}`,
+        width,
       ),
-      width,
     );
-    lines.push(header);
 
     const panelHeight = height - 2;
     const bodyHeight = Math.max(0, panelHeight - 2);
@@ -957,7 +974,7 @@ export class WorkflowDashboard {
         ),
       );
       lines.push(
-        this.hintLine(`${this.keys("tui.select.cancel")} close`, width),
+        this.hintLine([[this.keys("tui.select.cancel"), "close"]], width),
       );
       return lines;
     }
@@ -991,7 +1008,15 @@ export class WorkflowDashboard {
     lines.push(...this.panel("Runs", rows, width, panelHeight));
     lines.push(
       this.hintLine(
-        `${this.keys("tui.select.up")}/${this.keys("tui.select.down")} select · ${this.keys("tui.select.confirm")} open · x stop · ${this.keys("tui.select.cancel")} close`,
+        [
+          [
+            `${this.keys("tui.select.up")}/${this.keys("tui.select.down")}`,
+            "select",
+          ],
+          [this.keys("tui.select.confirm"), "open"],
+          ["x", "stop"],
+          [this.keys("tui.select.cancel"), "close"],
+        ],
         width,
       ),
     );
@@ -1170,11 +1195,32 @@ export class WorkflowDashboard {
       );
     }
 
-    const hint =
+    const hints: ScreenHint[] =
       this.detailFocus === "phases"
-        ? `j/k select phase · l/${this.keys("tui.editor.cursorRight")}/${this.keys("tui.select.confirm")} agents · ${this.keys("tui.select.cancel")} back · x stop · s save report`
-        : `j/k select agent · h/${this.keys("tui.editor.cursorLeft")}/${this.keys("tui.select.cancel")} phases · l/${this.keys("tui.editor.cursorRight")}/${this.keys("tui.select.confirm")} details · x stop · s save report`;
-    lines.push(this.hintLine(hint, width));
+        ? [
+            ["j/k", "select phase"],
+            [
+              `l/${this.keys("tui.editor.cursorRight")}/${this.keys("tui.select.confirm")}`,
+              "agents",
+            ],
+            [this.keys("tui.select.cancel"), "back"],
+            ["x", "stop"],
+            ["s", "save report"],
+          ]
+        : [
+            ["j/k", "select agent"],
+            [
+              `h/${this.keys("tui.editor.cursorLeft")}/${this.keys("tui.select.cancel")}`,
+              "phases",
+            ],
+            [
+              `l/${this.keys("tui.editor.cursorRight")}/${this.keys("tui.select.confirm")}`,
+              "details",
+            ],
+            ["x", "stop"],
+            ["s", "save report"],
+          ];
+    lines.push(this.hintLine(hints, width));
     return lines;
   }
 
@@ -1261,7 +1307,12 @@ export class WorkflowDashboard {
     lines.push(...this.panel(position, visible, width, panelHeight));
     lines.push(
       this.hintLine(
-        "j/k scroll · ctrl-u/d page · g/G top/bottom · h/left/esc back",
+        [
+          ["j/k", "scroll"],
+          ["ctrl-u/d", "page"],
+          ["g/G", "top/bottom"],
+          ["h/left/esc", "back"],
+        ],
         width,
       ),
     );

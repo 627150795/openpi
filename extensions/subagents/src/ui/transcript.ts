@@ -18,28 +18,14 @@ import type { SubagentSnapshot, TranscriptItem } from "../domain.ts";
 
 const MAX_CACHED_WIDTHS_PER_ITEM = 2;
 
-export const SPINNER_FRAMES = [
-  "⠋",
-  "⠙",
-  "⠹",
-  "⠸",
-  "⠼",
-  "⠴",
-  "⠦",
-  "⠧",
-  "⠇",
-  "⠏",
-] as const;
-
-/** Frame cadence, shared with the dashboard and takeover headers. */
-export const SPINNER_INTERVAL_MS = 120;
-
-export function spinnerFrame(now: number) {
-  const frame = Math.floor(now / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length;
-  return SPINNER_FRAMES[
-    (frame + SPINNER_FRAMES.length) % SPINNER_FRAMES.length
-  ];
-}
+// The spinner lives in shared/ so strips outside this extension animate in
+// step; the re-export keeps this module's historical import surface intact.
+import { spinnerFrame } from "../../../shared/spinner.ts";
+export {
+  SPINNER_FRAMES,
+  SPINNER_INTERVAL_MS,
+  spinnerFrame,
+} from "../../../shared/spinner.ts";
 
 /**
  * Strip raw ANSI codes, expand tabs, and drop control chars. Terminal-expanded
@@ -79,7 +65,11 @@ function parsedArgs(preview: string) {
 }
 
 /** Turn common tool arguments into a useful, bounded summary without retaining raw args. */
-export function summarizeToolArgs(name: string, argsPreview?: string) {
+export function summarizeToolArgs(
+  name: string,
+  argsPreview?: string,
+  cwd?: string,
+) {
   if (!argsPreview) return undefined;
 
   const fallback = compactPreview(argsPreview);
@@ -88,18 +78,31 @@ export function summarizeToolArgs(name: string, argsPreview?: string) {
   const args = parsedArgs(fallback);
   if (!args) return fallback;
 
+  const path = (field: string) => {
+    const value = stringField(args, field);
+    return value ? relativeToCwd(value, cwd) : undefined;
+  };
+
   const tool = name.toLowerCase();
   if (tool === "bash") return stringField(args, "command") ?? fallback;
   if (tool === "read" || tool === "write" || tool === "edit") {
-    return stringField(args, "path") ?? fallback;
+    return path("path") ?? fallback;
   }
   if (tool === "rg" || tool === "fd") {
     const pattern = stringField(args, "pattern");
-    const path = stringField(args, "path");
-    if (pattern && path) return `${pattern} · ${path}`;
-    return pattern ?? path ?? fallback;
+    const searchPath = path("path");
+    if (pattern && searchPath) return `${pattern} · ${searchPath}`;
+    return pattern ?? searchPath ?? fallback;
   }
   return fallback;
+}
+
+/** Absolute paths inside the child's own checkout read as noise; relativize. */
+function relativeToCwd(path: string, cwd?: string) {
+  if (!cwd) return path;
+  if (path === cwd) return ".";
+  const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
 }
 
 function transcriptMarkdownTheme() {
@@ -169,14 +172,18 @@ function renderThinking(theme: Theme, text: string, width: number) {
   return out;
 }
 
-function renderToolBody(theme: Theme, name: string, argsPreview?: string) {
+function renderToolBody(
+  theme: Theme,
+  name: string,
+  argsPreview?: string,
+  cwd?: string,
+) {
   const toolName = sanitizeText(name);
-  const preview = summarizeToolArgs(toolName, argsPreview);
+  const preview = summarizeToolArgs(toolName, argsPreview, cwd);
   // The `$` form only earns its prompt when there is a command to show; a bare
   // `$ ` would read as an empty shell line.
   if (toolName === "bash" && preview) return theme.fg("dim", `$ ${preview}`);
   return (
-    theme.fg("dim", "→ ") +
     theme.fg("toolTitle", toolName) +
     (preview ? theme.fg("dim", ` ${preview}`) : "")
   );
@@ -210,7 +217,7 @@ function phaseGlyph(theme: Theme, phase: ToolPhase, now: number) {
   }
 }
 
-/** Command line: `<glyph> $ cmd` for bash, `<glyph> → name args` otherwise. */
+/** Command line: `<glyph> $ cmd` for bash, `<glyph> name args` otherwise. */
 function renderToolLine(
   theme: Theme,
   phase: ToolPhase,
@@ -218,9 +225,10 @@ function renderToolLine(
   argsPreview: string | undefined,
   width: number,
   now: number,
+  cwd?: string,
 ) {
   return truncateToWidth(
-    `${phaseGlyph(theme, phase, now)} ${renderToolBody(theme, name, argsPreview)}`,
+    `${phaseGlyph(theme, phase, now)} ${renderToolBody(theme, name, argsPreview, cwd)}`,
     width,
   );
 }
@@ -231,10 +239,14 @@ function renderOutputLine(
   isError: boolean,
   outputPreview: string,
   width: number,
+  cwd?: string,
 ) {
-  const preview = outputPreview || "(no output)";
+  // Tool output echoes the absolute search path back (fd/rg print what they
+  // were given); inside the child's own checkout the relative form is enough.
+  const text = cwd ? outputPreview.split(`${cwd}/`).join("") : outputPreview;
+  const preview = text || "(no output)";
   const content = isError
-    ? theme.fg(outputPreview ? "error" : "dim", preview)
+    ? theme.fg(text ? "error" : "dim", preview)
     : theme.fg("dim", preview);
   return truncateToWidth(`    ${content}`, width);
 }
@@ -245,6 +257,7 @@ function renderAssistantItem(
   width: number,
   phases: ReadonlyMap<string, ToolPhase>,
   now: number,
+  cwd?: string,
 ) {
   const out: string[] = [];
   for (const part of item.parts) {
@@ -265,7 +278,15 @@ function renderAssistantItem(
       // command twice and make the block reflow when the tool settles.
       if (phase === "live") continue;
       out.push(
-        renderToolLine(theme, phase, part.name, part.argsPreview, width, now),
+        renderToolLine(
+          theme,
+          phase,
+          part.name,
+          part.argsPreview,
+          width,
+          now,
+          cwd,
+        ),
       );
     }
   }
@@ -278,6 +299,7 @@ function renderToolResultItem(
   width: number,
   paired: boolean,
   now: number,
+  cwd?: string,
 ) {
   const preview = firstOutputPreview(item.outputPreview);
   // An orphan result (its call is not the previous item) still needs a glyph:
@@ -293,11 +315,11 @@ function renderToolResultItem(
         now,
       ),
       ...(preview
-        ? [renderOutputLine(theme, item.isError, preview, width)]
+        ? [renderOutputLine(theme, item.isError, preview, width, cwd)]
         : []),
     ];
   }
-  return [renderOutputLine(theme, item.isError, preview, width)];
+  return [renderOutputLine(theme, item.isError, preview, width, cwd)];
 }
 
 function isPairedToolResult(
@@ -321,12 +343,13 @@ function renderTranscriptItem(
   width: number,
   context: ItemContext,
   now: number,
+  cwd?: string,
 ) {
   if (item.kind === "user") return renderUserText(theme, item.text, width);
   if (item.kind === "assistant") {
-    return renderAssistantItem(theme, item, width, context.phases, now);
+    return renderAssistantItem(theme, item, width, context.phases, now, cwd);
   }
-  return renderToolResultItem(theme, item, width, context.paired, now);
+  return renderToolResultItem(theme, item, width, context.paired, now, cwd);
 }
 
 interface ItemContext {
@@ -413,7 +436,8 @@ export class TranscriptRenderer {
       const key = `${width}|${context.token}`;
       const cached = this.itemCache.get(item)?.get(key);
       const lines =
-        cached ?? renderTranscriptItem(theme, item, width, context, now);
+        cached ??
+        renderTranscriptItem(theme, item, width, context, now, snap.cwd);
       if (!cached) {
         const widths = this.itemCache.get(item) ?? new Map<string, string[]>();
         if (widths.size >= MAX_CACHED_WIDTHS_PER_ITEM) {
@@ -456,11 +480,21 @@ export class TranscriptRenderer {
           : "ok"
         : "live";
       out.push(
-        renderToolLine(theme, phase, tool.name, tool.argsPreview, width, now),
+        renderToolLine(
+          theme,
+          phase,
+          tool.name,
+          tool.argsPreview,
+          width,
+          now,
+          snap.cwd,
+        ),
       );
       const preview = firstOutputPreview(tool.outputPreview);
       if (preview)
-        out.push(renderOutputLine(theme, !!tool.isError, preview, width));
+        out.push(
+          renderOutputLine(theme, !!tool.isError, preview, width, snap.cwd),
+        );
     }
 
     // Queued steering/follow-up messages: show them immediately so Enter

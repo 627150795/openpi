@@ -60,7 +60,7 @@ const fixtures: Array<{
     name: "read",
     icon: "\ueaa4",
     definition: createReadToolDefinition(cwd),
-    args: { path: "src/long-file.ts", offset: 10, limit: 20 },
+    args: { path: `${cwd}/src/long-file.ts`, offset: 10, limit: 20 },
     result: {
       content: [{ type: "text", text: "one\ntwo" }],
       details: undefined,
@@ -147,12 +147,12 @@ const fixtures: Array<{
     name: "ls",
     icon: "\uea83",
     definition: createLsToolDefinition(cwd),
-    args: { path: "extensions" },
+    args: { path: cwd },
     result: {
       content: [{ type: "text", text: "a/\nb/\nfile.ts" }],
       details: undefined,
     },
-    success: /Listed\s+extensions\s+3 entries/,
+    success: /Listed\s+\.\s+3 entries/,
   },
 ];
 
@@ -200,7 +200,9 @@ test("all activity tools render one semantic success row", () => {
     const definition = withActivityRenderer(fixture.definition);
     const lines = renderCollapsed(definition, fixture.args, fixture.result);
     assert.equal(lines.length, 1, fixture.name);
-    assert.equal(lines[0]?.at(0), fixture.icon, fixture.name);
+    assert.equal(lines[0]?.at(2), fixture.icon, fixture.name);
+    assert.ok(lines[0]?.startsWith("  "), fixture.name);
+    assert.ok(lines[0]?.endsWith("  "), fixture.name);
     assert.match(lines[0] ?? "", fixture.success, fixture.name);
   }
 });
@@ -234,7 +236,8 @@ test("all activity tools render pending and failure as one explicit row", () => 
     const definition = withActivityRenderer(fixture.definition);
     const pending = renderCollapsed(definition, fixture.args);
     assert.equal(pending.length, 1, `${fixture.name} pending`);
-    assert.match(pending[0] ?? "", /^◌ /, `${fixture.name} pending`);
+    assert.match(pending[0] ?? "", /^ {2}◌ /, `${fixture.name} pending`);
+    assert.ok(pending[0]?.endsWith("  "), `${fixture.name} pending`);
 
     const failed = renderCollapsed(
       definition,
@@ -251,7 +254,8 @@ test("all activity tools render pending and failure as one explicit row", () => 
       true,
     );
     assert.equal(failed.length, 1, `${fixture.name} failed`);
-    assert.match(failed[0] ?? "", /^✕ Failed\s+/, `${fixture.name} failed`);
+    assert.match(failed[0] ?? "", /^ {2}✕ Failed\s+/, `${fixture.name} failed`);
+    assert.ok(failed[0]?.endsWith("  "), `${fixture.name} failed`);
     assert.match(failed[0] ?? "", /Permission denied/, fixture.name);
   }
 });
@@ -270,7 +274,8 @@ test("long activity rows stay one line and fit narrow terminals", () => {
   );
   assert.equal(lines.length, 1);
   assert.ok(visibleWidth(lines[0]!) <= 24);
-  assert.match(lines[0] ?? "", /^◌ Running\s+bun/);
+  assert.match(lines[0] ?? "", /^ {2}◌ Running\s+bun/);
+  assert.ok(lines[0]?.endsWith("  "));
 });
 
 test("expanded mode delegates call and result to Pi native renderers", () => {

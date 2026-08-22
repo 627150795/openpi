@@ -1,3 +1,4 @@
+import { isAbsolute, relative } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type {
   AgentToolResult,
@@ -26,6 +27,8 @@ type ActivityRow = {
   target: string;
   detail?: string;
 };
+
+const HORIZONTAL_PADDING = "  ";
 
 const emptyComponent: Component = {
   render: () => [],
@@ -105,13 +108,21 @@ function range(args: Record<string, unknown>) {
   return limit === undefined ? `:${start}-` : `:${start}-${start + limit - 1}`;
 }
 
+function displayPath(path: string, cwd: string) {
+  if (!isAbsolute(path)) return path;
+  const local = relative(cwd, path);
+  if (local === "") return ".";
+  return local.startsWith("..") || isAbsolute(local) ? path : local;
+}
+
 function activityRow(
   name: string,
   argsValue: unknown,
   result: AgentToolResult<unknown> | undefined,
+  cwd: string,
 ): ActivityRow {
   const args = record(argsValue);
-  const path = string(args.path) || ".";
+  const path = displayPath(string(args.path) || ".", cwd);
   switch (name) {
     case "read":
       return { verb: "Read", target: `${path}${range(args)}` };
@@ -227,8 +238,9 @@ function activityText(
   args: unknown,
   state: NonNullable<ActivityRenderState<unknown>["openpiActivity"]>,
   theme: Theme,
+  cwd: string,
 ) {
-  const row = activityRow(name, args, state.result);
+  const row = activityRow(name, args, state.result, cwd);
   const elapsed = duration(state);
   if (state.status === "pending") {
     const detail = elapsed ? ` · ${elapsed}` : "";
@@ -240,7 +252,7 @@ function activityText(
     return `${theme.fg("error", "✕")} ${theme.fg("error", "Failed")}   ${row.target}${detail ? theme.fg("dim", ` · ${detail}`) : ""}`;
   }
   const detail = [row.detail, elapsed].filter(Boolean).join(" · ");
-  return `${theme.fg("success", activityIcon(name))} ${theme.fg("toolTitle", row.verb.padEnd(8))} ${row.target}${detail ? theme.fg("dim", `  ${detail}`) : ""}`;
+  return `${theme.fg("dim", activityIcon(name))} ${theme.fg("toolTitle", row.verb.padEnd(8))} ${row.target}${detail ? theme.fg("dim", `  ${detail}`) : ""}`;
 }
 
 function activityComponent(
@@ -248,12 +260,18 @@ function activityComponent(
   args: unknown,
   state: NonNullable<ActivityRenderState<unknown>["openpiActivity"]>,
   theme: Theme,
+  cwd: string,
 ): Component {
   return {
     render(width) {
-      if (width <= 0) return [];
+      const contentWidth = width - HORIZONTAL_PADDING.length * 2;
+      if (contentWidth <= 0) return [];
       return [
-        truncateToWidth(activityText(name, args, state, theme), width, "…"),
+        `${HORIZONTAL_PADDING}${truncateToWidth(
+          activityText(name, args, state, theme, cwd),
+          contentWidth,
+          "…",
+        )}${HORIZONTAL_PADDING}`,
       ];
     },
     invalidate() {},
@@ -308,6 +326,7 @@ export function withActivityRenderer<TParams extends TSchema, TDetails, TState>(
         args,
         activity as NonNullable<ActivityRenderState<unknown>["openpiActivity"]>,
         theme,
+        context.cwd,
       );
     },
     renderResult(result, options, theme, context) {

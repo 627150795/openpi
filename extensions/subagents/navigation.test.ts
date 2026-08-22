@@ -36,6 +36,11 @@ function snapshot(
   };
 }
 
+const markingTheme = {
+  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+  bold: (text: string) => text,
+} as unknown as Theme;
+
 const theme = {
   fg: (_color: string, text: string) => text,
   bold: (text: string) => text,
@@ -106,4 +111,43 @@ test("subagent strip matches Workflow's bounded one-line affordance", () => {
   } finally {
     widget.dispose();
   }
+});
+
+test("the metrics tail stays quiet while a run is healthy", () => {
+  const strip = new BelowEditorStripState();
+  const render = (status: SubagentSnapshot["status"]) => {
+    const entry = selectSubagentStripEntry(
+      [
+        snapshot(
+          "sa-1",
+          status,
+          Date.now() - 2_000,
+          status === "running" ? undefined : Date.now(),
+        ),
+      ],
+      0,
+    );
+    const widget = new SubagentStripWidget(
+      { requestRender() {} } as unknown as TUI,
+      markingTheme,
+      strip,
+      () => entry,
+    );
+    try {
+      return widget.render(400)[0]!;
+    } finally {
+      widget.dispose();
+    }
+  };
+
+  // A routine run borrows no status colour in its tail: the coloured square on
+  // the left already carries the state, and hints recede furthest of all.
+  const running = render("running");
+  assert.match(running, /<muted>0\/1 agents<\/muted>/);
+  assert.match(running, /<dim>↓ to manage<\/dim>/);
+  assert.doesNotMatch(running, /<warning>0\/1 agents/);
+
+  // Once settled, the one count that carries the outcome takes the colour.
+  assert.match(render("error"), /<error>1\/1 agents<\/error>/);
+  assert.match(render("done"), /<success>1\/1 agents<\/success>/);
 });

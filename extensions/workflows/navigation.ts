@@ -4,6 +4,7 @@ import {
   BelowEditorStripState,
   belowEditorStripInput,
   fitNavigationSides,
+  renderNavigationMetrics,
 } from "../shared/below-editor-navigation.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import {
@@ -79,15 +80,16 @@ export class WorkflowStripWidget {
     const rawContext = details.currentPhase ?? details.description;
     const context = rawContext ? cleanLine(rawContext) : undefined;
     const left = ` ${marker} ${statusSquare(details.status, this.theme)} ${name}${context ? this.theme.fg("dim", ` · ${context}`) : ""}`;
-    const metrics = [
-      `${settled}/${details.agents.length} agents`,
-      formatElapsed(details.startedAt, details.finishedAt),
-      tokenCount > 0 ? `${formatTokens(tokenCount)} tokens` : undefined,
+    const right = renderNavigationMetrics(
+      this.theme,
+      [
+        `${settled}/${details.agents.length} agents`,
+        formatElapsed(details.startedAt, details.finishedAt),
+        tokenCount > 0 ? `${formatTokens(tokenCount)} tokens` : undefined,
+      ],
       this.strip.focused ? "enter open · ↑ back" : "↓ to manage",
-    ]
-      .filter((part): part is string => Boolean(part))
-      .join(" · ");
-    const right = this.theme.fg(statusColor(details.status), metrics);
+      details.status === "running" ? undefined : statusColor(details.status),
+    );
     return [fitNavigationSides(left, right, width)];
   }
 }

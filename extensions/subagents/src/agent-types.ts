@@ -101,7 +101,7 @@ export interface AgentType {
   readonly source: string;
 }
 
-const READ_ONLY_TOOLS = [
+export const READ_ONLY_AGENT_TOOLS = [
   "read",
   "grep",
   "find",
@@ -123,7 +123,7 @@ export const BUILT_IN_AGENT_TYPES: readonly AgentType[] = [
     name: "explorer",
     description:
       "Read-only codebase exploration. Use high for routine, local, direct tracing; xhigh for interacting state transitions, concurrency or trust boundaries, or subtle multi-path lifecycle/control-flow; max only for exceptionally difficult broad unfamiliar architecture with unresolved competing flows.",
-    tools: READ_ONLY_TOOLS,
+    tools: READ_ONLY_AGENT_TOOLS,
     reasoningEffort: "high",
     body: "Explore the codebase read-only. Trace the real flow, inspect related callers, and report concise evidence with file paths and line references.",
     source: "built-in:explorer",
@@ -152,7 +152,7 @@ export const BUILT_IN_AGENT_TYPES: readonly AgentType[] = [
   {
     name: "reviewer",
     description: "Read-only review for correctness, safety, and regressions.",
-    tools: READ_ONLY_TOOLS,
+    tools: READ_ONLY_AGENT_TOOLS,
     reasoningEffort: "medium",
     body: "Review the requested code or change read-only. Identify concrete correctness, security, and regression risks with evidence; do not modify files.",
     source: "built-in:reviewer",
@@ -160,7 +160,7 @@ export const BUILT_IN_AGENT_TYPES: readonly AgentType[] = [
   {
     name: "advisor",
     description: "Deep read-only analysis and technical advice.",
-    tools: READ_ONLY_TOOLS,
+    tools: READ_ONLY_AGENT_TOOLS,
     reasoningEffort: "xhigh",
     body: "Analyze the problem deeply without modifying files. Explain the relevant tradeoffs, risks, and recommended next step using repository evidence.",
     source: "built-in:advisor",

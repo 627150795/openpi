@@ -50,6 +50,38 @@ test("byte truncation keeps head and tail and points to the exact artifact", () 
   assert.match(result.text, /\d+ total lines/);
 });
 
+test("the complete projection stays within its byte budget", () => {
+  const content = `BEGIN\n${"middle-data\n".repeat(400)}FINAL-VERDICT`;
+  const result = projectResult(content, {
+    maxBytes: 512,
+    maxLines: 100,
+    writeArtifact: () => "/tmp/final.txt",
+  });
+
+  assert.equal(result.truncated, true);
+  assert.ok(Buffer.byteLength(result.text, "utf8") <= 512);
+  assert.match(result.text, /^BEGIN/);
+  assert.match(result.text, /FINAL-VERDICT/);
+  assert.match(result.text, /Full final answer:/);
+});
+
+test("projection budgets remain hard caps across UTF-8 sizes", () => {
+  const content = `开头\n${"中间证据-abcdef\n".repeat(1000)}最终结论`;
+  for (const maxBytes of [512, 768, 1024, 2048, 16 * 1024]) {
+    const result = projectResult(content, {
+      maxBytes,
+      maxLines: 600,
+      writeArtifact: () => "/tmp/final.txt",
+    });
+    assert.ok(
+      Buffer.byteLength(result.text, "utf8") <= maxBytes,
+      `projection exceeded ${maxBytes} bytes`,
+    );
+    assert.match(result.text, /^开头/);
+    assert.match(result.text, /最终结论/);
+  }
+});
+
 test("line truncation keeps both ends even below the byte ceiling", () => {
   const content = Array.from({ length: 20 }, (_, i) => `line-${i}`).join("\n");
   const result = projectResult(content, {

@@ -92,22 +92,8 @@ export function projectResult(
   });
   if (!probe.truncated) return { text: content, truncated: false };
 
-  const headBytes = Math.max(1, Math.floor(options.maxBytes * HEAD_SHARE));
-  const tailBytes = Math.max(1, options.maxBytes - headBytes);
   const headLines = Math.max(1, Math.floor(options.maxLines * HEAD_SHARE));
   const tailLines = Math.max(1, options.maxLines - headLines);
-  const headResult = truncateHead(content, {
-    maxBytes: headBytes,
-    maxLines: headLines,
-  });
-  const tailResult = truncateTail(content, {
-    maxBytes: tailBytes,
-    maxLines: tailLines,
-  });
-  const head = headResult.content || sliceStartToUtf8Bytes(content, headBytes);
-  const tail = tailResult.content;
-  const shownBytes =
-    Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
 
   let artifactPath: string | undefined;
   try {
@@ -117,15 +103,39 @@ export function projectResult(
     // below stays explicit so a failed write never advertises a false path.
   }
 
-  const recovery = artifactPath
-    ? `Full final answer: ${JSON.stringify(artifactPath)}\nUse Pi's read tool with path=${JSON.stringify(artifactPath)}, offset=${Math.max(1, headResult.outputLines + 1)}, limit=200 to inspect the omitted middle; adjust offset to continue.`
-    : "Full final answer could not be saved; only the head and tail above are available.";
-  const footer =
-    `[Output truncated: showing ${formatSize(shownBytes)} of ${formatSize(probe.totalBytes)} ` +
-    `across the head and tail (${probe.totalLines} total lines).\n${recovery}]`;
+  let bodyBudget = options.maxBytes;
+  let text = "";
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const headBytes = Math.max(1, Math.floor(bodyBudget * HEAD_SHARE));
+    const tailBytes = Math.max(1, bodyBudget - headBytes);
+    const headResult = truncateHead(content, {
+      maxBytes: headBytes,
+      maxLines: headLines,
+    });
+    const tailResult = truncateTail(content, {
+      maxBytes: tailBytes,
+      maxLines: tailLines,
+    });
+    const head =
+      headResult.content || sliceStartToUtf8Bytes(content, headBytes);
+    const tail = tailResult.content;
+    const shownBytes =
+      Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
+    const recovery = artifactPath
+      ? `Full final answer: ${JSON.stringify(artifactPath)}\nUse Pi's read tool with path=${JSON.stringify(artifactPath)}, offset=${Math.max(1, headResult.outputLines + 1)}, limit=200 to inspect the omitted middle; adjust offset to continue.`
+      : "Full final answer could not be saved; only the head and tail above are available.";
+    const footer =
+      `[Output truncated: showing ${formatSize(shownBytes)} of ${formatSize(probe.totalBytes)} ` +
+      `across the head and tail (${probe.totalLines} total lines).\n${recovery}]`;
+    text = `${head}\n\n[... middle omitted ...]\n\n${tail}\n\n${footer}`;
+
+    const overflow = Buffer.byteLength(text, "utf8") - options.maxBytes;
+    if (overflow <= 0 || bodyBudget <= overflow + 2) break;
+    bodyBudget -= overflow;
+  }
 
   return {
-    text: `${head}\n\n[... middle omitted ...]\n\n${tail}\n\n${footer}`,
+    text,
     truncated: true,
     ...(artifactPath ? { artifactPath } : {}),
   };

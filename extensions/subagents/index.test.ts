@@ -13,6 +13,7 @@ import subagents, {
   createSubagentResultDispatcher,
   truncatedOutput,
 } from "./index.ts";
+import { projectResult } from "./src/result-artifact.ts";
 
 const emptySessionManager = { getBranch: () => [] };
 
@@ -114,6 +115,94 @@ test("automatic result projection keeps both ends and persists the exact final a
   assert.match(text, /^BEGIN/);
   assert.match(text, /FINAL-VERDICT/);
   assert.match(text, /Full final answer: "\/tmp\/subagent-final\.txt"/);
+});
+
+test("automatic result delivery shrinks a batch against authoritative parent headroom", () => {
+  const budgets: number[] = [];
+  const pi = {
+    appendEntry() {},
+    sendMessage() {},
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(
+    pi,
+    (_snap, maxBytes) => {
+      budgets.push(maxBytes);
+      return "projected";
+    },
+    () => ({ tokens: 98_000, contextWindow: 100_000 }),
+  );
+  const snapshot = (id: string) => ({
+    id,
+    origin: "model" as const,
+    backend: "pi" as const,
+    title: id,
+    prompt: "inspect",
+    cwd: process.cwd(),
+    status: "done" as const,
+    createdAt: 0,
+    settledAt: 1_000,
+    meta: { backend: "pi" as const },
+    usage: {},
+    transcript: [],
+    liveTools: [],
+    queued: [],
+    finalText: "x".repeat(40 * 1024),
+    turns: 1,
+  });
+
+  dispatch([snapshot("sa-1"), snapshot("sa-2")]);
+
+  assert.deepEqual(budgets, [2048, 2048]);
+});
+
+test("automatic result wrappers and projections stay inside the shared batch cap", () => {
+  let delivered = "";
+  const pi = {
+    appendEntry(_customType: string, data: { content: string }) {
+      delivered = data.content;
+    },
+    sendMessage() {},
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(
+    pi,
+    (snap, maxBytes) =>
+      projectResult(snap.finalText, {
+        maxBytes,
+        maxLines: 600,
+        writeArtifact: () => `/tmp/${snap.id}.txt`,
+      }).text,
+  );
+  const snapshot = (id: string) => ({
+    id,
+    origin: "model" as const,
+    backend: "pi" as const,
+    title: `long report ${id}`,
+    prompt: "inspect",
+    cwd: process.cwd(),
+    status: "done" as const,
+    createdAt: 0,
+    settledAt: 1_000,
+    meta: { backend: "pi" as const },
+    usage: {},
+    transcript: [],
+    liveTools: [],
+    queued: [],
+    finalText: `BEGIN-${id}\n${"evidence\n".repeat(10_000)}END-${id}`,
+    turns: 1,
+  });
+
+  dispatch([
+    snapshot("sa-1"),
+    snapshot("sa-2"),
+    snapshot("sa-3"),
+    snapshot("sa-4"),
+  ]);
+
+  assert.ok(Buffer.byteLength(delivered, "utf8") <= 48 * 1024);
+  for (const id of ["sa-1", "sa-2", "sa-3", "sa-4"]) {
+    assert.match(delivered, new RegExp(`BEGIN-${id}`));
+    assert.match(delivered, new RegExp(`END-${id}`));
+  }
 });
 
 test("the visible subagent result entry renders the completed report", () => {

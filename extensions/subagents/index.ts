@@ -121,6 +121,10 @@ import {
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
 import { persistResultArtifact, projectResult } from "./src/result-artifact.ts";
+import {
+  allocateResultBudgets,
+  type ParentContextUsage,
+} from "./src/result-budget.ts";
 import { createSubagentResultDelivery } from "./src/result-delivery.ts";
 import {
   createSubagentRuntime,
@@ -135,8 +139,13 @@ import {
 } from "./src/ui/wait-result.ts";
 
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
+const AUTOMATIC_OUTPUT_MAX_BYTES = 48 * 1024;
+const AUTOMATIC_MIN_RESULT_BYTES = 2 * 1024;
 const WAIT_OUTPUT_MAX_BYTES = 48 * 1024;
 const WAIT_PER_AGENT_MAX_BYTES = 16 * 1024;
+const WAIT_MIN_RESULT_BYTES = 512;
+const RESULT_HEADROOM_SHARE = 0.5;
+const ESTIMATED_BYTES_PER_TOKEN = 4;
 
 interface SpawnResultDetails {
   readonly id?: string;
@@ -206,18 +215,55 @@ export function truncatedOutput(
 
 export function createSubagentResultDispatcher(
   pi: ExtensionAPI,
-  outputFor: (snap: SubagentSnapshot) => string = truncatedOutput,
+  outputFor: (
+    snap: SubagentSnapshot,
+    maxBytes: number,
+  ) => string = truncatedOutput,
+  getContextUsage: () => ParentContextUsage | undefined = () => undefined,
 ) {
   return (snaps: readonly SubagentSnapshot[]) => {
     if (snaps.length === 0) return;
+    const emptyMessages = snaps.map((snap) =>
+      buildSubagentResultMessage({
+        id: snap.id,
+        title: snap.title,
+        status: snap.status,
+        errorText: snap.errorText,
+        output: "",
+      }),
+    );
+    const wrapperBytes =
+      emptyMessages.reduce(
+        (sum, message) => sum + Buffer.byteLength(message, "utf8"),
+        0,
+      ) +
+      Math.max(0, snaps.length - 1) * 2;
+    const projectionBatchBytes = Math.max(
+      AUTOMATIC_MIN_RESULT_BYTES * snaps.length,
+      AUTOMATIC_OUTPUT_MAX_BYTES - wrapperBytes,
+    );
+    const allocation = allocateResultBudgets(
+      snaps.map((snap) =>
+        Buffer.byteLength(snap.finalText || "(no output)", "utf8"),
+      ),
+      getContextUsage(),
+      {
+        maxBatchBytes: projectionBatchBytes,
+        maxResultBytes: SUBAGENT_OUTPUT_MAX_BYTES,
+        minResultBytes: AUTOMATIC_MIN_RESULT_BYTES,
+        headroomShare: RESULT_HEADROOM_SHARE,
+        estimatedBytesPerToken: ESTIMATED_BYTES_PER_TOKEN,
+        fixedBytes: wrapperBytes,
+      },
+    );
     const content = snaps
-      .map((snap) =>
+      .map((snap, index) =>
         buildSubagentResultMessage({
           id: snap.id,
           title: snap.title,
           status: snap.status,
           errorText: snap.errorText,
-          output: outputFor(snap),
+          output: outputFor(snap, allocation.budgets[index]!),
         }),
       )
       .join("\n\n");
@@ -324,7 +370,11 @@ export default function (pi: ExtensionAPI) {
   let requestWidgetRender: (() => void) | undefined;
   let navigationLayerRegistered = false;
   let dashboardOpen = false;
-  const dispatchResults = createSubagentResultDispatcher(pi);
+  const dispatchResults = createSubagentResultDispatcher(
+    pi,
+    truncatedOutput,
+    () => sessionContext?.getContextUsage(),
+  );
   const resultDelivery = createSubagentResultDelivery<SubagentSnapshot>({
     isIdle: () => sessionContext?.isIdle() === true,
     // Every unconsumed fire-and-forget result must reach the parent. The
@@ -813,7 +863,7 @@ export default function (pi: ExtensionAPI) {
         description: SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS.ids,
       }),
     }),
-    async execute(_toolCallId, params, signal, onUpdate) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const manager = await getManager();
       const ids = [...new Set(params.ids)];
       if (ids.length === 0)
@@ -849,33 +899,66 @@ export default function (pi: ExtensionAPI) {
       // deferred automatic delivery now that the tool is returning the result.
       resultDelivery.consume(ids);
 
-      const sections: string[] = [];
-      let remainingBytes = WAIT_OUTPUT_MAX_BYTES;
-      for (const id of ids) {
+      const entries: Array<
+        | { readonly id: string; readonly section: string }
+        | {
+            readonly id: string;
+            readonly snap: SubagentSnapshot;
+            readonly header: string;
+          }
+      > = ids.map((id) => {
         const snap = manager.view.get(id);
-        if (!snap) {
-          sections.push(`## ${id}\n\n(no longer tracked)`);
-          continue;
-        }
+        if (!snap) return { id, section: `## ${id}\n\n(no longer tracked)` };
         const verb = snap.status === "error" ? "failed" : "finished";
-        let section = `## ${snap.id} "${snap.title}" ${verb}`;
-        if (snap.errorText) section += `\nError: ${snap.errorText}`;
-        const headerBytes = Buffer.byteLength(section, "utf8") + 2;
-        const outputBudget = Math.max(
-          512,
-          Math.min(WAIT_PER_AGENT_MAX_BYTES, remainingBytes - headerBytes),
+        let header = `## ${snap.id} "${snap.title}" ${verb}`;
+        if (snap.errorText) header += `\nError: ${snap.errorText}`;
+        return { id, snap, header };
+      });
+      const separatorsBytes = Math.max(0, entries.length - 1) * 7;
+      const fixedBytes =
+        separatorsBytes +
+        entries.reduce(
+          (sum, entry) =>
+            sum +
+            Buffer.byteLength(
+              "section" in entry ? entry.section : `${entry.header}\n\n`,
+              "utf8",
+            ),
+          0,
         );
-        section += `\n\n${truncatedOutput(snap, outputBudget)}`;
-        const sectionBytes = Buffer.byteLength(section, "utf8");
-        if (sectionBytes > remainingBytes) {
-          sections.push(
-            `## ${snap.id} "${snap.title}"\n\n[omitted: total wait output limit reached]`,
-          );
-          break;
-        }
-        sections.push(section);
-        remainingBytes -= sectionBytes;
-      }
+      const resultEntries = entries.filter(
+        (
+          entry,
+        ): entry is {
+          readonly id: string;
+          readonly snap: SubagentSnapshot;
+          readonly header: string;
+        } => "snap" in entry,
+      );
+      const projectionBatchBytes = Math.max(
+        WAIT_MIN_RESULT_BYTES * resultEntries.length,
+        WAIT_OUTPUT_MAX_BYTES - fixedBytes,
+      );
+      const allocation = allocateResultBudgets(
+        resultEntries.map(({ snap }) =>
+          Buffer.byteLength(snap.finalText || "(no output)", "utf8"),
+        ),
+        ctx.getContextUsage(),
+        {
+          maxBatchBytes: projectionBatchBytes,
+          maxResultBytes: WAIT_PER_AGENT_MAX_BYTES,
+          minResultBytes: WAIT_MIN_RESULT_BYTES,
+          headroomShare: RESULT_HEADROOM_SHARE,
+          estimatedBytesPerToken: ESTIMATED_BYTES_PER_TOKEN,
+          fixedBytes,
+        },
+      );
+      let resultIndex = 0;
+      const sections = entries.map((entry) => {
+        if ("section" in entry) return entry.section;
+        const outputBudget = allocation.budgets[resultIndex++]!;
+        return `${entry.header}\n\n${truncatedOutput(entry.snap, outputBudget)}`;
+      });
 
       const combined = sections.join("\n\n---\n\n");
       const bounded = truncateHead(combined, {

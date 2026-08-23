@@ -6,7 +6,7 @@ import {
   fitNavigationSides,
   renderNavigationMetrics,
 } from "../shared/below-editor-navigation.ts";
-import { spinnerFrame } from "../shared/spinner.ts";
+import { SPINNER_INTERVAL_MS, spinnerFrame } from "../shared/spinner.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import {
   aggregateUsage,
@@ -63,7 +63,10 @@ export class WorkflowStripWidget {
     this.theme = theme;
     this.strip = strip;
     this.getEntry = getEntry;
-    this.timer = setInterval(() => this.tui.requestRender(), 500);
+    this.timer = setInterval(
+      () => this.tui.requestRender(),
+      SPINNER_INTERVAL_MS,
+    );
     this.timer.unref?.();
   }
 
@@ -94,7 +97,9 @@ export class WorkflowStripWidget {
     const right = renderNavigationMetrics(
       this.theme,
       [
-        `${settled}/${details.agents.length} agents`,
+        details.agents.length > 0
+          ? `${settled}/${details.agents.length} agents`
+          : undefined,
         formatElapsed(details.startedAt, details.finishedAt),
         tokenCount > 0 ? `${formatTokens(tokenCount)} tokens` : undefined,
       ],

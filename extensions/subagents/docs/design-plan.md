@@ -81,8 +81,10 @@ the parent conversation.
   { deliverAs: "followUp", triggerTurn: true })`; a separate session entry renders the
   report at its actual completion point.
   Content is built by `buildSubagentResultMessage` (`Subagent sa-N "title"
-  finished/failed.` + optional `Error:` line + output truncated to 24KB/600 lines with a
-  pointer to the child session file for the full transcript).
+  finished/failed.` + optional `Error:` line + output bounded to 24KB/600 lines.
+  Oversized results retain roughly 75% head + 25% tail and point to an exact,
+  content-addressed final-answer artifact below the Pi agent cache; the parent
+  can page it with Pi's native `read` instead of parsing the child session JSONL).
 
 ### 1.4 UI (carried over into v2 essentially as-is)
 
@@ -144,7 +146,9 @@ Common denominator all three can supply:
   token usage, errors;
 - a way to send a follow-up/steering user message into a live session;
 - an interrupt operation;
-- a final result text per run;
+- a final result text per run; oversized parent projections preserve both the
+  head and tail, while the exact final text remains available as a plain-text
+  artifact for native `read` pagination;
 - metadata: backend name, model identifier, session/log file path (pi session file,
   Claude session id + projects dir JSONL, Codex rollout path), working dir.
 

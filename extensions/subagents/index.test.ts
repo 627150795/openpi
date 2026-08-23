@@ -9,7 +9,10 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { PLAN_MODE_CHANNEL } from "../shared/plan-mode-state.ts";
-import subagents, { createSubagentResultDispatcher } from "./index.ts";
+import subagents, {
+  createSubagentResultDispatcher,
+  truncatedOutput,
+} from "./index.ts";
 
 const emptySessionManager = { getBranch: () => [] };
 
@@ -76,6 +79,41 @@ test("subagent results render before the hidden wake-up message", () => {
       options: { deliverAs: "followUp", triggerTurn: true },
     },
   ]);
+});
+
+test("automatic result projection keeps both ends and persists the exact final answer", () => {
+  const finalText = `BEGIN\n${"evidence\n".repeat(100)}FINAL-VERDICT`;
+  let persisted = "";
+  const text = truncatedOutput(
+    {
+      id: "sa-3",
+      origin: "model",
+      backend: "pi",
+      title: "inspect",
+      prompt: "inspect",
+      cwd: process.cwd(),
+      status: "done",
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" },
+      usage: {},
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText,
+      turns: 1,
+    },
+    120,
+    (content) => {
+      persisted = content;
+      return "/tmp/subagent-final.txt";
+    },
+  );
+
+  assert.equal(persisted, finalText);
+  assert.match(text, /^BEGIN/);
+  assert.match(text, /FINAL-VERDICT/);
+  assert.match(text, /Full final answer: "\/tmp\/subagent-final\.txt"/);
 });
 
 test("the visible subagent result entry renders the completed report", () => {

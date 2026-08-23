@@ -36,7 +36,6 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   defineTool,
-  formatSize,
   getAgentDir,
   getMarkdownTheme,
   keyHint,
@@ -45,11 +44,50 @@ import {
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
+  formatActivityStatus,
+  hasActivity,
+  unreadActivityCounts,
+} from "../shared/activity-status.ts";
+import {
+  BelowEditorNavigationEditor,
+  BelowEditorStripState,
+} from "../shared/below-editor-navigation.ts";
+import {
+  effectiveChildToolAllowlist,
+  resolveStandaloneChildProjectTrust,
+} from "../shared/child-session.ts";
+import { formatContextUtilization } from "../shared/context-utilization.ts";
+import {
+  registerEditorLayer,
+  removeEditorLayer,
+} from "../shared/editor-layers.ts";
+import {
+  PLAN_MODE_CHANNEL,
+  type PlanModeState,
+  planModeAllowsDeclaredTools,
+  planModeChildTools,
+} from "../shared/plan-mode-state.ts";
+import { loadSetupConfig } from "../shared/setup-config.ts";
+import {
+  OPENPI_TOOL_SURFACE,
+  patchOwnedTools,
+} from "../shared/tool-surface.ts";
+import {
+  createWorktree,
+  reclaimWorktree,
+  type Worktree,
+} from "../shared/worktree.ts";
+import {
+  normalizeSubagentTitle,
+  SubagentStripWidget,
+  selectSubagentStripEntry,
+} from "./navigation.ts";
+import {
+  type AgentType,
   formatAgentTypeDiagnostics,
   loadAgentTypes,
   roleModelForAgentType,
   selectSubagentModel,
-  type AgentType,
 } from "./src/agent-types.ts";
 import { deriveBtwTitle, isModelVisible } from "./src/by-the-way.ts";
 import {
@@ -59,19 +97,11 @@ import {
   type SubagentSnapshot,
 } from "./src/domain.ts";
 import {
-  formatActivityStatus,
-  hasActivity,
-  unreadActivityCounts,
-} from "../shared/activity-status.ts";
-import {
-  OPENPI_TOOL_SURFACE,
-  patchOwnedTools,
-} from "../shared/tool-surface.ts";
-import {
-  registerEditorLayer,
-  removeEditorLayer,
-} from "../shared/editor-layers.ts";
-import { formatContextUtilization } from "../shared/context-utilization.ts";
+  restoreSubagentIdCounters,
+  SUBAGENT_ID_WATERMARK_ENTRY_TYPE,
+  type SubagentIdCounters,
+  subagentIdWatermark,
+} from "./src/id-sequence.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
   buildSubagentResultMessage,
@@ -90,43 +120,13 @@ import {
   SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS,
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
+import { persistResultArtifact, projectResult } from "./src/result-artifact.ts";
 import { createSubagentResultDelivery } from "./src/result-delivery.ts";
-import {
-  effectiveChildToolAllowlist,
-  resolveStandaloneChildProjectTrust,
-} from "../shared/child-session.ts";
-import {
-  BelowEditorNavigationEditor,
-  BelowEditorStripState,
-} from "../shared/below-editor-navigation.ts";
-import { loadSetupConfig } from "../shared/setup-config.ts";
-import {
-  PLAN_MODE_CHANNEL,
-  planModeAllowsDeclaredTools,
-  planModeChildTools,
-  type PlanModeState,
-} from "../shared/plan-mode-state.ts";
-import {
-  createWorktree,
-  reclaimWorktree,
-  type Worktree,
-} from "../shared/worktree.ts";
 import {
   createSubagentRuntime,
   runTool,
   type SubagentRuntime,
 } from "./src/runtime.ts";
-import {
-  restoreSubagentIdCounters,
-  SUBAGENT_ID_WATERMARK_ENTRY_TYPE,
-  subagentIdWatermark,
-  type SubagentIdCounters,
-} from "./src/id-sequence.ts";
-import {
-  normalizeSubagentTitle,
-  selectSubagentStripEntry,
-  SubagentStripWidget,
-} from "./navigation.ts";
 import { openSubagentPicker, openSubagentTakeover } from "./src/ui/takeover.ts";
 import {
   buildWaitResultPreview,
@@ -190,20 +190,18 @@ function describeSubagent(snap: SubagentSnapshot) {
   return `${snap.id} [${snap.status}] "${snap.title}" (${details.join(", ")})`;
 }
 
-function truncatedOutput(
+export function truncatedOutput(
   snap: SubagentSnapshot,
   maxBytes = SUBAGENT_OUTPUT_MAX_BYTES,
+  writeArtifact: (content: string) => string = (content) =>
+    persistResultArtifact(getAgentDir(), content),
 ): string {
   const output = snap.finalText || "(no output)";
-  const truncation = truncateHead(output, {
+  return projectResult(output, {
     maxBytes: Math.min(maxBytes, DEFAULT_MAX_BYTES),
     maxLines: Math.min(600, DEFAULT_MAX_LINES),
-  });
-  let text = truncation.content;
-  if (truncation.truncated) {
-    text += `\n\n[Output truncated: ${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)} shown. Full transcript in session file: ${snap.meta.sessionFilePath ?? "?"}]`;
-  }
-  return text;
+    writeArtifact,
+  }).text;
 }
 
 export function createSubagentResultDispatcher(

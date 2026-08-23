@@ -73,13 +73,46 @@ test("the generated agent_type schema exposes a compact, enforced role index", (
     ...BUILT_IN_AGENT_TYPES,
     parentOnlyType,
   ]);
-  assert.match(description, /explorer.*default reasoning_effort: high/);
-  assert.match(description, /reviewer.*default reasoning_effort: medium/);
-  assert.match(description, /advisor.*default reasoning_effort: xhigh/);
+  assert.match(description, /explorer.*moderate reasoning/);
+  assert.match(description, /implementer.*medium-high reasoning/);
+  assert.match(description, /reviewer.*high reasoning/);
+  assert.match(description, /advisor.*high reasoning/);
+  assert.doesNotMatch(description, /default reasoning_effort/);
   assert.match(description, /parent-only.*read-only/);
   assert.doesNotMatch(description, /only: read/);
   assert.doesNotMatch(description, /subagent_spawn/);
   assert.doesNotMatch(description, /precedence/i);
+});
+
+test("reasoning guidance prioritizes the user and task difficulty without fixing a built-in level", () => {
+  assert.match(
+    SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
+    /user's requested level/i,
+  );
+  assert.match(
+    SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
+    /task difficulty/i,
+  );
+  assert.match(
+    SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
+    /supported by the resolved child model/i,
+  );
+});
+
+test("an explicit user-selected reasoning level remains available", () => {
+  const schema =
+    createSubagentSpawnToolSurface(BUILT_IN_AGENT_TYPES).parameters;
+  const task = {
+    agent_type: "reviewer",
+    prompt: "Review the change.",
+    name: "review",
+  };
+
+  assert.equal(Value.Check(schema, { ...task, reasoning_effort: "max" }), true);
+  assert.equal(
+    Value.Check(schema, { ...task, reasoning_effort: "unsupported" }),
+    false,
+  );
 });
 
 test("the default spawn surface stays within its resident budget", () => {

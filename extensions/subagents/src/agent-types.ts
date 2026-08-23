@@ -122,15 +122,15 @@ export const BUILT_IN_AGENT_TYPES: readonly AgentType[] = [
   {
     name: "explorer",
     description:
-      "Read-only codebase exploration. Use high for routine, local, direct tracing; xhigh for interacting state transitions, concurrency or trust boundaries, or subtle multi-path lifecycle/control-flow; max only for exceptionally difficult broad unfamiliar architecture with unresolved competing flows.",
+      "Read-only codebase exploration. Usually use moderate reasoning, increasing it for harder tasks.",
     tools: READ_ONLY_AGENT_TOOLS,
-    reasoningEffort: "high",
     body: "Explore the codebase read-only. Trace the real flow, inspect related callers, and report concise evidence with file paths and line references.",
     source: "built-in:explorer",
   },
   {
     name: "implementer",
-    description: "Focused implementation with repository checks.",
+    description:
+      "Focused implementation with repository checks. Usually use medium-high reasoning, adjusted for scope, risk, and task difficulty.",
     tools: [
       "read",
       "bash",
@@ -145,23 +145,22 @@ export const BUILT_IN_AGENT_TYPES: readonly AgentType[] = [
       "git_diff",
       "git_log",
     ],
-    reasoningEffort: "high",
     body: "Implement the requested change carefully. Trace the affected flow first, make the smallest correct edit, and run relevant checks before reporting results.",
     source: "built-in:implementer",
   },
   {
     name: "reviewer",
-    description: "Read-only review for correctness, safety, and regressions.",
+    description:
+      "Read-only review for correctness, safety, and regressions. Usually use high reasoning, adjusted for task difficulty.",
     tools: READ_ONLY_AGENT_TOOLS,
-    reasoningEffort: "medium",
     body: "Review the requested code or change read-only. Identify concrete correctness, security, and regression risks with evidence; do not modify files.",
     source: "built-in:reviewer",
   },
   {
     name: "advisor",
-    description: "Deep read-only analysis and technical advice.",
+    description:
+      "Deep read-only analysis and technical advice. Usually use high reasoning, adjusted for task difficulty.",
     tools: READ_ONLY_AGENT_TOOLS,
-    reasoningEffort: "xhigh",
     body: "Analyze the problem deeply without modifying files. Explain the relevant tradeoffs, risks, and recommended next step using repository evidence.",
     source: "built-in:advisor",
   },

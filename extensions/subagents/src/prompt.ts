@@ -151,7 +151,7 @@ export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
   model:
     'Optional "provider/model-id" or current-provider model override. Omit to use the preset, configured role, or parent default. Never guess a model name.',
   reasoningEffort:
-    "Optional child thinking level; omit to use the preset or parent default.",
+    "Optional child thinking level. Honor the user's requested level. Otherwise choose a level supported by the resolved child model based on the selected role and task difficulty. An explicit value overrides a role default.",
 };
 
 /** The exact name/description/wire-schema source used by registration/tests. */

@@ -251,17 +251,67 @@ test("a persistence exception cannot drop later envelopes from a failed batch", 
   assert.equal(second.delivery?.state, "delivered");
 });
 
-test("a held-inline restore persistence failure does not block sibling restoration", () => {
+test("a persistence exception cannot drop later unacknowledged receipts", async () => {
+  const first = details("wf_unack_a");
+  const second = details("wf_unack_b");
+  let failPersistence = false;
+  let acknowledge = false;
+  const persistedAfterFailure: string[] = [];
+  const delivery = createWorkflowResultDelivery({
+    isIdle: () => false,
+    persist: (current) => {
+      if (!failPersistence) return;
+      persistedAfterFailure.push(current.runId);
+      if (current.runId === first.runId) throw new Error("disk unavailable");
+    },
+    deliver: async (envelopes) =>
+      envelopes.map((entry) => ({
+        deliveryId: entry.deliveryId,
+        delivered: acknowledge,
+      })),
+  });
+
+  for (const run of [first, second]) {
+    delivery.defer({
+      deliveryId: run.delivery!.id,
+      runId: run.runId,
+      details: run,
+    });
+  }
+  failPersistence = true;
+  await delivery.parentSettled();
+
+  assert.equal(delivery.size(), 2);
+  assert.deepEqual(persistedAfterFailure, [first.runId, second.runId]);
+  assert.equal(first.delivery?.state, "pending");
+  assert.equal(second.delivery?.state, "pending");
+
+  failPersistence = false;
+  acknowledge = true;
+  await delivery.parentSettled();
+  assert.equal(delivery.size(), 0);
+  assert.equal(first.delivery?.state, "delivered");
+  assert.equal(second.delivery?.state, "delivered");
+});
+
+test("a held-inline restore persistence failure does not block the final idle flush", async () => {
   const first = details("wf_restore_a");
   const second = details("wf_restore_b");
   first.delivery!.state = "held-for-inline";
   second.delivery!.state = "pending";
+  let failPersistence = true;
   const delivery = createWorkflowResultDelivery({
-    isIdle: () => false,
+    isIdle: () => true,
     persist: (current) => {
-      if (current.runId === first.runId) throw new Error("disk unavailable");
+      if (failPersistence && current.runId === first.runId) {
+        throw new Error("disk unavailable");
+      }
     },
-    deliver: async () => [],
+    deliver: async (envelopes) =>
+      envelopes.map((entry) => ({
+        deliveryId: entry.deliveryId,
+        delivered: true,
+      })),
   });
 
   assert.equal(
@@ -283,4 +333,10 @@ test("a held-inline restore persistence failure does not block sibling restorati
   assert.equal(delivery.size(), 2);
   assert.equal(first.delivery?.state, "pending");
   assert.match(first.delivery?.lastError ?? "", /persistence failed/i);
+
+  failPersistence = false;
+  await delivery.flushIfIdle();
+  assert.equal(delivery.size(), 0);
+  assert.equal(first.delivery?.state, "delivered");
+  assert.equal(second.delivery?.state, "delivered");
 });

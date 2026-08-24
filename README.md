@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/openpi-package.png" alt="OpenPI logo" width="240" />
+  <img src="assets/openpi-package.png" alt="OpenPI logo" width="180" />
 </p>
 
 <h1 align="center">OpenPI</h1>
@@ -9,146 +9,123 @@
 </p>
 
 <p align="center">
-  默认像 <a href="https://pi.dev">Pi</a> 一样轻；任务需要时，一句话展开后台执行、隔离 Subagent、可恢复 Workflow 与持续任务。<br />
-  不替换 Pi，不重写 Agent loop，不让高级能力长期占据每一次对话。
+  <strong>让 Pi 保持轻巧，让复杂任务拥有真正的工程能力。</strong><br />
+  后台执行、隔离 Subagent、可恢复 Workflow 与持续任务，只在需要时出现。
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@tt-a1i/openpi"><img alt="npm version" src="https://img.shields.io/npm/v/@tt-a1i/openpi?style=flat-square&color=cb3837"></a>
   <a href="https://github.com/tt-a1i/openpi/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/tt-a1i/openpi/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/earendil-works/pi-mono"><img alt="Pi 0.84.1+" src="https://img.shields.io/badge/Pi-0.84.1%2B-2f81f7?style=flat-square"></a>
-  <img alt="Node.js 22.19+" src="https://img.shields.io/badge/Node.js-22.19%2B-3fb950?style=flat-square&logo=nodedotjs&logoColor=white">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-3fb950?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="#30-秒开始"><strong>30 秒开始</strong></a> ·
-  <a href="#默认轻按需强">设计</a> ·
-  <a href="#openpi-解决什么">解决什么</a> ·
-  <a href="#能力地图">能力地图</a> ·
-  <a href="#运行模型">运行模型</a> ·
-  <a href="#三条执行路径">执行路径</a> ·
-  <a href="#workflow-不只是并行">Workflow</a> ·
-  <a href="#安全边界">安全边界</a> ·
-  <a href="#配置与参考">配置与参考</a>
+  <a href="#3-分钟体验"><strong>立即开始</strong></a> ·
+  <a href="#为什么是-openpi">为什么是 OpenPI</a> ·
+  <a href="#选择合适的能力">怎么选择</a> ·
+  <a href="#安全边界">安全</a> ·
+  <a href="#配置与参考">配置</a>
 </p>
 
-<p align="center">
-  <sub>OpenPI 是独立社区项目，与 Physical Intelligence 的 openpi 机器人项目及 Pi 官方均无关联。</sub>
-</p>
-
----
-
-## 默认轻，按需强
-
-**OpenPI 最强的地方，不是工具多，而是复杂度只在值得的时候出现。**
-
-普通编码任务继续走 Pi 原生路径：`read`、`bash`、`edit`、`write`，完整历史、Session compaction、工具输出边界、显式 Bash timeout 与 Provider loop。OpenPI 不额外投影历史，不改写测试超时，也不向模型塞恢复提示；只保留独立的工作区删除保护。
-
-任务一旦需要长期进程、并行调研、隔离实现、多阶段协作或跨回合推进，高级能力仍然完整存在。用户直接提出需求，OpenPI 就在当轮加载对应能力；没用到的能力不会常驻模型工具面。
-
-> **轻路径不缴复杂度税，重任务不缺工程能力。** 这不是一套替代 Pi 的 Agent Runtime，而是一组遵守 Pi 生命周期、Session、Provider、模型与 Trust 边界的 Pi-native 深扩展。
-
-| 使用场景                     | 模型看到什么                                      | OpenPI 的行为                                     |
-| ---------------------------- | ------------------------------------------------- | ------------------------------------------------- |
-| 普通编码任务                 | Pi 原生 `read` / `bash` / `edit` / `write`        | 默认不常驻任何 OpenPI 模型工具                    |
-| 用户明确要求委派或高级能力   | 仅与意图匹配的能力组                              | 在当轮开始前直接加载，不要求用户记住工具名        |
-| 用户主动开启 `adaptive`      | 一个小型 `openpi_load_tools` 网关                 | 主模型判断确有收益时，可自主加载一个能力组        |
-| 后台任务或子 Agent 已经运行  | 对应的状态、等待、继续与停止工具                  | 管理面随真实资源出现，资源结束后按生命周期收敛    |
-
-这套设计保住了两件通常很难同时拥有的东西：Pi 的清爽基本面，以及完整工程工作台的能力上限。
-
----
-
-## 30 秒开始
+## 3 分钟体验
 
 ```bash
 pi install npm:@tt-a1i/openpi
 ```
 
-重启 Pi，或在当前 Session 运行 `/reload`。然后直接描述真实任务：
+重启 Pi，或在当前 Session 运行 `/reload`。**默认使用 `explicit`：明确说“后台运行”“用子代理”或“用 Workflow”，OpenPI 才会加载对应能力。**
+
+不需要学习新 DSL。任选一个真实任务，直接交给 Pi。
+
+### 让长期进程去后台
 
 ```text
-在后台启动前端 dev server；用子代理并行检查 API 主链路和测试覆盖；
-结果回来后汇总风险，主会话不要原地等待。
+在后台启动项目的开发服务器；确认启动成功后告诉我访问地址，主会话不要等待。
 ```
 
-OpenPI 会把长期进程放到后台，把独立任务交给隔离 Context 的 Pi Subagent，把多阶段依赖组织成 Workflow。状态会持续显示；完整运行可从 `/ps`、`/subagents` 和 `/workflows` 检查或终止。
+成功时，主会话会立即恢复，Footer 出现运行状态；`/ps` 可以查看日志或停止进程。
 
-> [!TIP]
-> Capability discovery 默认 `explicit`：明确说出能力意图才会加载对应组。英文 `subagent` 与 `workflow` 是保留授权词，单独输入也会加载对应能力。
-> 例如 `subagent, workflow` → 同时加载两组；「在后台运行 dev server」→ 后台终端；「用/使用子代理检查」→ Subagent；「用工作流编排」→ Workflow；「用 fd/rg 搜索」或「用 git diff 比较分支」→ 搜索与只读 Git 工具。
-> 关键是把意图说清楚（说「用子代理」「后台运行」这类带动作的短语），不需要记住任何工具名。
-> 在交互输入框中，保留词 `Subagent` / `Workflow`，以及已被识别的中文能力请求，会使用 Claude Code 风格的薰衣草紫显示；浅色终端自动使用更深的紫色以维持可读性。变色表示提交后会加载对应能力。因为英文名称本身就是授权词，讨论中写出它们也会开闸；条件句和否定句仍保持普通显示，Suggestion 幽灵文字也要在用户接受进输入框后才参与识别。
-
-> [!IMPORTANT]
-> 默认安装是安静的：不改主题、不绑定 Provider 或模型、不开启下一步预测，也不执行 post-edit 命令。Capability discovery 默认 `explicit`；只有用户通过 `/openpi-setup` 选择 `adaptive` 后，模型才会常驻看到一个小型发现网关并可自主加载额外能力。
+### 让多个 Agent 并行探索
 
 ```text
-/openpi-setup
+用两个 explorer 子代理分别检查项目结构和测试覆盖；完成后汇总结论。
 ```
+
+成功时，两个 Agent 拥有独立 Context，主会话仍可继续输入；`/subagents` 可以查看状态和结果。
+
+### 让 Workflow 分阶段交付
+
+```text
+启动一个 Workflow：先发现审查区域，再并行检查，最后汇总成报告。
+```
+
+成功时，`/workflows` 会显示阶段和 Agent；工作在后台推进，完成后自动回传报告并保留可追溯产物。
+
+> [!NOTE]
+> **默认安装是安静的。** OpenPI 不改主题、不绑定 Provider 或模型、不开启额外模型调用，也不会让高级工具常驻每一次对话。你原本怎么使用 Pi，安装后仍然怎么使用。
+
+<details>
+<summary><strong>OpenPI 如何知道什么时候加载高级能力？</strong></summary>
+
+Capability discovery 默认使用 `explicit`：用户表达明确的能力意图时，只加载对应能力组，不需要记住工具名。条件句、否定句和尚未接受的 Suggestion 幽灵文字不会触发。
+
+| 你怎么说                                   | OpenPI 加载什么    |
+| ------------------------------------------ | ------------------ |
+| 「在后台运行 dev server」                  | Background Terminal |
+| 「用子代理并行检查」或 `subagent`          | Subagent           |
+| 「用工作流编排」或 `workflow`              | Workflow           |
+| 「用 fd/rg 搜索」或「用 git diff 比较分支」 | 搜索与只读 Git     |
+
+交互输入框会把已经识别的能力意图显示为薰衣草紫；变色表示提交后会加载对应能力。
+
+如果你希望模型在确有收益时自主选择能力，可以通过 `/openpi-setup` 将 discovery 切换为 `adaptive`。此时模型只会常驻看到一个小型发现网关，而不是完整高级工具面。
+
+</details>
 
 ---
 
-## OpenPI 解决什么
+## 为什么是 OpenPI
 
-Pi 的价值在于小：Agent loop、工具、Session 与扩展 API 已经足够。真实项目缺的不是另一套平台，而是围绕这些原语的一层可靠运行时。
+**它不是另一套 Agent OS，而是把 Pi 从“干净的单 Agent”延伸成“按需展开的工程工作台”。**
 
-| 开发现场                                | OpenPI 的处理方式                                                            | 保留的边界                         |
-| --------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------- |
-| Dev server、watcher、长测试占住主 Agent | 后台 Terminal 管理进程树、日志、超时与完成通知                               | 无 stdin；Session 结束时有界清理   |
-| 调研、实现、审查互相污染 Context        | 每个 Subagent 使用独立的进程内 Pi SDK Session                                | Child 不能递归编排或拿回父级工具   |
-| 多阶段 fan-out 靠 Prompt 约定           | Workflow 提供 pipeline、schema、handoff、验收与持久产物                      | Sandbox 不暴露文件、网络或进程 API |
-| 重跑昂贵，却不能信任旧结果              | 只 Replay 在可观测边界内证明为只读且指纹未变的调用                           | 不确定就真实执行，不猜             |
-| 长任务跨回合后失去方向                  | Tasks、Goal、Plan Mode 与 Context Pivot 分别管理工作项、目标、批准和阶段切换 | 它们记录与控制，不伪造执行事实     |
-| 后台能力看不见、停不住                  | Footer、Dashboard、Artifacts 与完成通知统一展示状态                          | 每类运行都有检查、取消与唯一终态   |
+OpenPI 最重要的设计，不是工具多，而是复杂度只在值得的时候出现：
 
-**核心原则：增强 Pi 的深度，不扩大隐式权限。** OpenPI 沿用用户已有的 Provider、模型、Skills、Trust 与 Session；Suggestion 只有用户开启后才运行，Subagent / Workflow 只在明确的任务动作后运行——主 Agent 调用对应工具，或用户在交互 TUI 中执行 `/btw`——不会因安装或启动自行消费模型。
+- **普通任务，保持 Pi 原生。** `read`、`bash`、`edit`、`write`、Session、Provider、模型与 Trust 仍由 Pi 负责；OpenPI 不重写 Agent loop。
+- **复杂任务，展开执行能力。** 长期进程、并行调研、隔离实现、多阶段协作和跨回合推进都有专门而可组合的运行机制。
+- **所有后台工作都看得见、停得住。** 状态、产物、取消、清理与失败证据属于 Runtime，不靠模型口头承诺。
+- **更强的模型，会把它用得更好。** Runtime 只守住权限、生命周期与资源边界；策略、拆解、委派和综合仍交给模型判断。
 
----
+> **Pi at the core. Power on demand.** 轻路径不缴复杂度税，重任务不缺工程能力。
 
-## 能力地图
+## 选择合适的能力
 
-OpenPI 把成熟 Coding Agent 的工作习惯做成 Pi-native 能力，但不复制另一套 Runtime：
+| 你需要什么               | 使用什么            | 它解决什么                   |
+| ------------------------ | ------------------- | ---------------------------- |
+| 长期进程                 | Background Terminal | 不阻塞主会话                 |
+| 一项独立委派             | Subagent            | 隔离 Context，可继续对话     |
+| 多阶段、依赖与 fan-out   | Workflow            | 有阶段、有证据、有产物       |
+| 跨回合工作项与持续目标   | Tasks / Goal        | 保留意图，推进到明确终态     |
+| 同一 Session 的阶段切换  | Context Pivot       | 用自包含 Brief 替换旧阶段噪音 |
+| 真正跨顶层 Session       | pi-intercom（可选） | 通过独立进程身份通信         |
 
-| 工作面       | 已包含的能力                                                                                              |
-| ------------ | --------------------------------------------------------------------------------------------------------- |
-| 执行         | Background Terminal、Pi-native Subagent、Dynamic Workflow、隔离 Worktree                                  |
-| 编排         | `pipeline` / `parallel`、结构化输出、Result Handoff、Operator、Acceptance Ledger、Safe Replay、派生 Graph |
-| 连续性       | Tasks、Goal、Plan Mode、Context Pivot、Session Browser、Session-scoped Cron                               |
-| 自定义 Agent | `explorer` / `implementer` / `reviewer` / `advisor`，支持全局与项目角色文件、独立模型与 effort            |
-| 终端工作台   | 自定义 Footer 与任务栏、运行状态、紧凑 Tool Result、Next-action Suggestion、Git / PR 信号                 |
-| 快捷工作流   | `/btw` 旁路提问（TUI）、`/lg` 浏览 Diff（TUI）、`/pr` 查 PR、`/copy-all`、`fd`、`rg`、只读 Git 工具       |
-| 人类决策     | `ask_user` 草稿与最终复核、parent-only `human_handoff`、Plan Ready 实施门禁                               |
-| 跨 Session   | 可选 parent-only `pi-intercom`；父子通信仍走 Subagent / Workflow 原生通道                                 |
-| 统一配置     | `/openpi-setup` 管理 OpenPI 自有模型、并发、Footer、输出密度与 Post-edit 偏好                             |
+除此之外，OpenPI 还提供 Plan Mode、Session Browser、Session-scoped Cron、自定义 Agent 角色、结构化 `fd` / `rg` / 只读 Git 工具、Next-action Suggestion，以及统一的 Footer、Dashboard 和 `/openpi-setup` 配置入口。
 
-OpenPI 采用 [MIT License](LICENSE)；第三方来源与保留声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+<details>
+<summary><strong>OpenPI 与 Pi 的运行边界</strong></summary>
 
----
+OpenPI 不建立第二套控制平面。**主 Pi Session 始终是唯一中心**：拥有用户交互、配置、模型选择与生命周期；其他能力只是围绕它按需展开。
 
-## 运行模型
+| 层次       | 组成                                      | 负责什么                       |
+| ---------- | ----------------------------------------- | ------------------------------ |
+| 主会话     | Pi Session                                | 理解、决策、交互与最终综合     |
+| 执行       | Background Terminal · Subagent · Workflow | 长期进程、隔离委派与多阶段协作 |
+| 连续性     | Tasks · Goal · Sessions · Context Pivot   | 跨回合目标、工作项与阶段切换   |
+| 观察与控制 | Footer · Dashboard · Artifacts · Cleanup  | 看见状态、取回证据、停止和清理 |
 
-<p align="center">
-  <picture>
-    <source media="(max-width: 820px)" srcset="assets/readme-runtime-mobile.svg">
-    <img src="assets/readme-runtime.svg" alt="OpenPI runtime: one parent Pi session, three execution paths, continuity, and observability" width="100%" />
-  </picture>
-</p>
+权限、生命周期、取消和清理由 Runtime 强制执行；策略、拆解、委派和综合仍由模型负责。遇到无法证明安全或完成的状态，OpenPI 会 fail closed，而不是猜测成功。
 
-主 Pi Session 始终拥有用户交互、配置和生命周期。Terminal、Subagent 与 Workflow 是三条执行路径；Tasks、Goal、Session 和 Context Pivot 保持连续性；Footer、Dashboard、Artifacts 与清理逻辑负责观察和控制。
-
-### 一项任务应该去哪里？
-
-```text
-长期进程                         → Background Terminal
-一项自包含、可继续对话的委派     → Subagent
-多阶段、依赖、fan-out 与综合      → Workflow
-跨回合工作项                     → Tasks
-持续自主目标                     → Goal
-同一 Session 的阶段切换          → Context Pivot
-真正跨顶层 Session               → pi-intercom（可选）
-```
+</details>
 
 ---
 
@@ -205,10 +182,13 @@ subagent_spawn({
 
 角色可由全局 `~/.pi/agent/agents/*.md` 或受信任项目 `.pi/agents/*.md` 覆盖。模型优先级是：显式调用 > Agent Type 文件 > `/openpi-setup` 角色模型 > 父模型继承。更高优先级定义损坏时会阻断 fallback，而不是悄悄退回更宽松的能力。
 
+> [!IMPORTANT]
+> 只读 Subagent 可以安全共享当前 checkout；**多个 Agent 并行写文件时，应使用 `isolation: "worktree"`**，避免共享 git index 和工作区互相覆盖。
+
 <details>
 <summary><strong>并行写文件时如何隔离 Worktree？</strong></summary>
 
-默认并行 Agent 共享 checkout 与 git index。只读 fan-out 不受影响；并行写入应使用：
+默认并行 Agent 共享 checkout 与 git index。启用隔离时使用：
 
 ```text
 subagent_spawn({
@@ -270,7 +250,8 @@ Workflow 默认并发 8 个 Agent，单次最多 128 次调用；可配置到 64
 
 ---
 
-## Workflow 不只是并行
+<details>
+<summary><strong>深入了解 Workflow 的恢复、验收与审计机制</strong></summary>
 
 OpenPI 把一次调用拆成可以审计的生命周期，而不是把“进程退出 0”当成业务成功。
 
@@ -309,6 +290,8 @@ OpenPI 把一次调用拆成可以审计的生命周期，而不是把“进程�
 Workflow 在清理隔离 checkout 前原子保存有界 Handoff Manifest：tracked binary patch、stat、branch/HEAD、untracked/ignored 清单与 cleanup receipt。状态不明就保留现场，不自动 merge、apply 或强删。
 
 设计细节见 [`docs/design/WORKFLOW_INVOCATION_GRAPH.md`](docs/design/WORKFLOW_INVOCATION_GRAPH.md)。
+
+</details>
 
 ---
 
@@ -422,69 +405,6 @@ macOS/Linux arm64 与 x64 缺少二进制时，OpenPI 会从官方 Release 下�
 - Node.js `22.19.0` 或更新版本；
 - npm 安装：`pi install npm:@tt-a1i/openpi`；
 - GitHub 安装：`pi install git:github.com/tt-a1i/openpi`。
-
-#### 开发运行时：区分 npm 与当前源码
-
-npm 制品、GitHub 安装和本地 checkout 是三个不同的运行资产。源码目录更新、测试通过或版本号相同，都不能证明当前 Pi 已经加载这份代码。所有本地开发、Provider 兼容排查、手工 smoke 和 UI 验收都使用下面这一条证据链。
-
-**1. 先固定源码和加载来源**
-
-```bash
-git status --short --branch
-git rev-parse --short HEAD
-pi list
-```
-
-完成标准：知道正在修改哪个 checkout、分支和提交；`pi list` 中只有一个 OpenPI 来源，并能明确它是 npm、GitHub 还是某个本地绝对路径。其他 Pi package（例如 `pi-intercom`）不属于重复 OpenPI 来源。
-
-**2. 开发时让 Pi 直接加载当前 checkout**
-
-```bash
-git clone https://github.com/tt-a1i/openpi.git ~/work/openpi
-cd ~/work/openpi
-bun install --frozen-lockfile
-
-# 若 pi list 显示了旧 OpenPI，把变量设为它显示的 package spec 或绝对路径。
-OLD_OPENPI_SOURCE=/absolute/path/to/old/openpi
-pi remove "$OLD_OPENPI_SOURCE"
-pi install "$PWD"
-pi list
-```
-
-已经安装当前 checkout 时，不需要反复 remove/install。切换分支或修改源码后，运行 `/reload` 或重启 Pi 才会重载扩展。`/reload` 之前的界面和工具集合只证明旧内存状态。
-
-完成标准：`pi list` 唯一的 OpenPI 路径就是当前 checkout，且该路径的 HEAD 与预期提交一致。不要修改 `~/.pi/agent/npm/node_modules/@tt-a1i/openpi` 来冒充源码修复。
-
-**3. 分层验证改动**
-
-```bash
-# 开发环：先运行与改动最接近的测试，并沿用 package.json 的 runner。
-node --test --experimental-strip-types path/to/relevant.test.ts
-bunx vitest run path/to/relevant.spec.ts
-
-# 仓库门禁：提交或交付前两项都要通过。
-bun run check
-bun run test
-```
-
-自动化通过只证明代码、类型和测试合同。涉及运行时或界面时，还要在已 `/reload` 的真实 Pi 中完成对应 smoke：
-
-- 工具或生命周期改动：在普通工具模式实际触发成功、失败和结束路径；
-- Provider 兼容改动：保留正常工具 Schema，不用 `--no-tools` 绕过问题；
-- UI 改动：在真实 TUI 触发目标状态并肉眼检查，必要时保存截图；
-- 配置改动：通过 `/openpi-setup` 写入，再核对无参数状态输出和实际行为。
-
-完成标准：分别记录 checkout HEAD、`pi list` 来源、专项测试、`bun run check`、完整测试和手工 smoke。没有执行的层级写成“未验证”，不能用另一层的绿色结果代替。
-
-**4. 保持工作区可恢复**
-
-- 开始前检查 dirty worktree；保存用户的未提交、未跟踪和 ignored 文件；
-- 本地 Benchmark、日志和原始结果可以通过 `.git/info/exclude` 隐藏，但 ignore 不是备份；
-- 使用 `git clean -nd` 只能预览普通未跟踪文件；不要运行会删除 ignored 资产的 `git clean -fdx`；
-- 稳定运行副本和开发 checkout 只有在确有隔离需求时才并存，并始终用 `pi list` 说明 Pi 加载哪一个；
-- 提交前复查 diff，确保本地配置、密钥、模型结果和评测原始数据没有进入版本控制。
-
-Host SDK 与 TypeBox 按 Pi Package 契约声明为 Peer Dependencies；仓库开发依赖不随包重复提供。
 
 ### 可选：顶层 Pi Session 通信
 
@@ -611,6 +531,70 @@ skills/                    # Background terminal、Subagent 与 Workflow 指南
 themes/                    # github-dark-default
 ```
 
+<details>
+<summary><strong>开发运行时：证明 Pi 正在加载当前源码</strong></summary>
+
+npm 制品、GitHub 安装和本地 checkout 是三个不同的运行资产。源码目录更新、测试通过或版本号相同，都不能证明当前 Pi 已经加载这份代码。Provider 兼容排查、手工 smoke 和 UI 验收都使用下面这条证据链。
+
+**先固定源码和加载来源**
+
+```bash
+git status --short --branch
+git rev-parse --short HEAD
+pi list
+```
+
+完成标准：知道正在修改哪个 checkout、分支和提交；`pi list` 中只有一个 OpenPI 来源，并能明确它是 npm、GitHub 还是某个本地绝对路径。其他 Pi package（例如 `pi-intercom`）不属于重复 OpenPI 来源。
+
+**让 Pi 直接加载当前 checkout**
+
+```bash
+git clone https://github.com/tt-a1i/openpi.git ~/work/openpi
+cd ~/work/openpi
+bun install --frozen-lockfile
+
+# 若 pi list 显示旧 OpenPI，把变量设为它显示的 package spec 或绝对路径。
+OLD_OPENPI_SOURCE=/absolute/path/to/old/openpi
+pi remove "$OLD_OPENPI_SOURCE"
+pi install "$PWD"
+pi list
+```
+
+已经安装当前 checkout 时，不需要反复 remove/install。切换分支或修改源码后，运行 `/reload` 或重启 Pi 才会重载扩展；此前的界面和工具集合只证明旧内存状态。不要修改 `~/.pi/agent/npm/node_modules/@tt-a1i/openpi` 来冒充源码修复。
+
+**分层验证改动**
+
+```bash
+# 开发环：运行与改动最接近的测试，并沿用 package.json 的 runner。
+node --test --experimental-strip-types path/to/relevant.test.ts
+bunx vitest run path/to/relevant.spec.ts
+
+# 仓库门禁：提交或交付前两项都要通过。
+bun run check
+bun run test
+```
+
+自动化只证明代码、类型和测试合同。涉及运行时或界面时，还要在已 `/reload` 的真实 Pi 中完成对应 smoke：
+
+- 工具或生命周期：实际触发成功、失败和结束路径；
+- Provider 兼容：保留正常工具 Schema，不用 `--no-tools` 绕过问题；
+- UI：在真实 TUI 触发目标状态并肉眼检查，必要时保存截图；
+- 配置：通过 `/openpi-setup` 写入，再核对状态输出和实际行为。
+
+分别记录 checkout HEAD、`pi list` 来源、专项测试、`bun run check`、完整测试和手工 smoke。没有执行的层级写成“未验证”，不能用另一层的绿色结果代替。
+
+**保持工作区可恢复**
+
+- 开始前检查 dirty worktree，保存用户的未提交、未跟踪和 ignored 文件；
+- 本地 Benchmark、日志和原始结果可用 `.git/info/exclude` 隐藏，但 ignore 不是备份；
+- `git clean -nd` 只能预览普通未跟踪文件；不要运行会删除 ignored 资产的 `git clean -fdx`；
+- 并存运行副本和开发 checkout 时，始终用 `pi list` 说明 Pi 加载哪一个；
+- 提交前确保本地配置、密钥、模型结果和评测原始数据没有进入版本控制。
+
+Host SDK 与 TypeBox 按 Pi Package 契约声明为 Peer Dependencies；仓库开发依赖不随包重复提供。
+
+</details>
+
 开发工具链使用 Bun `1.3.14` 管理依赖和脚本，Biome 负责 TypeScript / JavaScript / JSON 格式与基础 lint；产品运行时仍是 Node，测试仍由 `node:test` 与 Vitest 执行：
 
 ```bash
@@ -626,6 +610,8 @@ npm 仍用于发布包的 `pack` / clean-install 验证，因为用户通过 npm
 ---
 
 ## 来源、许可与致谢
+
+OpenPI 是独立社区项目，与 Physical Intelligence 的 openpi 机器人项目及 Pi 官方均无关联。
 
 本项目最初基于 [davis7dotsh/my-pi-setup](https://github.com/davis7dotsh/my-pi-setup) 演进，现作为独立发行版维护。感谢原作者提供起点。
 

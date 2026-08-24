@@ -2169,7 +2169,7 @@ export default function workflows(pi: ExtensionAPI) {
             settledRuns.get(details.runId) ??
             details)
           : details;
-      const settledRenderTime = Date.now();
+      const settledRenderTime = details.finishedAt ?? details.startedAt;
       syncWorkflowSpinner(
         context.state as WorkflowRenderState,
         () => isPartial && currentDetails().status === "running",

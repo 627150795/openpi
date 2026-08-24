@@ -410,7 +410,7 @@ test("background runs deliver a follow-up that triggers a turn only when idle", 
   });
 });
 
-test("a detached workflow freezes its settled transcript card while the run stays active", async () => {
+test("a detached workflow freezes its settled transcript card while the run stays active", async (t) => {
   let releasePrompt = () => {};
   const promptGate = new Promise<void>((resolve) => {
     releasePrompt = resolve;
@@ -443,6 +443,12 @@ test("a detached workflow freezes its settled transcript card while the run stay
         invalidations += 1;
       },
     };
+    const launchTime = launched.details?.startedAt;
+    assert.ok(typeof launchTime === "number");
+    t.mock.timers.enable({
+      apis: ["Date", "setInterval"],
+      now: launchTime + 1_000,
+    });
     const component = workflow.renderResult(
       launched,
       { expanded: false, isPartial: false },
@@ -451,14 +457,25 @@ test("a detached workflow freezes its settled transcript card while the run stay
     );
     const launchRows = component.render(100);
 
-    await new Promise((resolve) =>
-      setTimeout(resolve, SPINNER_INTERVAL_MS * 2 + 20),
-    );
+    t.mock.timers.tick(SPINNER_INTERVAL_MS * 2);
     assert.equal(
       invalidations,
       0,
       "a settled launch receipt must not repaint transcript history",
     );
+    t.mock.timers.tick(5_000);
+    const rebuilt = workflow.renderResult(
+      launched,
+      { expanded: false, isPartial: false },
+      renderTheme,
+      { state: {}, invalidate: context.invalidate },
+    );
+    assert.deepEqual(
+      rebuilt.render(100),
+      launchRows,
+      "reconstructing the renderer must preserve the committed transcript",
+    );
+    t.mock.timers.reset();
 
     releasePrompt();
     await waitFor(
@@ -482,6 +499,7 @@ test("a detached workflow freezes its settled transcript card while the run stay
       "later global renders must not rewrite a settled transcript card",
     );
   } finally {
+    t.mock.timers.reset();
     releasePrompt();
     __setWorkflowTestAgentSessionFactory(undefined);
     modelIdle = true;

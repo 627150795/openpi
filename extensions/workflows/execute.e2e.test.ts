@@ -19,11 +19,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type {
+  AgentToolResult,
   AgentSession,
   AgentSessionEventListener,
   ExtensionAPI,
   ExtensionContext,
+  Theme,
 } from "@earendil-works/pi-coding-agent";
+import { SPINNER_INTERVAL_MS } from "../shared/spinner.ts";
+import type { WorkflowDetails } from "./model.ts";
 import type { WorkflowAgentSessionFactory } from "./runner.ts";
 
 const agentDir = mkdtempSync(join(tmpdir(), "my-pi-setup-wf-e2e-"));
@@ -58,6 +62,15 @@ type CapturedTool = {
     onUpdate?: unknown,
     ctx?: ExtensionContext,
   ) => unknown;
+  renderResult?: (
+    result: AgentToolResult<WorkflowDetails>,
+    options: { expanded: boolean; isPartial: boolean },
+    theme: Theme,
+    context: {
+      state: Record<string, unknown>;
+      invalidate: () => void;
+    },
+  ) => { render(width: number): string[] };
 };
 
 type SentMessage = {
@@ -126,6 +139,16 @@ const ctx = {
     setWidget() {},
   },
 } as unknown as ExtensionContext;
+
+const renderTheme = new Proxy(
+  {},
+  {
+    get: (_target, property) =>
+      property === "fg" || property === "bg"
+        ? (_color: string, text: string) => text
+        : (text: string) => text,
+  },
+) as Theme;
 
 for (const [runId, status] of [
   ["wf_1e9acd0e", "completed"],
@@ -211,7 +234,7 @@ async function waitFor(
 }
 
 /** A minimal AgentSession stand-in for one successful child agent call. */
-function fakeAgentSession(output: string) {
+function fakeAgentSession(output: string, prompt = async () => {}) {
   const listeners = new Set<AgentSessionEventListener>();
   // The reviewer agent type requests the read-only tool surface; the child
   // preflight in bindChildSessionExtensions requires all of them active.
@@ -259,7 +282,7 @@ function fakeAgentSession(output: string) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    async prompt() {},
+    prompt,
     async abort() {},
     dispose() {},
     getContextUsage: () => undefined,
@@ -385,6 +408,84 @@ test("background runs deliver a follow-up that triggers a turn only when idle", 
     deliverAs: "followUp",
     triggerTurn: true,
   });
+});
+
+test("a detached workflow freezes its settled transcript card while the run stays active", async () => {
+  let releasePrompt = () => {};
+  const promptGate = new Promise<void>((resolve) => {
+    releasePrompt = resolve;
+  });
+  __setWorkflowTestAgentSessionFactory(async () => ({
+    session: fakeAgentSession("finished after release", () => promptGate),
+  }));
+  modelIdle = false;
+
+  try {
+    const launched = (await workflow.execute(
+      "e2e-detached-render",
+      {
+        script:
+          'export const meta = { name: "detached-render" };\n' +
+          'return await agent("wait for release", { agent_type: "reviewer" });',
+        background: true,
+      },
+      undefined,
+      undefined,
+      ctx,
+    )) as AgentToolResult<WorkflowDetails>;
+    assert.equal(launched.details?.status, "running");
+    assert.ok(workflow.renderResult);
+
+    let invalidations = 0;
+    const context = {
+      state: {},
+      invalidate: () => {
+        invalidations += 1;
+      },
+    };
+    const component = workflow.renderResult(
+      launched,
+      { expanded: false, isPartial: false },
+      renderTheme,
+      context,
+    );
+    const launchRows = component.render(100);
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, SPINNER_INTERVAL_MS * 2 + 20),
+    );
+    assert.equal(
+      invalidations,
+      0,
+      "a settled launch receipt must not repaint transcript history",
+    );
+
+    releasePrompt();
+    await waitFor(
+      () => readWorkflowJson(launched.details?.runId).status === "completed",
+      "detached render workflow settlement",
+    );
+    modelIdle = true;
+    for (const handler of handlers.get("agent_settled") ?? []) {
+      await handler({}, ctx);
+    }
+    await waitFor(
+      () =>
+        sentMessages.some(
+          (sent) => sent.message.details?.runId === launched.details?.runId,
+        ),
+      "detached render workflow delivery",
+    );
+    assert.deepEqual(
+      component.render(100),
+      launchRows,
+      "later global renders must not rewrite a settled transcript card",
+    );
+  } finally {
+    releasePrompt();
+    __setWorkflowTestAgentSessionFactory(undefined);
+    modelIdle = true;
+  }
 });
 
 test("failed completion delivery remains durable and retries once with the same id", async () => {

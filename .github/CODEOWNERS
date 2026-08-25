@@ -1,1 +1,11 @@
-* @tt-a1i
+# Owner approval is reserved for repository governance and supply-chain files.
+# Ordinary code changes may be approved by any collaborator with write access.
+
+/.github/CODEOWNERS @tt-a1i
+/.github/workflows/** @tt-a1i
+/.github/actions/** @tt-a1i
+/.github/dependabot.yml @tt-a1i
+
+/package.json @tt-a1i
+/bun.lock @tt-a1i
+/scripts/prepare-effect-tsgo.mjs @tt-a1i

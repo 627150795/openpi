@@ -160,6 +160,11 @@ test("registers the canonical setup command, legacy alias, and one constrained t
   assert.equal("suggestions_enabled" in parameters.properties, true);
   assert.equal("suggestion_model" in parameters.properties, true);
   assert.equal("capability_discovery" in parameters.properties, true);
+  const postEdit = parameters.properties.post_edit_command as {
+    description?: string;
+  };
+  assert.match(postEdit.description ?? "", /only when.*explicitly asks/i);
+  assert.match(postEdit.description ?? "", /omit to preserve/i);
   assert.equal(
     Object.keys(parameters.properties).some((name) =>
       name.startsWith("summary"),

@@ -4,6 +4,7 @@
     "includes": [
       "extensions/**/*.ts",
       "extensions/**/*.cjs",
+      "benchmarks/**/*.ts",
       "scripts/**/*.js",
       "scripts/**/*.mjs",
       "scripts/**/*.cjs",

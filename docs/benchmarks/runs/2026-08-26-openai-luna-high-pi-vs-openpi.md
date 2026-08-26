@@ -4,7 +4,7 @@ created: 2026-08-26
 last-verified: 2026-08-26
 applies-to: OpenPI commit 2a69d3f32994da4123f1312b7fa84ef3d6119be1
 related-issues: "#197, #198"
-related-prs: none
+related-prs: "#199"
 supersedes: none
 provider-model: openai-codex/gpt-5.6-luna
 thinking: high

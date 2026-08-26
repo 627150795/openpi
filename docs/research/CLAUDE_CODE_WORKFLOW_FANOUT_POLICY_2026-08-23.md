@@ -4,7 +4,7 @@ created: 2026-08-23
 last-verified: 2026-08-23
 applies-to: Claude Code v2.1.219+ research snapshot and OpenPI design comparison
 related-issues: "#45, #84"
-related-prs: none
+related-prs: "#199"
 supersedes: none
 ---
 

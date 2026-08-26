@@ -4,7 +4,7 @@ created: 2026-08-26
 last-verified: 2026-08-26
 applies-to: OpenPI documentation and evidence workflow
 related-issues: "#45, #84, #197, #198"
-related-prs: none
+related-prs: "#199"
 supersedes: none
 ---
 

@@ -1,8 +1,18 @@
+---
+status: validated
+created: 2026-08-23
+last-verified: 2026-08-23
+applies-to: Claude Code v2.1.219+ research snapshot and OpenPI design comparison
+related-issues: "#45, #84"
+related-prs: none
+supersedes: none
+---
+
 # Claude Code Dynamic Workflow 的编排规模与 OpenPI 借鉴原则
 
 > 日期：2026-08-23
 >
-> 范围：仅使用 Anthropic 官方 Claude Code 文档、官方 Agent SDK Cookbook 和官方示例；不推断未公开的 Runtime 内部算法。本文补充已有的 [Claude Code Workflow 生命周期研究](./CLAUDE_CODE_WORKFLOW_DESIGN_2026-08-23.md)，只回答“Claude 一次启动多少 Agent、为什么、谁决定、有哪些边界”。
+> 范围：仅使用 Anthropic 官方 Claude Code 文档、官方 Agent SDK Cookbook 和官方示例；不推断未公开的 Runtime 内部算法。本文补充已有的 [Claude Code Workflow 运行时合同访谈](./CLAUDE_CODE_WORKFLOW_RUNTIME_CONTRACT_2026-08-23.md)，只回答“Claude 一次启动多少 Agent、为什么、谁决定、有哪些边界”。
 
 ## 结论先行
 

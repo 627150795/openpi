@@ -1,0 +1,10 @@
+# Public manifest for the 2026-08-26 Luna/high Pi vs OpenPI report.
+# Raw ledgers remain in the operator-local archive; this manifest is the
+# bounded, credential-free identity that the canonical report can cite.
+
+5e5bff56ddf8384eda0c259e6b900bd5f8c572f6ad9d0c68c07f388ddb382d8e  explicit/summary.json
+7537b757c19b9153508ab134e9bb983e5e1fa308def8492bb69ae667a022bfc6  explicit/cells.jsonl
+b458dc7501215994bd04368226256f37f719ec8c4278e5fa76b9a6fb9bce1d0f  explicit/run.json
+13e3914bca058152cbc2c4a2ff8aa49679a2e7b9e898ee47c4c40a5fb716794d  adaptive/summary.json
+9143b0a52ea6b3770479f771ce804b57edd905b0bf199b1fe53545e86be2e057  adaptive/cells.jsonl
+6cc4cdcc27befaa09dcda098a44e08a35f66117e08a9f56236b89436a9fc6a93  adaptive/run.json

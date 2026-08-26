@@ -69,6 +69,14 @@ If those answers are unclear, investigate before adding surface area.
 - Runtime provenance: before diagnosing installed behavior, provider compatibility, a manual Pi smoke, or any UI result, read README section “开发运行时：区分 npm 与当前源码”. Prove both the checkout revision and the single OpenPI source reported by `pi list` before reasoning from source code.
 - Preserve ignored local evidence as user work. Never use `git clean -fdx`; ignored benchmark runs, logs, and harnesses may be the only local copy.
 
+### Knowledge and evidence
+
+- Use GitHub Issues for discussion and work tracking; when research, design, a Decision, or a Benchmark produces reusable knowledge, preserve its canonical record in the appropriate `docs/` category and link the Issue and record both ways.
+- Keep facts, inferences, recommendations, unknowns, exploratory runs, infrastructure failures, and validated results as distinct evidence states. Formal Benchmark records must retain their frozen source/model/task/verifier identities, usage accounting, failure classification, limitations, and evidence manifest.
+- Before publishing or editing a governed record, read [`docs/README.md`](docs/README.md) and the relevant category index. Keep detailed category policy there; keep this always-loaded contract compact.
+- Treat large or sensitive raw evidence as separately identified, content-addressed archive material. Never bulk-add, move, overwrite, clean, or publish ignored local Benchmark assets; preserve credentials and private Session data outside the repository.
+- Do not silently rewrite historical conclusions. Mark a replaced record `superseded` and link its replacement. Distinguish repository validation, merged code, release publication, runtime acceptance, and public publication.
+
 ## Package configuration contract
 
 - `/openpi-setup [natural-language request]` is the single canonical user-facing configuration entry point. `/my-pi-setup` is a compatibility alias only. Do not add extension-specific setup commands for package-owned choices.

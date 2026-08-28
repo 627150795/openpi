@@ -20,7 +20,15 @@ import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { Crypto, Data, Effect, Encoding, FileSystem, Stream } from "effect";
+import {
+  Crypto,
+  Data,
+  Effect,
+  Encoding,
+  FileSystem,
+  Layer,
+  Stream,
+} from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -161,6 +169,10 @@ export class InstallError extends Data.TaggedError("InstallError")<{
   readonly cause?: unknown;
 }> {}
 
+class BinaryInstallError extends Data.TaggedError("BinaryInstallError")<{
+  readonly message: string;
+}> {}
+
 export interface BinaryEnv {
   /** True when the executable runs and supports the flags this tool requires. */
   readonly probe: (command: string, tool: ToolName) => Effect.Effect<boolean>;
@@ -237,9 +249,9 @@ export function readBoundedResponse<E, R>(
   return Effect.gen(function* () {
     const declaredLength = Number(response.headers["content-length"]);
     if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-      return yield* Effect.fail(
-        new Error(`download exceeds the ${maxBytes}-byte size limit`),
-      );
+      return yield* new BinaryInstallError({
+        message: `download exceeds the ${maxBytes}-byte size limit`,
+      });
     }
 
     const result = yield* Stream.runFoldEffect(
@@ -249,7 +261,9 @@ export function readBoundedResponse<E, R>(
         const totalBytes = accumulator.totalBytes + chunk.byteLength;
         if (totalBytes > maxBytes) {
           return Effect.fail(
-            new Error(`download exceeds the ${maxBytes}-byte size limit`),
+            new BinaryInstallError({
+              message: `download exceeds the ${maxBytes}-byte size limit`,
+            }),
           );
         }
         return Effect.sync(() => {
@@ -272,9 +286,9 @@ function downloadAsset(client: HttpClient.HttpClient, initialUrl: URL) {
 
     for (let redirects = 0; redirects <= MAX_DOWNLOAD_REDIRECTS; redirects++) {
       if (url.protocol !== "https:") {
-        return yield* Effect.fail(
-          new Error(`refusing non-HTTPS download URL: ${url.href}`),
-        );
+        return yield* new BinaryInstallError({
+          message: `refusing non-HTTPS download URL: ${url.href}`,
+        });
       }
 
       const result = yield* Effect.scoped(
@@ -283,31 +297,27 @@ function downloadAsset(client: HttpClient.HttpClient, initialUrl: URL) {
           if ([301, 302, 303, 307, 308].includes(response.status)) {
             const location = response.headers.location;
             if (!location) {
-              return yield* Effect.fail(
-                new Error(`redirect from ${url.href} had no location header`),
-              );
+              return yield* new BinaryInstallError({
+                message: `redirect from ${url.href} had no location header`,
+              });
             }
             if (redirects === MAX_DOWNLOAD_REDIRECTS) {
-              return yield* Effect.fail(
-                new Error(
-                  `download exceeded ${MAX_DOWNLOAD_REDIRECTS} redirects`,
-                ),
-              );
+              return yield* new BinaryInstallError({
+                message: `download exceeded ${MAX_DOWNLOAD_REDIRECTS} redirects`,
+              });
             }
             if (!URL.canParse(location, url)) {
-              return yield* Effect.fail(
-                new Error(
-                  `download returned an invalid redirect URL: ${location}`,
-                ),
-              );
+              return yield* new BinaryInstallError({
+                message: `download returned an invalid redirect URL: ${location}`,
+              });
             }
             return { _tag: "Redirect" as const, url: new URL(location, url) };
           }
 
           if (response.status < 200 || response.status >= 300) {
-            return yield* Effect.fail(
-              new Error(`download failed with HTTP ${response.status}`),
-            );
+            return yield* new BinaryInstallError({
+              message: `download failed with HTTP ${response.status}`,
+            });
           }
           return {
             _tag: "Complete" as const,
@@ -320,7 +330,9 @@ function downloadAsset(client: HttpClient.HttpClient, initialUrl: URL) {
       url = result.url;
     }
 
-    return yield* Effect.fail(new Error("download redirect handling failed"));
+    return yield* new BinaryInstallError({
+      message: "download redirect handling failed",
+    });
   });
 }
 
@@ -344,9 +356,9 @@ export const liveBinaryEnv: BinaryEnv = {
   install: (asset, destination) => {
     const install = Effect.gen(function* () {
       if (!URL.canParse(asset.url)) {
-        return yield* Effect.fail(
-          new Error(`invalid download URL: ${asset.url}`),
-        );
+        return yield* new BinaryInstallError({
+          message: `invalid download URL: ${asset.url}`,
+        });
       }
 
       const url = new URL(asset.url);
@@ -360,11 +372,9 @@ export const liveBinaryEnv: BinaryEnv = {
       const digestBytes = yield* crypto.digest("SHA-256", bytes);
       const digest = Encoding.encodeHex(digestBytes);
       if (digest !== asset.sha256) {
-        return yield* Effect.fail(
-          new Error(
-            `SHA-256 mismatch for ${asset.fileName}: expected ${asset.sha256}, received ${digest}`,
-          ),
-        );
+        return yield* new BinaryInstallError({
+          message: `SHA-256 mismatch for ${asset.fileName}: expected ${asset.sha256}, received ${digest}`,
+        });
       }
 
       const workDir = yield* fs.makeTempDirectoryScoped({
@@ -384,9 +394,9 @@ export const liveBinaryEnv: BinaryEnv = {
         }),
       ).pipe(Effect.timeout(60_000));
       if (tarExitCode !== ChildProcessSpawner.ExitCode(0)) {
-        return yield* Effect.fail(
-          new Error(`tar failed with exit code ${tarExitCode}`),
-        );
+        return yield* new BinaryInstallError({
+          message: `tar failed with exit code ${tarExitCode}`,
+        });
       }
 
       const extracted = join(workDir, asset.archiveDir, asset.binaryName);
@@ -401,13 +411,18 @@ export const liveBinaryEnv: BinaryEnv = {
       yield* fs.rename(stagedDestination, destination);
     });
 
+    const installLayer = Layer.mergeAll(
+      NodeServices.layer,
+      NodeHttpClient.layerFetch.pipe(
+        Layer.provide(
+          Layer.succeed(FetchHttpClient.RequestInit)({ redirect: "manual" }),
+        ),
+      ),
+    );
+
     return install.pipe(
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
-      Effect.provide(NodeHttpClient.layerFetch),
-      Effect.provideService(FetchHttpClient.RequestInit, {
-        redirect: "manual",
-      }),
+      Effect.provide(installLayer),
       Effect.mapError(
         (cause) =>
           new InstallError({

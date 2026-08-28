@@ -16,6 +16,7 @@ import {
 import {
   FD_INTEL_DARWIN_VERSION,
   InstallError,
+  liveBinaryEnv,
   managedBinDir,
   readBoundedResponse,
   releaseAsset,
@@ -371,6 +372,7 @@ it.effect(
       const declaredError = yield* Effect.flip(
         readBoundedResponse(declared, 10),
       );
+      assert.equal(declaredError._tag, "BinaryInstallError");
       assert.match(declaredError.message, /size limit/);
 
       const streamed = HttpClientResponse.fromWeb(
@@ -380,8 +382,27 @@ it.effect(
       const streamedError = yield* Effect.flip(
         readBoundedResponse(streamed, 5),
       );
+      assert.equal(streamedError._tag, "BinaryInstallError");
       assert.match(streamedError.message, /size limit/);
     }),
+);
+
+it.effect("live installs preserve the typed cause behind InstallError", () =>
+  Effect.gen(function* () {
+    const asset = releaseAsset("fd", darwinArm);
+    assert.isDefined(asset);
+
+    const error = yield* Effect.flip(
+      liveBinaryEnv.install({ ...asset, url: "not a URL" }, "/unused/fd"),
+    );
+
+    assert.instanceOf(error, InstallError);
+    assert.equal(
+      (error.cause as { readonly _tag?: string })._tag,
+      "BinaryInstallError",
+    );
+    assert.match(error.message, /invalid download URL/);
+  }),
 );
 
 // --- notification policy ----------------------------------------------------

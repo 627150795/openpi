@@ -7,4 +7,5 @@ These documents preserve the research, alternatives, and evaluations that led to
 - [`BLOG_SESSION_TASKS_DESIGN.md`](BLOG_SESSION_TASKS_DESIGN.md) — narrative account of the design process
 - [`PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md`](PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md) — configuration ecosystem research
 - [`PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md`](PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md) — code-grounded comparison of leading community packages
+- [`GOAL_LIFECYCLE_AND_CONTROL_CONTRACT.md`](GOAL_LIFECYCLE_AND_CONTROL_CONTRACT.md) — Goal edit, replacement, pause, resume, clear, completion, blocking, persistence, and continuation boundaries
 - [`WORKFLOW_INVOCATION_GRAPH.md`](WORKFLOW_INVOCATION_GRAPH.md) — durable invocation facts, same-run handoff refs, reusable operators, and derived graph semantics

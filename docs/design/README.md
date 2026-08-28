@@ -7,4 +7,5 @@ These documents preserve the research, alternatives, and evaluations that led to
 - [`BLOG_SESSION_TASKS_DESIGN.md`](BLOG_SESSION_TASKS_DESIGN.md) — narrative account of the design process
 - [`PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md`](PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md) — configuration ecosystem research
 - [`PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md`](PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md) — code-grounded comparison of leading community packages
+- [`PROVIDER_MODEL_ROUTING_CONTRACT.md`](PROVIDER_MODEL_ROUTING_CONTRACT.md) — provider/model selection, fallback, reasoning, and invocation evidence boundaries
 - [`WORKFLOW_INVOCATION_GRAPH.md`](WORKFLOW_INVOCATION_GRAPH.md) — durable invocation facts, same-run handoff refs, reusable operators, and derived graph semantics

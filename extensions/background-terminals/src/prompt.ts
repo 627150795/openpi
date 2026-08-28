@@ -13,6 +13,7 @@ import {
   type TerminalSnapshot,
 } from "./domain.ts";
 import { MAX_RUNNING, type KillResult } from "./manager.ts";
+import { sanitizeTerminalText } from "../../shared/terminal-text.ts";
 
 /** bg_status stdout tail. */
 export const STATUS_STDOUT_MAX = 16 * 1024;
@@ -139,7 +140,7 @@ function outputSection(
   maxLines: number,
 ) {
   if (view.totalBytes === 0) return `${label}: (empty)`;
-  const truncation = truncateTail(view.text, {
+  const truncation = truncateTail(sanitizeTerminalText(view.text), {
     maxBytes: Math.min(maxBytes, DEFAULT_MAX_BYTES),
     maxLines: Math.min(maxLines, DEFAULT_MAX_LINES),
   });

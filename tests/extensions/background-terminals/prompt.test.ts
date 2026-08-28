@@ -161,3 +161,25 @@ test("completion output is a shorter tail than the detailed status view", () => 
   assert.match(completion, /stdout truncated/);
   assert.match(status, /line-1\n/);
 });
+
+test("model-facing output sanitizes terminal text before tail truncation", () => {
+  const rawOutput =
+    "\u001b[31mreadable-start\u001b[0m" +
+    `\u001b]8;;https://example.com;${"osc-payload-".repeat(1_600)}\u0007` +
+    "\u001b]8;;\u0007\u202Espoof\u0000\u0001readable-end";
+  const terminal = snap({
+    stdout: view({
+      text: rawOutput,
+      totalBytes: Buffer.byteLength(rawOutput),
+    }),
+  });
+
+  for (const rendered of [
+    buildStatusResult(terminal),
+    buildTerminalResultMessage(terminal),
+  ]) {
+    assert.match(rendered, /readable-startspoof.*readable-end/);
+    assert.doesNotMatch(rendered, /osc-payload-/);
+    assert.doesNotMatch(rendered, /[\u001b\u202e\u0000\u0001]/u);
+  }
+});

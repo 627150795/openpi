@@ -127,10 +127,7 @@ export function persistWorkflowAgentResult(
   index: number,
   result: { output: string; structured?: unknown },
 ) {
-  const artifact = path.join(
-    "agent-results",
-    `agent-${String(index).padStart(4, "0")}.json`,
-  );
+  const artifact = `agent-results/agent-${String(index).padStart(4, "0")}.json`;
   const encoded = encodeCompleteJson(
     {
       output: result.output,

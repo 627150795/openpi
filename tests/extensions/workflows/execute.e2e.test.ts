@@ -839,6 +839,196 @@ test("agent calls run through the injected session factory and resume replays th
   }
 });
 
+test("replayed acceptance preserves success and rejects non-accepted verdicts", async () => {
+  let sessionCreations = 0;
+  const acceptedStructured = {
+    acceptance: {
+      criteria: [{ id: "tests", status: "accepted", evidence: [] }],
+    },
+  };
+  const factory: WorkflowAgentSessionFactory = async (options) => {
+    sessionCreations++;
+    const structuredTool = options?.customTools?.find(
+      (tool) => tool.name === "structured_output",
+    );
+    assert.ok(structuredTool);
+    const session = fakeAgentSession("acceptance replay output");
+    const originalPrompt = session.prompt.bind(session);
+    const existingTools = session.getAllTools();
+    session.getAllTools = () => [
+      ...existingTools,
+      {
+        name: structuredTool.name,
+        description: structuredTool.description,
+        parameters: structuredTool.parameters,
+        promptGuidelines: structuredTool.promptGuidelines,
+        sourceInfo: {
+          path: "<custom:structured_output>",
+          source: "custom",
+          scope: "temporary",
+          origin: "top-level",
+        },
+      },
+    ];
+    session.getActiveToolNames = () => [
+      ...existingTools.map((tool) => tool.name),
+      structuredTool.name,
+    ];
+    session.getToolDefinition = (name) =>
+      name === structuredTool.name ? structuredTool : undefined;
+    session.prompt = async () => {
+      await structuredTool.execute(
+        "acceptance-replay-structured-output",
+        acceptedStructured,
+        new AbortController().signal,
+        () => {},
+        ctx,
+      );
+      await originalPrompt("");
+    };
+    return { session };
+  };
+  __setWorkflowTestAgentSessionFactory(factory);
+
+  const acceptance = {
+    criteria: [{ id: "tests", description: "Focused tests pass" }],
+  };
+  const script =
+    'export const meta = { name: "acceptance-replay" };\n' +
+    `const r = await agent("acceptance replay fixture", { agent_type: "reviewer", acceptance: ${JSON.stringify(acceptance)} });\n` +
+    "return { ok: r.ok, acceptance: r.acceptance, ref: r.ref, error: r.error };";
+
+  try {
+    const first = (await workflow.execute(
+      "e2e-acceptance-replay-source",
+      { script, wait: true },
+      undefined,
+      undefined,
+      ctx,
+    )) as { details: { runId?: unknown } };
+    const sourceDir = runDirFor(first.details.runId);
+    const sourceJournalPath = join(sourceDir, "journal.json");
+    const sourceJournal = JSON.parse(
+      readFileSync(sourceJournalPath, "utf8"),
+    ) as { entries: Array<Record<string, unknown>> };
+    assert.equal(sourceJournal.entries.length, 1);
+
+    const acceptedReplay = (await workflow.execute(
+      "e2e-acceptance-replay-accepted",
+      {
+        script,
+        resume_from_run_id: String(first.details.runId),
+        wait: true,
+      },
+      undefined,
+      undefined,
+      ctx,
+    )) as { details: { runId?: unknown; result?: Record<string, unknown> } };
+    const acceptedAgent = (
+      readWorkflowJson(acceptedReplay.details.runId).agents as Array<
+        Record<string, unknown>
+      >
+    )[0]!;
+    assert.equal(acceptedReplay.details.result?.ok, true);
+    assert.equal(
+      (acceptedReplay.details.result?.acceptance as { status?: unknown })
+        ?.status,
+      "accepted",
+    );
+    assert.equal(acceptedAgent.state, "done");
+    assert.equal(acceptedAgent.replayed, true);
+    assert.equal(acceptedAgent.acceptance
+      ? (acceptedAgent.acceptance as { status?: unknown }).status
+      : undefined, "accepted");
+    assert.equal(acceptedAgent.resultRef !== undefined, true);
+    assert.equal(acceptedAgent.resultArtifact, "agent-results/agent-0001.json");
+    assert.ok(
+      existsSync(
+        join(
+          runDirFor(acceptedReplay.details.runId),
+          String(acceptedAgent.resultArtifact),
+        ),
+      ),
+    );
+    assert.equal(
+      JSON.parse(
+        readFileSync(
+          join(runDirFor(acceptedReplay.details.runId), "journal.json"),
+          "utf8",
+        ),
+      ).entries.length,
+      1,
+    );
+
+    const nonAccepted = [
+      {
+        status: "rejected",
+        structured: {
+          acceptance: {
+            criteria: [{ id: "tests", status: "rejected", evidence: [] }],
+          },
+        },
+      },
+      { status: "missing", structured: {} },
+      {
+        status: "malformed",
+        structured: {
+          acceptance: {
+            criteria: [{ id: "unexpected", status: "accepted", evidence: [] }],
+          },
+        },
+      },
+    ] as const;
+    for (const verdict of nonAccepted) {
+      const journal = JSON.parse(
+        readFileSync(sourceJournalPath, "utf8"),
+      ) as { entries: Array<Record<string, unknown>> };
+      journal.entries[0]!.structured = verdict.structured;
+      writeFileSync(sourceJournalPath, JSON.stringify(journal));
+
+      const resumed = (await workflow.execute(
+        `e2e-acceptance-replay-${verdict.status}`,
+        {
+          script,
+          resume_from_run_id: String(first.details.runId),
+          wait: true,
+        },
+        undefined,
+        undefined,
+        ctx,
+      )) as { details: { runId?: unknown; result?: Record<string, unknown> } };
+      const persisted = readWorkflowJson(resumed.details.runId);
+      const agent = (persisted.agents as Array<Record<string, unknown>>)[0]!;
+      const resultAcceptance = resumed.details.result?.acceptance as
+        | { status?: unknown }
+        | undefined;
+      const agentAcceptance = agent.acceptance as
+        | { status?: unknown }
+        | undefined;
+
+      assert.equal(resumed.details.result?.ok, false);
+      assert.equal(resultAcceptance?.status, verdict.status);
+      assert.match(String(resumed.details.result?.error), /Acceptance/);
+      assert.equal(agent.state, "error");
+      assert.equal(agentAcceptance?.status, verdict.status);
+      assert.match(String(agent.error), new RegExp(`Acceptance ${verdict.status}`));
+      assert.equal(agent.resultArtifact, undefined);
+      assert.equal(agent.resultRef, undefined);
+      assert.equal(
+        existsSync(join(runDirFor(resumed.details.runId), "agent-results/agent-0001.json")),
+        false,
+      );
+      assert.equal(
+        existsSync(join(runDirFor(resumed.details.runId), "journal.json")),
+        false,
+      );
+    }
+    assert.equal(sessionCreations, 1);
+  } finally {
+    __setWorkflowTestAgentSessionFactory(undefined);
+  }
+});
+
 test("oversized authoritative agent results fail without a success record", async () => {
   const factory: WorkflowAgentSessionFactory = async (options) => {
     const structuredTool = options?.customTools?.find(

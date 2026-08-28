@@ -78,7 +78,6 @@ import {
   acceptanceInstruction,
   acceptanceSchema,
   applyAcceptance,
-  evaluateAcceptance,
   parseAcceptanceContract,
 } from "./acceptance.ts";
 import {
@@ -1700,11 +1699,33 @@ export default function workflows(pi: ExtensionAPI) {
             cached.output,
             PREVIEW_LENGTH,
           );
-          if (acceptanceContract) {
-            record.acceptance = evaluateAcceptance(
-              acceptanceContract,
-              cached.structured,
+          const judged = applyAcceptance({
+            contract: acceptanceContract,
+            structured: cached.structured,
+            agentOk: true,
+          });
+          const acceptance = judged.ledger;
+          if (acceptance) record.acceptance = acceptance;
+          if (!judged.ok) {
+            record.invocation = transitionInvocation(record.invocation!, {
+              status: "rejected",
+              at: finishedAt,
+            });
+            record.state = "error";
+            record.error = sanitizeWorkflowDisplayLine(
+              judged.error ?? "Agent failed",
             );
+            emit();
+            replayLease.end();
+            return {
+              ok: false,
+              output: cached.output,
+              ...(cached.structured !== undefined
+                ? { structured: cached.structured }
+                : {}),
+              ...(acceptance ? { acceptance } : {}),
+              error: record.error,
+            };
           }
           const persisted = persistAgentResult({
             output: cached.output,
@@ -1727,7 +1748,7 @@ export default function workflows(pi: ExtensionAPI) {
               ...(cached.structured !== undefined
                 ? { structured: cached.structured }
                 : {}),
-              ...(record.acceptance ? { acceptance: record.acceptance } : {}),
+              ...(acceptance ? { acceptance } : {}),
               error: persisted.error,
             };
           }
@@ -1761,7 +1782,7 @@ export default function workflows(pi: ExtensionAPI) {
               ? { structured: cached.structured }
               : {}),
             ...(ref ? { ref } : {}),
-            ...(record.acceptance ? { acceptance: record.acceptance } : {}),
+            ...(acceptance ? { acceptance } : {}),
           };
         }
 

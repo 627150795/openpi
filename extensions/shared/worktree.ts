@@ -292,6 +292,17 @@ export interface WorktreeCleanup {
   readonly ignored?: boolean;
 }
 
+export function formatWorktreeCleanupWarning(
+  cleanup: WorktreeCleanup,
+  path: string,
+): string | undefined {
+  if (!cleanup.reason) return undefined;
+  const location = cleanup.removed
+    ? `branch ${cleanup.branch} remains`
+    : `checkout preserved at ${path}`;
+  return `${cleanup.reason}; ${location}`;
+}
+
 export interface WorktreeCommitCount {
   readonly ok: boolean;
   readonly count?: number;

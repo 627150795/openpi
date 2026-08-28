@@ -5,6 +5,10 @@ description: Orchestrates multi-agent work with OpenPI's inline JavaScript Workf
 
 # Workflows
 
+The Session, Workflow, Replay, recovery, and side-effect ownership contract is
+documented in
+[`docs/design/SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md`](../../docs/design/SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md).
+
 Use `workflow` for several dependent or dynamically generated subagent calls. Keep one small delegation in the parent session with `subagent_spawn`.
 
 ## Quick start

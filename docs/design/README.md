@@ -7,4 +7,5 @@ These documents preserve the research, alternatives, and evaluations that led to
 - [`BLOG_SESSION_TASKS_DESIGN.md`](BLOG_SESSION_TASKS_DESIGN.md) — narrative account of the design process
 - [`PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md`](PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md) — configuration ecosystem research
 - [`PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md`](PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md) — code-grounded comparison of leading community packages
+- [`SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md`](SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md) — Session, Workflow, Replay, recovery, and side-effect boundaries
 - [`WORKFLOW_INVOCATION_GRAPH.md`](WORKFLOW_INVOCATION_GRAPH.md) — durable invocation facts, same-run handoff refs, reusable operators, and derived graph semantics

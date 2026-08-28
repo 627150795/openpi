@@ -314,6 +314,9 @@ Workflow 在清理隔离 checkout 前原子保存有界 Handoff Manifest：track
 
 设计细节见 [`docs/design/WORKFLOW_INVOCATION_GRAPH.md`](docs/design/WORKFLOW_INVOCATION_GRAPH.md)。
 
+Session、Workflow、Replay、恢复与文件副作用的跨平面边界见
+[`docs/design/SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md`](docs/design/SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md)。
+
 ---
 
 ## 连续工作，而不是堆 Context

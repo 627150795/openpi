@@ -1,5 +1,8 @@
 # Workflow DSL reference
 
+For the cross-plane Session and recovery contract, see
+[`docs/design/SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md`](../../docs/design/SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md).
+
 The `workflow` script is an async JavaScript function body executed in a restricted, killable sandbox. It has no imports, eval, timers, filesystem, network, or process APIs. Normal JavaScript control flow, array methods, `await`, and template strings are available. Return a JSON-serializable value.
 
 ## Metadata and narration

@@ -5,6 +5,9 @@ Status: implemented
 This note records the durable semantics added to OpenPI Workflow after studying
 Maka Agent Graph. Runtime behavior remains defined by the code and README.
 
+The cross-plane Session and recovery contract is documented in
+[`SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md`](SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md).
+
 ## Decision
 
 Keep JavaScript (`agent`, `pipeline`, `parallel`) as the orchestration language.

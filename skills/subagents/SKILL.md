@@ -7,6 +7,9 @@ description: Invoke this skill when the user asks to use subagents or when a sub
 
 The tool definitions are canonical for parameters, limits, model syntax, isolation, and lifecycle commands. This skill governs delegation decisions only.
 
+For cross-plane Session, child, recovery, and side-effect ownership, see
+[`docs/design/SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md`](../../docs/design/SESSION_LIFECYCLE_AND_RECOVERY_CONTRACT.md).
+
 - Delegate substantial independent work, not a lookup or edit the parent can do directly.
 - Give the child a standalone prompt with paths, constraints, relevant context, and the expected report; it cannot see the parent conversation or ask the user.
 - Inherit the parent model by default. When choosing the child's reasoning effort, honor an explicit user requirement first; otherwise use the selected role's relative guidance and the task's difficulty, choosing from levels supported by the resolved child model.

@@ -8,3 +8,4 @@ These documents preserve the research, alternatives, and evaluations that led to
 - [`PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md`](PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md) — configuration ecosystem research
 - [`PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md`](PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md) — code-grounded comparison of leading community packages
 - [`WORKFLOW_INVOCATION_GRAPH.md`](WORKFLOW_INVOCATION_GRAPH.md) — durable invocation facts, same-run handoff refs, reusable operators, and derived graph semantics
+- [`PLAN_GOAL_TASKS_EVIDENCE_CONTRACT.md`](PLAN_GOAL_TASKS_EVIDENCE_CONTRACT.md) — boundaries between Plans, Goals, Session Tasks, and completion evidence

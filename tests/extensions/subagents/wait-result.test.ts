@@ -20,8 +20,8 @@ test("wait result preview shows status only and keeps full output behind expand"
     content,
     {
       results: [
-        { id: "sa-1", title: "review", status: "done" },
-        { id: "sa-2", title: "tests", status: "error" },
+        { id: "sa-1", title: "review", status: "done", elapsed: "2s" },
+        { id: "sa-2", title: "tests", status: "error", elapsed: "5s" },
       ],
     },
     theme,
@@ -30,8 +30,8 @@ test("wait result preview shows status only and keeps full output behind expand"
 
   assert.ok(lines.length <= 4);
   assert.match(preview, /2 subagents settled · 1 failed/);
-  assert.match(preview, /sa-1 · review · done/);
-  assert.match(preview, /sa-2 · tests · error/);
+  assert.match(preview, /sa-1 · review · done · 2s/);
+  assert.match(preview, /sa-2 · tests · error · 5s/);
   assert.match(preview, /Results passed to main agent/);
   assert.match(preview, /expand/);
   assert.doesNotMatch(preview, /finding 1/);
@@ -53,4 +53,24 @@ test("wait result preview bounds status rows across large fan-out", () => {
   assert.match(preview, /8 subagents settled/);
   assert.match(preview, /… 4 more/);
   assert.doesNotMatch(preview, /sa-8/);
+});
+
+test("wait result preview exposes artifact save failures", () => {
+  const preview = buildWaitResultPreview(
+    "## sa-1 finished\n\npartial result",
+    {
+      results: [
+        {
+          id: "sa-1",
+          title: "review",
+          status: "done",
+          elapsed: "2s",
+          artifactSaveFailed: true,
+        },
+      ],
+    },
+    theme,
+  );
+
+  assert.match(preview, /artifact not saved/);
 });

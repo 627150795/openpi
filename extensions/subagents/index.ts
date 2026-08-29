@@ -49,6 +49,7 @@ import {
   hasActivity,
   unreadActivityCounts,
 } from "../shared/activity-status.ts";
+import { sanitizeText } from "../shared/agent-transcript.ts";
 import {
   BelowEditorNavigationEditor,
   BelowEditorStripState,
@@ -107,6 +108,7 @@ import {
 } from "./src/id-sequence.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
+  buildSubagentResultDisplayMessage,
   buildSubagentResultMessage,
   buildSubagentSendResult,
   buildSubagentSpawnResult,
@@ -120,10 +122,15 @@ import {
   SUBAGENT_SEND_TOOL_DESCRIPTION,
   SUBAGENT_SPAWN_PROMPT_GUIDELINES,
   SUBAGENT_SPAWN_PROMPT_SNIPPET,
+  stripSubagentResultTransportInstruction,
   SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS,
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
-import { persistResultArtifact, projectResult } from "./src/result-artifact.ts";
+import {
+  persistResultArtifact,
+  projectResult,
+  type ResultProjection,
+} from "./src/result-artifact.ts";
 import {
   allocateResultBudgets,
   type ParentContextUsage,
@@ -136,7 +143,7 @@ import {
 } from "./src/runtime.ts";
 import { openSubagentPicker, openSubagentTakeover } from "./src/ui/takeover.ts";
 import {
-  buildWaitResultPreview,
+  renderWaitResultPreview,
   renderWaitResult,
   type WaitResultDetails,
 } from "./src/ui/wait-result.ts";
@@ -169,12 +176,18 @@ interface SubagentResultDetails {
   readonly id?: string;
   readonly title?: string;
   readonly status?: SubagentSnapshot["status"];
+  readonly elapsed?: string;
+  readonly artifactSaveFailed?: boolean;
   readonly count?: number;
   readonly results?: ReadonlyArray<{
     readonly id: string;
     readonly title: string;
     readonly status: SubagentSnapshot["status"];
+    readonly elapsed?: string;
+    readonly artifactSaveFailed?: boolean;
   }>;
+  /** Display-only projection for the custom message renderer. */
+  readonly displayContent?: string;
 }
 
 interface SubagentResultEntryData {
@@ -216,12 +229,32 @@ export function truncatedOutput(
   }).text;
 }
 
+function projectSubagentOutput(
+  snap: SubagentSnapshot,
+  maxBytes: number,
+): ResultProjection {
+  const output = snap.finalText || "(no output)";
+  return projectResult(output, {
+    maxBytes: Math.min(maxBytes, DEFAULT_MAX_BYTES),
+    maxLines: Math.min(600, DEFAULT_MAX_LINES),
+    writeArtifact: (content) => persistResultArtifact(getAgentDir(), content),
+  });
+}
+
+type OutputProjection = Pick<ResultProjection, "text" | "artifactSaveFailed">;
+
+function normalizeProjection(
+  output: string | OutputProjection,
+): OutputProjection {
+  return typeof output === "string" ? { text: output } : output;
+}
+
 export function createSubagentResultDispatcher(
   pi: ExtensionAPI,
   outputFor: (
     snap: SubagentSnapshot,
     maxBytes: number,
-  ) => string = truncatedOutput,
+  ) => string | OutputProjection = projectSubagentOutput,
   getContextUsage: () => ParentContextUsage | undefined = () => undefined,
 ) {
   return (snaps: readonly SubagentSnapshot[]) => {
@@ -259,6 +292,21 @@ export function createSubagentResultDispatcher(
         fixedBytes: wrapperBytes,
       },
     );
+    const projections = snaps.map((snap, index) =>
+      normalizeProjection(outputFor(snap, allocation.budgets[index]!)),
+    );
+    const outputs = projections.map((projection) => projection.text);
+    const displayContent = snaps
+      .map((snap, index) =>
+        buildSubagentResultDisplayMessage({
+          id: snap.id,
+          title: snap.title,
+          status: snap.status,
+          errorText: snap.errorText,
+          output: outputs[index]!,
+        }),
+      )
+      .join("\n\n");
     const content = snaps
       .map((snap, index) =>
         buildSubagentResultMessage({
@@ -266,7 +314,7 @@ export function createSubagentResultDispatcher(
           title: snap.title,
           status: snap.status,
           errorText: snap.errorText,
-          output: outputFor(snap, allocation.budgets[index]!),
+          output: outputs[index]!,
         }),
       )
       .join("\n\n");
@@ -276,17 +324,25 @@ export function createSubagentResultDispatcher(
             id: snaps[0]!.id,
             title: snaps[0]!.title,
             status: snaps[0]!.status,
+            elapsed: formatElapsed(snaps[0]!),
+            ...(projections[0]!.artifactSaveFailed
+              ? { artifactSaveFailed: true }
+              : {}),
           }
         : {
             count: snaps.length,
-            results: snaps.map((snap) => ({
+            results: snaps.map((snap, index) => ({
               id: snap.id,
               title: snap.title,
               status: snap.status,
+              elapsed: formatElapsed(snap),
+              ...(projections[index]!.artifactSaveFailed
+                ? { artifactSaveFailed: true }
+                : {}),
             })),
           };
     pi.appendEntry<SubagentResultEntryData>("subagent-result", {
-      content,
+      content: displayContent,
       details,
     });
     pi.sendMessage(
@@ -294,7 +350,7 @@ export function createSubagentResultDispatcher(
         customType: "subagent-result",
         content,
         display: false,
-        details,
+        details: { ...details, displayContent },
       },
       { deliverAs: "followUp", triggerTurn: true },
     );
@@ -309,34 +365,46 @@ function renderSubagentResult(
   expanded: boolean,
   theme: SubagentResultTheme,
 ) {
+  const displayContent = sanitizeText(
+    stripSubagentResultTransportInstruction(details.displayContent ?? content),
+  );
+  const results = details.results?.length
+    ? details.results
+    : details.id
+      ? [
+          {
+            id: details.id,
+            title: details.title,
+            status: details.status,
+            elapsed: details.elapsed,
+            artifactSaveFailed: details.artifactSaveFailed,
+          },
+        ]
+      : [];
   if (!expanded && loadSetupConfig().ui.subagentResultDisplay === "compact") {
-    const results = details.results?.length
-      ? details.results
-      : details.id
-        ? [
-            {
-              id: details.id,
-              title: details.title,
-              status: details.status,
-            },
-          ]
-        : [];
-    return new Text(buildWaitResultPreview(content, { results }, theme), 0, 0);
+    return renderWaitResultPreview(displayContent, { results }, theme);
   }
 
-  const failed = details.status === "error";
+  const failed = results.some((result) => result.status === "error");
+  const batched = results.length > 1;
   const icon = failed ? theme.fg("error", "x") : theme.fg("success", "✓");
-  const header =
-    `${icon} ` +
-    theme.fg("accent", theme.bold(`subagent ${details.id ?? "?"}`)) +
-    theme.fg(
-      "muted",
-      ` · ${details.title ?? ""} · ${failed ? "failed" : "finished"}`,
-    );
+  const header = batched
+    ? `${icon} ${theme.fg("accent", theme.bold(`${results.length} subagents`))}${theme.fg("muted", ` · ${failed ? `${results.filter((result) => result.status === "error").length} failed` : "finished"}`)}`
+    : `${icon} ` +
+      theme.fg(
+        "accent",
+        theme.bold(`subagent ${sanitizeText(details.id ?? "?")}`),
+      ) +
+      theme.fg(
+        "muted",
+        ` · ${sanitizeText(details.title ?? "")} · ${failed ? "failed" : "finished"}${details.elapsed ? ` · ${sanitizeText(details.elapsed)}` : ""}`,
+      );
 
-  // Remove only the summary line. The following Error line (when present)
-  // is part of the actual result and must remain visible.
-  const body = content.split("\n").slice(1).join("\n").trim();
+  // Remove only the single-result summary line. Error lines and batched result
+  // summaries are part of the display projection and must remain visible.
+  const body = batched
+    ? displayContent.trim()
+    : displayContent.split("\n").slice(1).join("\n").trim();
   const md = new Markdown(body, 0, 0, getMarkdownTheme());
   const container = new Text(header, 0, 0);
   return {
@@ -377,7 +445,7 @@ export default function (pi: ExtensionAPI) {
   let dashboardOpen = false;
   const dispatchResults = createSubagentResultDispatcher(
     pi,
-    truncatedOutput,
+    projectSubagentOutput,
     () => sessionContext?.getContextUsage(),
   );
   const resultDelivery = createSubagentResultDelivery<SubagentSnapshot>({
@@ -1001,10 +1069,13 @@ export default function (pi: ExtensionAPI) {
         },
       );
       let resultIndex = 0;
+      const artifactSaveFailures = new Set<string>();
       const sections = entries.map((entry) => {
         if ("section" in entry) return entry.section;
         const outputBudget = allocation.budgets[resultIndex++]!;
-        return `${entry.header}\n\n${truncatedOutput(entry.snap, outputBudget)}`;
+        const projection = projectSubagentOutput(entry.snap, outputBudget);
+        if (projection.artifactSaveFailed) artifactSaveFailures.add(entry.id);
+        return `${entry.header}\n\n${projection.text}`;
       });
 
       const combined = sections.join("\n\n---\n\n");
@@ -1020,7 +1091,15 @@ export default function (pi: ExtensionAPI) {
         details: {
           results: ids.map((id) => {
             const snap = manager.view.get(id);
-            return { id, title: snap?.title, status: snap?.status };
+            return {
+              id,
+              title: snap?.title,
+              status: snap?.status,
+              ...(snap ? { elapsed: formatElapsed(snap) } : {}),
+              ...(artifactSaveFailures.has(id)
+                ? { artifactSaveFailed: true }
+                : {}),
+            };
           }),
         },
       };

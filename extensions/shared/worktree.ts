@@ -296,11 +296,11 @@ export function formatWorktreeCleanupWarning(
   cleanup: WorktreeCleanup,
   path: string,
 ): string | undefined {
-  if (!cleanup.reason) return undefined;
+  if (cleanup.removed && cleanup.branchDeleted) return undefined;
   const location = cleanup.removed
     ? `branch ${cleanup.branch} remains`
     : `checkout preserved at ${path}`;
-  return `${cleanup.reason}; ${location}`;
+  return cleanup.reason ? `${cleanup.reason}; ${location}` : location;
 }
 
 export interface WorktreeCommitCount {

@@ -105,6 +105,21 @@ describe("formatWorktreeCleanupWarning", () => {
     );
   });
 
+  test("identifies a leftover branch even without a cleanup reason", () => {
+    assert.equal(
+      formatWorktreeCleanupWarning(
+        {
+          removed: true,
+          branchDeleted: false,
+          branch: "pi/example",
+          detached: false,
+        },
+        "C:/repo/.git/pi-worktrees/example",
+      ),
+      "branch pi/example remains",
+    );
+  });
+
   test("does not report a warning after complete cleanup", () => {
     assert.equal(
       formatWorktreeCleanupWarning(

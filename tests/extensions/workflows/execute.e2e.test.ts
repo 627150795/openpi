@@ -791,7 +791,9 @@ test("settled retention is bounded while status and artifacts remain observable"
     };
   };
   assert.ok(after.details.runs.length <= MAX_SETTLED_RUNS);
-  assert.ok(after.details.settledRunsEvicted >= before.details.settledRunsEvicted + 1);
+  assert.ok(
+    after.details.settledRunsEvicted >= before.details.settledRunsEvicted + 1,
+  );
   assert.match(
     after.content[0]?.text ?? "",
     /settled workflow details? evicted from memory; persisted artifacts retained\./,

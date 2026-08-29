@@ -159,3 +159,53 @@ test("translates native no-history failures and clears the pivot state", async (
     "Context pivot failed: provider unavailable",
   );
 });
+
+test("reports native no-history failures without a UI", async () => {
+  let tool: ToolDefinition | undefined;
+  let compactOptions: CompactOptions | undefined;
+  const pi = {
+    registerTool(candidate: ToolDefinition) {
+      tool = candidate;
+    },
+    getActiveTools: () => [],
+    setActiveTools() {},
+    on() {},
+    registerCommand() {},
+  } as unknown as ExtensionAPI;
+
+  contextPivot(pi);
+  assert.ok(tool);
+
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (message: unknown) => errors.push(String(message));
+  try {
+    const ctx = {
+      hasUI: false,
+      getContextUsage: () => ({
+        tokens: MIN_CONTEXT_PIVOT_TOKENS,
+        contextWindow: 200_000,
+        percent: 15,
+      }),
+      compact(options: CompactOptions) {
+        compactOptions = options;
+      },
+    } as unknown as ExtensionContext;
+
+    await tool.execute(
+      "context-pivot-headless-test",
+      { brief: "Continue with the next phase." },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.ok(compactOptions?.onError);
+    compactOptions.onError(new Error("Nothing to compact (session too small)"));
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.deepEqual(errors, [
+    "Context pivot could not run: this session has no discardable history to compact. Continue in the current session, or use /sessions to choose another session; to begin cleanly, start a new Session in Pi.",
+  ]);
+});

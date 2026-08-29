@@ -186,8 +186,11 @@ export default function contextPivot(pi: ExtensionAPI) {
           onError: (error) => {
             if (pivotGeneration === generation) pending = undefined;
             clear();
+            const message = formatContextPivotError(error);
             if (ctx.hasUI) {
-              ctx.ui.notify(formatContextPivotError(error), "error");
+              ctx.ui.notify(message, "error");
+            } else {
+              console.error(message);
             }
           },
         });

@@ -8,3 +8,4 @@ These documents preserve the research, alternatives, and evaluations that led to
 - [`PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md`](PI_CONFIGURATION_ECOSYSTEM_RESEARCH.md) — configuration ecosystem research
 - [`PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md`](PI_COMMUNITY_PACKAGE_AUDIT_2026-08-09.md) — code-grounded comparison of leading community packages
 - [`WORKFLOW_INVOCATION_GRAPH.md`](WORKFLOW_INVOCATION_GRAPH.md) — durable invocation facts, same-run handoff refs, reusable operators, and derived graph semantics
+- [`STRUCTURAL_QUERY_PREVIEW_EDIT_CONTRACT.md`](STRUCTURAL_QUERY_PREVIEW_EDIT_CONTRACT.md) — separate read-only structural query and preview-first mutation boundaries

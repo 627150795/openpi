@@ -412,6 +412,29 @@ function runFixtureTests() {
     () =>
       assertConfigContract({
         ...base,
+        setupDoc: base.setupDoc.replace("Beta", "").replace("nested.beta", ""),
+      }),
+    /SETUP\.md/,
+  );
+  assert.throws(
+    () =>
+      assertConfigContract({
+        ...base,
+        configSource: base.configSource.replace(
+          "empty: {}",
+          "empty: {}, extra: true",
+        ),
+      }),
+    /not registered in the contract table/,
+  );
+  assert.throws(
+    () => assertConfigContract({ ...base, readme: "" }),
+    /README\.md/,
+  );
+  assert.throws(
+    () =>
+      assertConfigContract({
+        ...base,
         configSource: base.configSource.replace(
           "readonly optional?: OptionalConfig",
           "",
@@ -427,7 +450,7 @@ function runFixtureTests() {
       }),
     /unknown config field/,
   );
-  process.stdout.write("✓ config contract fixture tests (8)\n");
+  process.stdout.write("✓ config contract fixture tests (12)\n");
 }
 
 if (process.argv.includes("--self-test")) {

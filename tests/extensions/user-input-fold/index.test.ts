@@ -169,10 +169,7 @@ test("LF and CRLF fenced messages fold with the same semantics", () => {
   const crlf = lf.replaceAll("\n", "\r\n");
   const normalizeNewlines = (text: string) => text.replaceAll("\r\n", "\n");
 
-  assert.equal(
-    normalizeNewlines(foldUserMessage(crlf)),
-    foldUserMessage(lf),
-  );
+  assert.equal(normalizeNewlines(foldUserMessage(crlf)), foldUserMessage(lf));
   assert.ok(foldUserMessage(crlf).includes("```\r\n"));
 });
 

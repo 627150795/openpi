@@ -1,8 +1,31 @@
+---
+status: draft
+created: 2026-08-29
+last-reviewed: 2026-08-29
+applies-to: "OpenPI 0.3.0 / Pi 0.84.2 / Terminal-Bench 2.1 source-build-derived ARM64 diagnostic"
+owner: OpenPI maintainers
+related-issues: "#46, #277"
+related-prs: "#271"
+supersedes: none
+source-task-revision: d1f1920f2d817a831f466d0ff363ef795a9a3b00
+models: "seal/glm-5.3, seal/gpt-5.6-luna"
+thinking-level: "high for both models"
+tasks: "git-leak-recovery, sqlite-db-truncate, cancel-async-tasks"
+sample-size: "54 cells (2 models × 3 tasks × 3 repeats × 3 harnesses)"
+verifier: "Harbor 0.20.0"
+isolation: "Linux ARM64 VM; strict serial Latin-square; global concurrency 1"
+failure-classification: "pass / fail / indeterminate"
+accounting: "provider tokens, wall time, physical POST, and logical attempts where available"
+evidence-status: pending-independent-review
+evidence-reference: "receipts/openpi-issue-46-arm64-54-cell-v1.md"
+rerun-boundary: "Requires the pinned ARM64 VM, package versions, task revision, schedule hash, lock fingerprints, and credential-free evidence boundary"
+---
+
 # OpenPI 0.3.0、Pi 与 OMP 的 54-cell ARM64 派生诊断
 
 ## 状态与范围
 
-本报告整理 Issue [#46](https://github.com/tt-a1i/openpi/issues/46) 中已经公开的实验收据。它记录的是 Linux ARM64 VM 上运行的 Terminal-Bench 2.1 source-build-derived 诊断，**不是 Terminal-Bench 官方成绩、排行榜成绩或正式提交**。
+本报告整理 Issue [#46](https://github.com/openpi-dev/openpi/issues/46) 中已经公开的实验收据。它记录的是 Linux ARM64 VM 上运行的 Terminal-Bench 2.1 source-build-derived 诊断，**不是 Terminal-Bench 官方成绩、排行榜成绩或正式提交**。
 
 实验矩阵为：
 
@@ -19,7 +42,7 @@
 | 项目 | 值 |
 | --- | --- |
 | Pi | `@earendil-works/pi-coding-agent 0.84.2` |
-| OpenPI | [`@tt-a1i/openpi 0.3.0`](https://github.com/tt-a1i/openpi/releases/tag/v0.3.0) |
+| OpenPI | [`@tt-a1i/openpi 0.3.0`](https://github.com/openpi-dev/openpi/releases/tag/v0.3.0) |
 | OMP | `@oh-my-pi/pi-coding-agent 17.2.12` |
 | Bun | `1.3.14` |
 | Harbor | `0.20.0` |
@@ -105,6 +128,8 @@ Evidence controller 还记录了 provider 物理重试：当 `physical POST < lo
 4. 这些任务没有专门要求 Subagent 或 Workflow，因此结果不能证明 OpenPI 编排能力的收益。
 
 ## 验证与复现边界
+
+本报告对应的可检索、无凭据边界收据见 [receipts/openpi-issue-46-arm64-54-cell-v1.md](receipts/openpi-issue-46-arm64-54-cell-v1.md)。收据包含压缩后的任务结果账本、冻结身份、汇总指标和安全边界，可重算本报告的 pass/fail/indeterminate 汇总；原始 JSONL、Session、日志、candidate workspace 和凭据不随仓库发布。当前记录仍为 `draft`，因为原始证据包尚未提供独立复核入口。
 
 Issue #46 记录的原始验证为：
 

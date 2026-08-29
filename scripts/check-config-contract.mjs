@@ -163,6 +163,32 @@ export function extractDefaultFieldPaths(source) {
   return paths.sort();
 }
 
+export function extractOptionalConfigPaths(source) {
+  const declaration = source.indexOf("interface MyPiSetupConfig");
+  if (declaration < 0) return [];
+  const objectStart = source.indexOf("{", declaration);
+  const objectEnd = source.indexOf(
+    "export const DEFAULT_SETUP_CONFIG",
+    objectStart,
+  );
+  if (objectStart < 0 || objectEnd < 0) return [];
+
+  // ponytail: this small parser avoids making the contract check depend on a TypeScript compiler.
+  const paths = [];
+  const parents = [];
+  for (const line of source.slice(objectStart + 1, objectEnd).split(/\r?\n/)) {
+    const property =
+      /^\s*readonly\s+([A-Za-z][A-Za-z0-9_]*)\s*(\?)?\s*:\s*(.*)$/.exec(line);
+    if (property) {
+      const path = [...parents, property[1]].join(".");
+      if (property[2]) paths.push(path);
+      if (property[3].trim().startsWith("{")) parents.push(property[1]);
+    }
+    if (/^\s*}\s*[,;]?\s*$/.test(line)) parents.pop();
+  }
+  return [...new Set(paths)].sort();
+}
+
 function containsAny(source, terms) {
   const normalized = source.toLowerCase();
   return terms.some((term) => normalized.includes(term.toLowerCase()));
@@ -194,6 +220,7 @@ export function checkConfigContract({
   contract = CONFIG_FIELD_CONTRACT,
 }) {
   const fields = extractDefaultFieldPaths(configSource);
+  const declaredOptionalFields = extractOptionalConfigPaths(configSource);
   const optionalFields = contract
     .filter((entry) => entry.optional)
     .map((entry) => entry.path);
@@ -210,6 +237,13 @@ export function checkConfigContract({
   for (const field of fields) {
     if (!entries.has(field)) {
       problems.push(`${field} is not registered in the contract table`);
+    }
+  }
+  for (const field of declaredOptionalFields) {
+    if (!entries.has(field)) {
+      problems.push(
+        `${field} optional field is not registered in the contract table`,
+      );
     }
   }
   for (const entry of contract) {
@@ -350,6 +384,18 @@ function runFixtureTests() {
     ["empty"],
   );
   assert.doesNotThrow(() => assertConfigContract(base));
+  const optionalDriftSource = base.configSource.replace(
+    "interface Example { readonly optional?: OptionalConfig; }",
+    "export interface MyPiSetupConfig {\n  readonly optional?: OptionalConfig;\n  readonly hidden?: HiddenConfig;\n}",
+  );
+  const optionalDrift = checkConfigContract({
+    ...base,
+    configSource: `${optionalDriftSource}\nexport const DEFAULT_SETUP_CONFIG = { alpha: true, nested: { beta: false }, empty: {} };`,
+  });
+  assert.match(
+    optionalDrift.problems.join("\n"),
+    /hidden optional field is not registered/,
+  );
   assert.throws(
     () =>
       assertConfigContract({

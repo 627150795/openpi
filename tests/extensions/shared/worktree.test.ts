@@ -85,7 +85,23 @@ describe("formatWorktreeCleanupWarning", () => {
         },
         "C:/repo/.git/pi-worktrees/example",
       ),
-      "git declined to remove the worktree; checkout preserved at C:/repo/.git/pi-worktrees/example",
+      "git declined to remove the worktree; checkout was not confirmed removed; inspect C:/repo/.git/pi-worktrees/example",
+    );
+  });
+
+  test("does not claim an uninspectable checkout still exists", () => {
+    assert.equal(
+      formatWorktreeCleanupWarning(
+        {
+          removed: false,
+          branchDeleted: false,
+          branch: "pi/example",
+          detached: false,
+          reason: "could not inspect worktree HEAD",
+        },
+        "C:/repo/.git/pi-worktrees/example",
+      ),
+      "could not inspect worktree HEAD; checkout was not confirmed removed; inspect C:/repo/.git/pi-worktrees/example",
     );
   });
 

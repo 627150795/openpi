@@ -299,7 +299,7 @@ export function formatWorktreeCleanupWarning(
   if (cleanup.removed && cleanup.branchDeleted) return undefined;
   const location = cleanup.removed
     ? `branch ${cleanup.branch} remains`
-    : `checkout preserved at ${path}`;
+    : `checkout was not confirmed removed; inspect ${path}`;
   return cleanup.reason ? `${cleanup.reason}; ${location}` : location;
 }
 

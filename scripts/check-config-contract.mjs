@@ -16,7 +16,7 @@ const CONFIG_FIELD_CONTRACT = [
   },
   {
     path: "suggestions.enabled",
-    writerTokens: ["params.suggestions_enabled"],
+    writerTokens: ["enabled: suggestionsEnabled"],
     statusTokens: ["config.suggestions.enabled"],
     readmeTerms: ["Next-action Suggestion"],
     setupTerms: ["Next-action suggestions"],
@@ -25,7 +25,7 @@ const CONFIG_FIELD_CONTRACT = [
     path: "suggestions.model",
     optional: true,
     configTokens: ["readonly model?: SuggestionModelConfig"],
-    writerTokens: ["params.suggestion_model"],
+    writerTokens: ["...(model ? { model } : {})"],
     statusTokens: ["config.suggestions.model"],
     readmeTerms: ["Registry 模型"],
     setupTerms: ["available model"],
@@ -60,14 +60,14 @@ const CONFIG_FIELD_CONTRACT = [
   },
   {
     path: "ui.footerStyle",
-    writerTokens: ["params.ui_footer_style"],
+    writerTokens: ["params.ui_footer_style !== undefined", "...footer,"],
     statusTokens: ["config.ui.footerStyle"],
     readmeTerms: ["powerline"],
     setupTerms: ["powerline"],
   },
   {
     path: "ui.footerLines",
-    writerTokens: ["params.ui_footer_lines"],
+    writerTokens: ["params.ui_footer_lines !== undefined", "...footer,"],
     statusTokens: ["config.ui.footerLines"],
     readmeTerms: ["footerLines"],
     setupTerms: ["footerLines"],
@@ -201,6 +201,19 @@ function sourceSection(source, startMarker, endMarker) {
   return source.slice(start, end < 0 ? source.length : end);
 }
 
+function requiredSourceSection(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  if (start < 0) return "";
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (end < 0) return "";
+  return source.slice(start, end);
+}
+
+function containsAll(source, terms) {
+  const normalized = source.toLowerCase();
+  return terms.every((term) => normalized.includes(term.toLowerCase()));
+}
+
 function extractConfigMarkers(source) {
   const paths = [];
   for (const match of source.matchAll(CONFIG_MARKER_PATTERN)) {
@@ -232,6 +245,14 @@ export function checkConfigContract({
     "export function formatSetupConfig",
     "export {",
   );
+  // Keep writer checks inside the read-modify-write builder. A parameter name
+  // in the tool schema is not evidence that the value reaches the saved
+  // MyPiSetupConfig object.
+  const writerSection = requiredSourceSection(
+    setupSource,
+    "const buildConfig = (current: MyPiSetupConfig) => {",
+    "return config;",
+  );
   const problems = [];
 
   for (const field of fields) {
@@ -259,7 +280,7 @@ export function checkConfigContract({
     ) {
       problems.push(`${entry.path} is missing from the config type`);
     }
-    if (!containsAny(setupSource, entry.writerTokens)) {
+    if (!containsAll(writerSection, entry.writerTokens)) {
       problems.push(`${entry.path} is missing from extensions/setup/`);
     }
     if (!containsAny(statusSection, entry.statusTokens)) {
@@ -353,9 +374,13 @@ function runFixtureTests() {
   ];
   const configSource =
     "interface Example { readonly optional?: OptionalConfig; }\nexport const DEFAULT_SETUP_CONFIG = { alpha: true, nested: { beta: false }, empty: {} };";
+  const setupSource = `const buildConfig = (current: MyPiSetupConfig) => {
+  alpha beta empty optional
+  return config;
+};`;
   const base = {
     configSource,
-    setupSource: "alpha beta empty optional",
+    setupSource,
     statusSource:
       "config.alpha config.nested.beta config.empty config.optional",
     readme:
@@ -412,6 +437,14 @@ function runFixtureTests() {
     () =>
       assertConfigContract({
         ...base,
+        setupSource: `${setupSource.replace("beta", "")}\nparams.nested_beta`,
+      }),
+    /extensions\/setup/,
+  );
+  assert.throws(
+    () =>
+      assertConfigContract({
+        ...base,
         setupDoc: base.setupDoc.replace("Beta", "").replace("nested.beta", ""),
       }),
     /SETUP\.md/,
@@ -450,7 +483,7 @@ function runFixtureTests() {
       }),
     /unknown config field/,
   );
-  process.stdout.write("✓ config contract fixture tests (12)\n");
+  process.stdout.write("✓ config contract fixture tests (13)\n");
 }
 
 if (process.argv.includes("--self-test")) {

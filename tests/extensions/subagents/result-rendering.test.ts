@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import test from "node:test";
 import {
   initTheme,
@@ -24,6 +21,21 @@ const theme = {
   inverse: (text: string) => text,
 } as unknown as Parameters<EntryRenderer>[2];
 
+async function withResultDisplay(
+  run: (
+    getResultDisplay: () => "compact" | "full",
+    setResultDisplay: (display: "compact" | "full") => void,
+  ) => Promise<void>,
+) {
+  let display = "compact" as "compact" | "full";
+  await run(
+    () => display,
+    (next) => {
+      display = next;
+    },
+  );
+}
+
 test("legacy transport cleanup preserves identical text in the child answer", () => {
   const instruction =
     "(This result is already shown to the user. Act on it and relay only the decisions or next steps — do not repeat it verbatim.)";
@@ -37,15 +49,7 @@ test("legacy transport cleanup preserves identical text in the child answer", ()
 });
 
 test("automatic subagent results split model payload from bounded UI projection", async () => {
-  const agentDir = await mkdtemp(path.join(tmpdir(), "openpi-result-render-"));
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-
-  try {
-    await writeFile(
-      path.join(agentDir, "my-pi-setup.json"),
-      JSON.stringify({ ui: { subagentResultDisplay: "compact" } }),
-    );
+  await withResultDisplay(async (getResultDisplay, setResultDisplay) => {
     const { default: subagents } = await import(
       "../../../extensions/subagents/index.ts"
     );
@@ -65,7 +69,7 @@ test("automatic subagent results split model payload from bounded UI projection"
       },
       registerCommand() {},
     } as unknown as ExtensionAPI;
-    subagents(pi);
+    subagents(pi, { getResultDisplay });
 
     const entryRenderer = entryRenderers.get("subagent-result");
     const messageRenderer = messageRenderers.get("subagent-result");
@@ -161,20 +165,14 @@ test("automatic subagent results split model payload from bounded UI projection"
     assert.match(legacyText, /Plan Mode investigation report/);
     assert.doesNotMatch(legacyText, /This result is already shown/);
 
-    await writeFile(
-      path.join(agentDir, "my-pi-setup.json"),
-      JSON.stringify({ ui: { subagentResultDisplay: "full" } }),
-    );
+    setResultDisplay("full");
     const fullByDefault = entryRenderer(entry, { expanded: false }, theme);
     assert.ok(fullByDefault);
     assert.match(
       fullByDefault.render(120).join("\n"),
       /Plan Mode investigation report/,
     );
-    await writeFile(
-      path.join(agentDir, "my-pi-setup.json"),
-      JSON.stringify({ ui: { subagentResultDisplay: "compact" } }),
-    );
+    setResultDisplay("compact");
 
     const failureContent =
       'Subagent sa-4 "run tests" failed.\nError: child crashed\n\npartial output';
@@ -315,9 +313,5 @@ test("automatic subagent results split model payload from bounded UI projection"
     assert.ok(narrowLines.every((line) => visibleWidth(line) <= 24));
     assert.doesNotMatch(narrowLines.join("\n"), /\u001b\[31m/);
     assert.doesNotMatch(narrowLines.join("\n"), /long detail/);
-  } finally {
-    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-    await rm(agentDir, { recursive: true, force: true });
-  }
+  });
 });

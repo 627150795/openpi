@@ -351,6 +351,102 @@ test("automatic result wrappers and projections stay inside the shared batch cap
   }
 });
 
+test("automatic delivery keeps 64 results inside the hard batch cap", () => {
+  let displayContent = "";
+  let modelContent = "";
+  const pi = {
+    appendEntry(_customType: string, data: { content: string }) {
+      displayContent = data.content;
+    },
+    sendMessage(message: { content: string }) {
+      modelContent = message.content;
+    },
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(
+    pi,
+    (snap, maxBytes) =>
+      projectResult(snap.finalText, {
+        maxBytes,
+        maxLines: 600,
+        writeArtifact: () => `/tmp/${snap.id}.txt`,
+      }).text,
+    () => ({ tokens: 100_000, contextWindow: 100_000 }),
+  );
+  const snapshots = Array.from({ length: 64 }, (_, index) => {
+    const id = `sa-${index + 1}`;
+    return {
+      id,
+      origin: "model" as const,
+      backend: "pi" as const,
+      title: `long report ${id}`,
+      prompt: "inspect",
+      cwd: process.cwd(),
+      status: "done" as const,
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" as const },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: `BEGIN-${id}\n${"evidence\n".repeat(10_000)}END-${id}`,
+      turns: 1,
+    };
+  });
+
+  dispatch(snapshots);
+
+  assert.ok(Buffer.byteLength(displayContent, "utf8") <= 48 * 1024);
+  assert.ok(Buffer.byteLength(modelContent, "utf8") <= 48 * 1024);
+  for (const { id } of snapshots) {
+    assert.match(displayContent, new RegExp(`Subagent ${id} `));
+    assert.match(modelContent, new RegExp(`Subagent ${id} `));
+  }
+});
+
+test("automatic delivery fails closed when wrapper metadata exceeds the cap", () => {
+  let displayContent = "";
+  let modelContent = "";
+  const pi = {
+    appendEntry(_customType: string, data: { content: string }) {
+      displayContent = data.content;
+    },
+    sendMessage(message: { content: string }) {
+      modelContent = message.content;
+    },
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(pi, () => "report");
+
+  dispatch([
+    {
+      id: "sa-oversized",
+      origin: "model",
+      backend: "pi",
+      title: "title ".repeat(20_000),
+      prompt: "inspect",
+      cwd: process.cwd(),
+      status: "error",
+      errorText: "failure ".repeat(20_000),
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: "report",
+      turns: 1,
+    },
+  ]);
+
+  for (const content of [displayContent, modelContent]) {
+    assert.ok(Buffer.byteLength(content, "utf8") <= 48 * 1024);
+    assert.match(content, /truncated at the 48 KiB total limit/);
+  }
+});
+
 test("the visible subagent result entry renders the completed report", () => {
   const renderers = new Map<string, EntryRenderer>();
   const pi = {
@@ -365,7 +461,7 @@ test("the visible subagent result entry renders the completed report", () => {
     },
     registerCommand() {},
   } as unknown as ExtensionAPI;
-  subagents(pi);
+  subagents(pi, { getResultDisplay: () => "full" });
 
   const renderer = renderers.get("subagent-result");
   assert.ok(renderer);
@@ -407,19 +503,7 @@ test("the visible subagent result entry renders the completed report", () => {
   );
 });
 
-test("the compact result renderer shows artifact save failures", async (t) => {
-  const agentDir = await mkdtemp(path.join(tmpdir(), "openpi-compact-render-"));
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-  t.after(async () => {
-    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-    await rm(agentDir, { recursive: true, force: true });
-  });
-  await writeFile(
-    path.join(agentDir, "my-pi-setup.json"),
-    JSON.stringify({ ui: { subagentResultDisplay: "compact" } }),
-  );
+test("the compact result renderer shows artifact save failures", () => {
   const renderers = new Map<string, EntryRenderer>();
   const pi = {
     on() {},
@@ -433,7 +517,7 @@ test("the compact result renderer shows artifact save failures", async (t) => {
     },
     registerCommand() {},
   } as unknown as ExtensionAPI;
-  subagents(pi);
+  subagents(pi, { getResultDisplay: () => "compact" });
 
   const renderer = renderers.get("subagent-result");
   assert.ok(renderer);

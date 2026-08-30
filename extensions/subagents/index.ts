@@ -69,7 +69,7 @@ import {
   planModeAllowsDeclaredTools,
   planModeChildTools,
 } from "../shared/plan-mode-state.ts";
-import { loadSetupConfig } from "../shared/setup-config.ts";
+import { loadSetupConfig, type DetailDisplay } from "../shared/setup-config.ts";
 import {
   OPENPI_TOOL_SURFACE,
   patchOwnedTools,
@@ -156,6 +156,8 @@ const WAIT_PER_AGENT_MAX_BYTES = 16 * 1024;
 const WAIT_MIN_RESULT_BYTES = 512;
 const RESULT_HEADROOM_SHARE = 0.5;
 const ESTIMATED_BYTES_PER_TOKEN = 4;
+const AUTOMATIC_BATCH_TRUNCATION_NOTICE =
+  "\n\n[Automatic subagent result batch truncated at the 48 KiB total limit.]";
 
 interface SpawnResultDetails {
   readonly id?: string;
@@ -258,6 +260,24 @@ function normalizeProjection(
   return typeof output === "string" ? { text: output } : output;
 }
 
+function boundAutomaticResultBatch(content: string) {
+  const probe = truncateHead(content, {
+    maxBytes: AUTOMATIC_OUTPUT_MAX_BYTES,
+    maxLines: Number.MAX_SAFE_INTEGER,
+  });
+  if (!probe.truncated) return content;
+
+  const noticeBytes = Buffer.byteLength(
+    AUTOMATIC_BATCH_TRUNCATION_NOTICE,
+    "utf8",
+  );
+  const bounded = truncateHead(content, {
+    maxBytes: Math.max(0, AUTOMATIC_OUTPUT_MAX_BYTES - noticeBytes),
+    maxLines: Number.MAX_SAFE_INTEGER,
+  });
+  return `${bounded.content}${AUTOMATIC_BATCH_TRUNCATION_NOTICE}`;
+}
+
 export function createSubagentResultDispatcher(
   pi: ExtensionAPI,
   outputFor: (
@@ -284,7 +304,7 @@ export function createSubagentResultDispatcher(
       ) +
       Math.max(0, snaps.length - 1) * 2;
     const projectionBatchBytes = Math.max(
-      AUTOMATIC_MIN_RESULT_BYTES * snaps.length,
+      0,
       AUTOMATIC_OUTPUT_MAX_BYTES - wrapperBytes,
     );
     const allocation = allocateResultBudgets(
@@ -305,28 +325,32 @@ export function createSubagentResultDispatcher(
       normalizeProjection(outputFor(snap, allocation.budgets[index]!)),
     );
     const outputs = projections.map((projection) => projection.text);
-    const displayContent = snaps
-      .map((snap, index) =>
-        buildSubagentResultDisplayMessage({
-          id: snap.id,
-          title: snap.title,
-          status: snap.status,
-          errorText: snap.errorText,
-          output: outputs[index]!,
-        }),
-      )
-      .join("\n\n");
-    const content = snaps
-      .map((snap, index) =>
-        buildSubagentResultMessage({
-          id: snap.id,
-          title: snap.title,
-          status: snap.status,
-          errorText: snap.errorText,
-          output: outputs[index]!,
-        }),
-      )
-      .join("\n\n");
+    const displayContent = boundAutomaticResultBatch(
+      snaps
+        .map((snap, index) =>
+          buildSubagentResultDisplayMessage({
+            id: snap.id,
+            title: snap.title,
+            status: snap.status,
+            errorText: snap.errorText,
+            output: outputs[index]!,
+          }),
+        )
+        .join("\n\n"),
+    );
+    const content = boundAutomaticResultBatch(
+      snaps
+        .map((snap, index) =>
+          buildSubagentResultMessage({
+            id: snap.id,
+            title: snap.title,
+            status: snap.status,
+            errorText: snap.errorText,
+            output: outputs[index]!,
+          }),
+        )
+        .join("\n\n"),
+    );
     const details: SubagentResultDetails =
       snaps.length === 1
         ? {
@@ -384,6 +408,7 @@ function renderSubagentResult(
   content: string,
   details: SubagentResultDetails,
   expanded: boolean,
+  resultDisplay: DetailDisplay,
   theme: SubagentResultTheme,
 ) {
   const displayContent = sanitizeText(
@@ -405,7 +430,7 @@ function renderSubagentResult(
           },
         ]
       : [];
-  if (!expanded && loadSetupConfig().ui.subagentResultDisplay === "compact") {
+  if (!expanded && resultDisplay === "compact") {
     return renderWaitResultPreview(displayContent, { results }, theme);
   }
 
@@ -443,7 +468,17 @@ function renderSubagentResult(
   };
 }
 
-export default function (pi: ExtensionAPI) {
+interface SubagentExtensionOptions {
+  readonly getResultDisplay?: () => DetailDisplay;
+}
+
+export default function (
+  pi: ExtensionAPI,
+  options: SubagentExtensionOptions = {},
+) {
+  const getResultDisplay =
+    options.getResultDisplay ??
+    (() => loadSetupConfig().ui.subagentResultDisplay);
   let runtime: SubagentRuntime | undefined;
   let managerPromise: Promise<SubagentManagerShape> | undefined;
   let restoredIdCounters: SubagentIdCounters = {
@@ -1155,7 +1190,7 @@ export default function (pi: ExtensionAPI) {
       return renderWaitResult(
         content,
         result.details as WaitResultDetails | undefined,
-        expanded || loadSetupConfig().ui.subagentResultDisplay === "full",
+        expanded || getResultDisplay() === "full",
         theme,
       );
     },
@@ -1350,6 +1385,7 @@ export default function (pi: ExtensionAPI) {
         content,
         (message.details ?? {}) as SubagentResultDetails,
         expanded,
+        getResultDisplay(),
         theme,
       );
     },
@@ -1362,6 +1398,7 @@ export default function (pi: ExtensionAPI) {
         entry.data?.content ?? "",
         entry.data?.details ?? {},
         expanded,
+        getResultDisplay(),
         theme,
       ),
   );
@@ -1404,7 +1441,7 @@ export default function (pi: ExtensionAPI) {
         .filter(Boolean)
         .join("\n\n");
 
-      if (expanded || loadSetupConfig().ui.subagentResultDisplay === "full") {
+      if (expanded || getResultDisplay() === "full") {
         const md = new Markdown(body, 0, 0, getMarkdownTheme());
         const container = new Text(header, 0, 0);
         return {

@@ -10,6 +10,7 @@ import {
 import {
   refreshWorkflowGraph,
   type TranscriptEntry,
+  type WorkflowDelivery,
   type WorkflowDetails,
 } from "./model.ts";
 import {
@@ -127,10 +128,10 @@ export function persistWorkflowAgentResult(
   index: number,
   result: { output: string; structured?: unknown },
 ) {
-  const artifact = path.join(
-    "agent-results",
-    `agent-${String(index).padStart(4, "0")}.json`,
-  );
+  // Artifact references are persisted as portable workflow paths. The host
+  // filesystem join happens in writeRunFile; handoff validation and replay
+  // consumers intentionally use `/` regardless of the platform.
+  const artifact = `agent-results/agent-${String(index).padStart(4, "0")}.json`;
   const encoded = encodeCompleteJson(
     {
       output: result.output,
@@ -212,6 +213,25 @@ export function persistWorkflowJson(
     "workflow.json",
     safeStringify(compact, { maxBytes: 1024 * 1024 }),
   );
+}
+
+/**
+ * Update only the durable delivery receipt. Completion delivery may retain a
+ * compact memory projection after the run has been evicted, so rewriting the
+ * whole details object here would risk replacing exact result artifacts with
+ * that projection.
+ */
+export function persistWorkflowDeliveryState(
+  runDir: string,
+  delivery: WorkflowDelivery,
+) {
+  const file = path.join(runDir, "workflow.json");
+  const raw: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid persisted workflow details: ${file}`);
+  }
+  const next = { ...(raw as Record<string, unknown>), delivery };
+  writeFileAtomic(file, JSON.stringify(next));
 }
 
 /** Coalesce live checkpoints while keeping final persistence synchronous. */

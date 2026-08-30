@@ -166,6 +166,52 @@ test("automatic projection carries artifact save failures into result details", 
   assert.equal(entryDetails?.artifactSaveFailed, true);
 });
 
+test("automatic projection carries canonical outcome and recovery metadata", () => {
+  let entryDetails: Record<string, unknown> | undefined;
+  const pi = {
+    appendEntry(
+      _customType: string,
+      data: { details: Record<string, unknown> },
+    ) {
+      entryDetails = data.details;
+    },
+    sendMessage() {},
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(pi, () => ({
+    text: "projected result",
+    truncated: true,
+    artifactPath: "/tmp/subagent-final.txt",
+  }));
+
+  dispatch([
+    {
+      id: "sa-recovery",
+      origin: "model",
+      backend: "pi",
+      title: "recovery test",
+      prompt: "inspect",
+      cwd: process.cwd(),
+      status: "error",
+      outcome: "interrupted",
+      worktreeBranch: "pi/impl-1",
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: "result",
+      turns: 1,
+    },
+  ]);
+
+  assert.equal(entryDetails?.outcome, "interrupted");
+  assert.equal(entryDetails?.worktreeBranch, "pi/impl-1");
+  assert.equal(entryDetails?.fullResultSaved, true);
+});
+
 test("automatic delivery reports real artifact save failures", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "openpi-artifact-dir-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -361,7 +407,19 @@ test("the visible subagent result entry renders the completed report", () => {
   );
 });
 
-test("the compact result renderer shows artifact save failures", () => {
+test("the compact result renderer shows artifact save failures", async (t) => {
+  const agentDir = await mkdtemp(path.join(tmpdir(), "openpi-compact-render-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(async () => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(agentDir, { recursive: true, force: true });
+  });
+  await writeFile(
+    path.join(agentDir, "my-pi-setup.json"),
+    JSON.stringify({ ui: { subagentResultDisplay: "compact" } }),
+  );
   const renderers = new Map<string, EntryRenderer>();
   const pi = {
     on() {},

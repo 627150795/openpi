@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { buildWaitResultPreview } from "../../../extensions/subagents/src/ui/wait-result.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import {
+  buildWaitResultPreview,
+  renderWaitResultPreview,
+} from "../../../extensions/subagents/src/ui/wait-result.ts";
 
 initTheme("dark", false);
 
@@ -29,7 +33,7 @@ test("wait result preview shows status only and keeps full output behind expand"
   const lines = preview.split("\n");
 
   assert.ok(lines.length <= 4);
-  assert.match(preview, /2 subagents settled · 1 failed/);
+  assert.match(preview, /1 failed · 2 subagents settled/);
   assert.match(preview, /sa-1 · review · done · 2s/);
   assert.match(preview, /sa-2 · tests · error · 5s/);
   assert.match(preview, /Results passed to main agent/);
@@ -73,4 +77,66 @@ test("wait result preview exposes artifact save failures", () => {
   );
 
   assert.match(preview, /artifact not saved/);
+});
+
+test("narrow wait result preview keeps artifact warning understandable", () => {
+  const rendered = renderWaitResultPreview(
+    "partial result",
+    {
+      results: [
+        {
+          id: "sa-1",
+          title: "review",
+          status: "done",
+          elapsed: "2s",
+          artifactSaveFailed: true,
+        },
+      ],
+    },
+    theme,
+  ).render(32);
+
+  assert.ok(rendered.every((line) => visibleWidth(line) <= 32));
+  assert.match(rendered.join("\n"), /artifact not saved/);
+});
+
+test("compact preview keeps a failed result visible beyond the status row limit", () => {
+  const rendered = renderWaitResultPreview(
+    "",
+    {
+      results: Array.from({ length: 6 }, (_, index) => ({
+        id: `sa-${index + 1}`,
+        title: `task ${index + 1}`,
+        status: index === 4 ? "error" : "done",
+      })),
+    },
+    theme,
+  ).render(120);
+  const preview = rendered.join("\n");
+
+  assert.match(preview, /1 failed · 6 subagents settled/);
+  assert.match(preview, /sa-5 · task 5 · error/);
+});
+
+test("compact preview surfaces uncertain worktree recovery state", () => {
+  const preview = buildWaitResultPreview(
+    "partial result",
+    {
+      results: [
+        {
+          id: "sa-1",
+          title: "implementation",
+          status: "error",
+          outcome: "interrupted",
+          worktreeBranch: "pi/impl-1",
+          fullResultSaved: true,
+        },
+      ],
+    },
+    theme,
+  );
+
+  assert.match(preview, /uncertain/);
+  assert.match(preview, /worktree handoff · pi\/impl-1/);
+  assert.match(preview, /full result saved/);
 });

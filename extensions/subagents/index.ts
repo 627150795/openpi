@@ -176,15 +176,21 @@ interface SubagentResultDetails {
   readonly id?: string;
   readonly title?: string;
   readonly status?: SubagentSnapshot["status"];
+  readonly outcome?: SubagentSnapshot["outcome"];
+  readonly worktreeBranch?: string;
   readonly elapsed?: string;
   readonly artifactSaveFailed?: boolean;
+  readonly fullResultSaved?: boolean;
   readonly count?: number;
   readonly results?: ReadonlyArray<{
     readonly id: string;
     readonly title: string;
     readonly status: SubagentSnapshot["status"];
+    readonly outcome?: SubagentSnapshot["outcome"];
+    readonly worktreeBranch?: string;
     readonly elapsed?: string;
     readonly artifactSaveFailed?: boolean;
+    readonly fullResultSaved?: boolean;
   }>;
   /** Display-only projection for the custom message renderer. */
   readonly displayContent?: string;
@@ -241,7 +247,10 @@ function projectSubagentOutput(
   });
 }
 
-type OutputProjection = Pick<ResultProjection, "text" | "artifactSaveFailed">;
+type OutputProjection = Pick<
+  ResultProjection,
+  "text" | "artifactPath" | "artifactSaveFailed"
+>;
 
 function normalizeProjection(
   output: string | OutputProjection,
@@ -324,7 +333,12 @@ export function createSubagentResultDispatcher(
             id: snaps[0]!.id,
             title: snaps[0]!.title,
             status: snaps[0]!.status,
+            ...(snaps[0]!.outcome ? { outcome: snaps[0]!.outcome } : {}),
+            ...(snaps[0]!.worktreeBranch
+              ? { worktreeBranch: snaps[0]!.worktreeBranch }
+              : {}),
             elapsed: formatElapsed(snaps[0]!),
+            ...(projections[0]!.artifactPath ? { fullResultSaved: true } : {}),
             ...(projections[0]!.artifactSaveFailed
               ? { artifactSaveFailed: true }
               : {}),
@@ -335,7 +349,14 @@ export function createSubagentResultDispatcher(
               id: snap.id,
               title: snap.title,
               status: snap.status,
+              ...(snap.outcome ? { outcome: snap.outcome } : {}),
+              ...(snap.worktreeBranch
+                ? { worktreeBranch: snap.worktreeBranch }
+                : {}),
               elapsed: formatElapsed(snap),
+              ...(projections[index]!.artifactPath
+                ? { fullResultSaved: true }
+                : {}),
               ...(projections[index]!.artifactSaveFailed
                 ? { artifactSaveFailed: true }
                 : {}),
@@ -366,7 +387,7 @@ function renderSubagentResult(
   theme: SubagentResultTheme,
 ) {
   const displayContent = sanitizeText(
-    stripSubagentResultTransportInstruction(details.displayContent ?? content),
+    details.displayContent ?? stripSubagentResultTransportInstruction(content),
   );
   const results = details.results?.length
     ? details.results
@@ -376,8 +397,11 @@ function renderSubagentResult(
             id: details.id,
             title: details.title,
             status: details.status,
+            outcome: details.outcome,
+            worktreeBranch: details.worktreeBranch,
             elapsed: details.elapsed,
             artifactSaveFailed: details.artifactSaveFailed,
+            fullResultSaved: details.fullResultSaved,
           },
         ]
       : [];
@@ -1070,11 +1094,13 @@ export default function (pi: ExtensionAPI) {
       );
       let resultIndex = 0;
       const artifactSaveFailures = new Set<string>();
+      const fullResultsSaved = new Set<string>();
       const sections = entries.map((entry) => {
         if ("section" in entry) return entry.section;
         const outputBudget = allocation.budgets[resultIndex++]!;
         const projection = projectSubagentOutput(entry.snap, outputBudget);
         if (projection.artifactSaveFailed) artifactSaveFailures.add(entry.id);
+        if (projection.artifactPath) fullResultsSaved.add(entry.id);
         return `${entry.header}\n\n${projection.text}`;
       });
 
@@ -1095,7 +1121,12 @@ export default function (pi: ExtensionAPI) {
               id,
               title: snap?.title,
               status: snap?.status,
+              ...(snap?.outcome ? { outcome: snap.outcome } : {}),
+              ...(snap?.worktreeBranch
+                ? { worktreeBranch: snap.worktreeBranch }
+                : {}),
               ...(snap ? { elapsed: formatElapsed(snap) } : {}),
+              ...(fullResultsSaved.has(id) ? { fullResultSaved: true } : {}),
               ...(artifactSaveFailures.has(id)
                 ? { artifactSaveFailed: true }
                 : {}),

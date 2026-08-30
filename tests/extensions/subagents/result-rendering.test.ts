@@ -109,6 +109,27 @@ test("automatic subagent results split model payload from bounded UI projection"
     assert.match(expandedText, /Plan Mode investigation report/);
     assert.doesNotMatch(expandedText, /This result is already shown/);
 
+    const quotedInstruction = entryRenderer(
+      {
+        ...entry,
+        id: "entry-quoted-instruction",
+        data: {
+          content: `${displayContent}\n\n${instruction}`,
+          details: {
+            ...entry.data.details,
+            displayContent: `${displayContent}\n\n${instruction}`,
+          },
+        },
+      },
+      { expanded: true },
+      theme,
+    );
+    assert.ok(quotedInstruction);
+    assert.match(
+      quotedInstruction.render(120).join("\n"),
+      /This result is already shown to the user/,
+    );
+
     const message = messageRenderer(
       {
         role: "custom",
@@ -232,7 +253,7 @@ test("automatic subagent results split model payload from bounded UI projection"
     );
     assert.ok(batch);
     const batchText = batch.render(120).join("\n");
-    assert.match(batchText, /2 subagents settled · 1 failed/);
+    assert.match(batchText, /1 failed · 2 subagents settled/);
     assert.match(batchText, /sa-5 · review · done · 1s/);
     assert.match(batchText, /sa-6 · tests · error · 4s/);
     assert.doesNotMatch(batchText, /review report|test failure/);

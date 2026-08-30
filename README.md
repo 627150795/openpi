@@ -326,7 +326,7 @@ acceptance: {
 
 Workflow 在清理隔离 checkout 前原子保存有界 Handoff Manifest：tracked binary patch、stat、branch/HEAD、untracked/ignored 清单与 cleanup receipt。状态不明就保留现场，不自动 merge、apply 或强删。
 
-设计细节见 [Workflow invocation graph](https://github.com/tt-a1i/openpi/blob/main/docs/design/WORKFLOW_INVOCATION_GRAPH.md)。
+设计细节见 [Workflow invocation graph](https://github.com/openpi-dev/openpi/blob/main/docs/design/WORKFLOW_INVOCATION_GRAPH.md)。
 
 ---
 

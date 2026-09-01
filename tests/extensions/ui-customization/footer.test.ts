@@ -9,6 +9,7 @@ import {
 import {
   buildSegmentCatalog,
   fitSegmentsToWidth,
+  formatDirectory,
   renderFooter,
   resolveLineSegments,
   type FooterSegment,
@@ -42,6 +43,22 @@ const gitInfo: GitInfoState = {
   changedFiles: 7,
   pullRequest: { number: 42, url: "https://example.com/pr/42", isDraft: false },
 };
+
+test("formatDirectory shortens Windows Home paths", () => {
+  assert.equal(
+    formatDirectory("C:\\Users\\Adam\\project", "C:\\Users\\Adam"),
+    "~/project",
+  );
+  assert.equal(formatDirectory("C:\\Users\\Adam", "C:\\Users\\Adam"), "~");
+  assert.equal(
+    formatDirectory("C:\\Users\\Adam2\\project", "C:\\Users\\Adam"),
+    "C:\\Users\\Adam2\\project",
+  );
+  assert.equal(
+    formatDirectory("/Users/adam/project", "/Users/adam"),
+    "~/project",
+  );
+});
 
 test("default one-line layout leads with model context and ends with cwd", () => {
   const lines = renderFooter({

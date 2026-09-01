@@ -1,5 +1,4 @@
 import { homedir } from "node:os";
-import { relative } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   getCapabilities,
@@ -117,10 +116,14 @@ export function formatTokens(tokens: number) {
   return `${(tokens / 1_000_000).toFixed(1)}m`;
 }
 
-export function formatDirectory(cwd: string) {
-  const home = homedir();
+export function formatDirectory(cwd: string, home = homedir()) {
   if (cwd === home) return "~";
-  const display = cwd.startsWith(`${home}/`) ? `~/${relative(home, cwd)}` : cwd;
+  const separator = cwd.startsWith(home) ? cwd[home.length] : undefined;
+  const child = separator === "/" || separator === "\\";
+  const relativePath = child ? cwd.slice(home.length + 1) : "";
+  const display = child
+    ? `~/${separator === "\\" ? relativePath.replaceAll("\\", "/") : relativePath}`
+    : cwd;
   return sanitizeTerminalLabel(display);
 }
 

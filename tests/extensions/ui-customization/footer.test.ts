@@ -47,12 +47,15 @@ const gitInfo: GitInfoState = {
 
 test("formatDirectory shortens Windows Home paths", () => {
   assert.equal(
-    formatDirectory("C:\\Users\\Adam\\project", "C:\\Users\\Adam"),
+    formatDirectory("C:\\Users\\Adam\\project", "C:\\Users\\Adam", win32),
     "~/project",
   );
-  assert.equal(formatDirectory("C:\\Users\\Adam", "C:\\Users\\Adam"), "~");
   assert.equal(
-    formatDirectory("C:\\Users\\Adam2\\project", "C:\\Users\\Adam"),
+    formatDirectory("C:\\Users\\Adam", "C:\\Users\\Adam", win32),
+    "~",
+  );
+  assert.equal(
+    formatDirectory("C:\\Users\\Adam2\\project", "C:\\Users\\Adam", win32),
     "C:\\Users\\Adam2\\project",
   );
   assert.equal(

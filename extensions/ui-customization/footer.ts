@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { posix, win32 } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   getCapabilities,
@@ -116,14 +117,21 @@ export function formatTokens(tokens: number) {
   return `${(tokens / 1_000_000).toFixed(1)}m`;
 }
 
-export function formatDirectory(cwd: string, home = homedir()) {
-  if (cwd === home) return "~";
-  const separator = cwd.startsWith(home) ? cwd[home.length] : undefined;
-  const child = separator === "/" || separator === "\\";
-  const relativePath = child ? cwd.slice(home.length + 1) : "";
-  const display = child
-    ? `~/${separator === "\\" ? relativePath.replaceAll("\\", "/") : relativePath}`
-    : cwd;
+export function formatDirectory(
+  cwd: string,
+  home = homedir(),
+  pathModule = process.platform === "win32" ? win32 : posix,
+) {
+  const relativePath = pathModule.relative(home, cwd);
+  const outsideHome =
+    relativePath === ".." ||
+    relativePath.startsWith(`..${pathModule.sep}`) ||
+    pathModule.isAbsolute(relativePath);
+  const display = outsideHome
+    ? cwd
+    : relativePath
+      ? `~/${relativePath.replaceAll(pathModule.sep, "/")}`
+      : "~";
   return sanitizeTerminalLabel(display);
 }
 

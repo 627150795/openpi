@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { posix, win32 } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   DEFAULT_FOOTER_LINES,
@@ -56,6 +57,20 @@ test("formatDirectory shortens Windows Home paths", () => {
   );
   assert.equal(
     formatDirectory("/Users/adam/project", "/Users/adam"),
+    "~/project",
+  );
+});
+
+test("formatDirectory respects POSIX backslashes as filename characters", () => {
+  assert.equal(
+    formatDirectory("/Users/adam\\project", "/Users/adam", posix),
+    "/Users/adam\\project",
+  );
+});
+
+test("formatDirectory compares Windows paths case-insensitively", () => {
+  assert.equal(
+    formatDirectory("c:\\users\\adam\\project", "C:\\Users\\Adam", win32),
     "~/project",
   );
 });

@@ -126,6 +126,35 @@ test("Windows force taskkill failure falls back without claiming tree terminatio
   assert.deepEqual(signals, ["SIGKILL"]);
 });
 
+test("Windows force taskkill timeout does not terminate only the shell", async () => {
+  const killer = new EventEmitter() as ChildProcess;
+  let helperKillCalled = false;
+  killer.kill = () => {
+    helperKillCalled = true;
+    return true;
+  };
+  setTimeout(() => killer.emit("close", null, null), 1_150);
+  const signals: Array<NodeJS.Signals | number | undefined> = [];
+
+  const result = await signalWindowsProcessTree(
+    {
+      pid: 43,
+      kill(signal) {
+        signals.push(signal);
+        return true;
+      },
+    },
+    "SIGKILL",
+    () => false,
+    () => killer,
+  );
+
+  assert.equal(result.outcome, "unresolved");
+  assert.match(result.detail, /taskkill timed out after 1100ms/);
+  assert.equal(helperKillCalled, false);
+  assert.deepEqual(signals, []);
+});
+
 test("Windows taskkill launch failure is explicit and uses the direct fallback", async () => {
   const signals: Array<NodeJS.Signals | number | undefined> = [];
   const result = await signalWindowsProcessTree(
@@ -173,16 +202,11 @@ test("Windows taskkill treats an already-exited target as a natural race", async
   assert.equal(directSignal, false);
 });
 
-test("Windows taskkill timeout waits for the stopped helper to close", async () => {
-  let helperKilled = false;
-  let resolveHelperKilled!: () => void;
-  const helperKilledPromise = new Promise<void>((resolve) => {
-    resolveHelperKilled = resolve;
-  });
+test("Windows taskkill timeout waits for helper close without stopping it", async () => {
+  let helperKillCalled = false;
   const killer = new EventEmitter() as ChildProcess;
   killer.kill = () => {
-    helperKilled = true;
-    resolveHelperKilled();
+    helperKillCalled = true;
     return true;
   };
 
@@ -191,9 +215,9 @@ test("Windows taskkill timeout waits for the stopped helper to close", async () 
   void resultPromise.then(() => {
     resolved = true;
   });
-  await helperKilledPromise;
+  await new Promise((resolve) => setTimeout(resolve, 10));
 
-  assert.equal(helperKilled, true);
+  assert.equal(helperKillCalled, false);
   assert.equal(resolved, false, "the next termination phase cannot overlap");
   killer.emit("close", null, "SIGKILL");
   assert.deepEqual(await resultPromise, {
@@ -600,12 +624,17 @@ test("taskkill terminates a Windows descendant process tree", {
     assert.equal(processGone(descendant), false);
 
     const [result] = await runTool(runtime, manager.kill([snap.id]));
-    assert.equal(result.killed, true);
-    assert.equal(result.terminationFailed, false);
     assert.ok(
       await pollUntil(() => processGone(descendant)),
       "taskkill /T removed the descendant",
     );
+    if (result.terminationFailed) {
+      assert.equal(result.killed, false);
+      assert.equal(result.status, "failed");
+    } else {
+      assert.equal(result.killed, true);
+      assert.equal(result.status, "killed");
+    }
   });
 });
 

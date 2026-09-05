@@ -47,7 +47,8 @@ export const MAX_SPILL_BYTES_PER_SESSION = 512 * 1024 * 1024;
 const STOP_TIMEOUT_MS = 5_000;
 /** SIGTERM is normally enough; the second deadline covers a wedged process. */
 const FORCE_KILL_AFTER_MS = 2_000;
-const FORCE_CLOSE_WAIT_MS = 500;
+/** Slow Windows taskkill startup must still have time to traverse the tree. */
+const FORCE_CLOSE_WAIT_MS = 1_200;
 /** Reserve this inside each existing termination phase for helper closure. */
 const TASKKILL_HELPER_CLOSE_WAIT_MS = 100;
 /** After termination, how long to wait for the natural close→flush→settle
@@ -318,11 +319,8 @@ export function waitForWindowsTaskkill(
     killer.once("close", onClose);
     timer = setTimeout(() => {
       timedOut = true;
-      try {
-        killer.kill("SIGKILL");
-      } catch {
-        // The helper may already be gone; the bounded result stays the same.
-      }
+      // Do not kill a timed-out taskkill helper: it may still be traversing
+      // the process tree. Terminating the helper here can orphan descendants.
       helperCloseTimer = setTimeout(() => {
         killer.unref();
         finish({
@@ -393,12 +391,14 @@ export async function signalWindowsProcessTree(
     attempt.outcome === "launch_failed"
       ? `taskkill failed to launch: ${attempt.error}`
       : attempt.outcome === "timed_out"
-        ? `taskkill timed out after ${attempt.timeoutMs}ms; helper ${attempt.helperClosed ? "closed after SIGKILL" : `did not close within an additional ${attempt.helperCloseTimeoutMs}ms`}`
+        ? `taskkill timed out after ${attempt.timeoutMs}ms; helper ${attempt.helperClosed ? "closed after timeout" : `did not close within an additional ${attempt.helperCloseTimeoutMs}ms`}`
         : `taskkill exited ${attempt.exitCode ?? "without a code"}${attempt.signal ? ` (${attempt.signal})` : ""}`;
+  // A force timeout means taskkill may still be traversing the tree. Do not
+  // replace it with a direct shell signal, which can orphan descendants.
   if (
     attempt.outcome === "timed_out" &&
-    !attempt.helperClosed &&
-    !targetExited()
+    !targetExited() &&
+    (signal === "SIGKILL" || !attempt.helperClosed)
   ) {
     return { outcome: "unresolved", detail };
   }

@@ -61,7 +61,15 @@ export function seedAgentDirectory(agentDirectory: string) {
   // reach the provider, rather than a no-op against the initial clamped level.
   writeFileSync(
     join(agentDirectory, "settings.json"),
-    `${JSON.stringify({ defaultThinkingLevel: "off" }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        defaultThinkingLevel: "off",
+        // Keep the provider failure test bounded while still exercising retry.
+        retry: { enabled: true, maxRetries: 1, baseDelayMs: 10 },
+      },
+      null,
+      2,
+    )}\n`,
   );
 }
 

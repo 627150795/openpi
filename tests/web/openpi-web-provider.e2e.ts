@@ -142,7 +142,7 @@ test("thinking level reaches the provider request end to end", async ({
 
 test("provider failures remain visible through SSE, snapshot, and reload", async ({
   page,
-}) => {
+}, testInfo) => {
   const provider = await startFakeProvider();
   const workspace = await mkdtemp(join(tmpdir(), "openpi-provider-error-"));
   try {
@@ -178,36 +178,72 @@ test("provider failures remain visible through SSE, snapshot, and reload", async
     await input.fill("Trigger a provider failure");
     await page.getByRole("button", { name: "发送", exact: true }).click();
 
-    const failure = page.locator(".assistant-outcome.error");
-    await expect(failure).toContainText("助手回复失败。", {
-      timeout: 30_000,
-    });
+    const readSnapshot = async () => {
+      const response = await page.request.get("/api/snapshot", {
+        headers: authHeaders,
+      });
+      expect(response.status()).toBe(200);
+      return (await response.json()) as {
+        runtime?: { status?: string };
+        selectedSession?: {
+          entries: Array<{
+            message?: {
+              role?: string;
+              stopReason?: string;
+              errorMessage?: string;
+            };
+          }>;
+        };
+      };
+    };
+    const finalState = async () => {
+      const snapshot = await readSnapshot();
+      const assistants = (snapshot.selectedSession?.entries ?? [])
+        .map((entry) => entry.message)
+        .filter((message) => message?.role === "assistant");
+      const lastAssistant = assistants.at(-1);
+      return {
+        runtimeStatus: snapshot.runtime?.status,
+        stopReason: lastAssistant?.stopReason,
+        hasErrorMessage:
+          lastAssistant?.errorMessage?.includes("Synthetic provider failure") ??
+          false,
+      };
+    };
+    await expect
+      .poll(finalState, { timeout: 30_000, intervals: [200, 500, 1_000] })
+      .toEqual({
+        runtimeStatus: "idle",
+        stopReason: "error",
+        hasErrorMessage: true,
+      });
+    expect(provider.requests.length).toBeGreaterThan(1);
+
+    const failure = page.locator(".assistant-outcome.error").last();
+    await expect(failure).toContainText("助手回复失败。", { timeout: 30_000 });
     await expect(failure).toContainText("Synthetic provider failure", {
       timeout: 30_000,
     });
-    expect(provider.requests.length).toBeGreaterThan(0);
-
-    const snapshot = await page.request.get("/api/snapshot", {
-      headers: authHeaders,
-    });
-    const selectedSession = (await snapshot.json()).selectedSession as {
-      entries: Array<{
-        message?: {
-          role?: string;
-          stopReason?: string;
-          errorMessage?: string;
-        };
-      }>;
-    };
-    const assistant = selectedSession.entries.find(
-      (entry) => entry.message?.role === "assistant",
-    )?.message;
+    await expect(page.locator(".composer-hint")).toContainText(
+      "当前轮次失败。",
+      { timeout: 30_000 },
+    );
+    const snapshot = await readSnapshot();
+    const assistants = (snapshot.selectedSession?.entries ?? [])
+      .map((entry) => entry.message)
+      .filter((message) => message?.role === "assistant");
+    const assistant = assistants.at(-1);
     expect(assistant?.stopReason).toBe("error");
     expect(assistant?.errorMessage).toContain("Synthetic provider failure");
+    await page.screenshot({
+      path: testInfo.outputPath("provider-error-final.png"),
+      fullPage: true,
+    });
 
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(page.locator(".assistant-outcome.error")).toContainText(
+    await expect(page.locator(".assistant-outcome.error").last()).toContainText(
       "Synthetic provider failure",
+      { timeout: 30_000 },
     );
   } finally {
     await provider.close();

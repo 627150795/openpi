@@ -69,6 +69,8 @@ export type FakeProvider = {
   readonly requests: RecordedProviderRequest[];
   /** Hold the next response until {@link release} settles it. */
   holdNextResponse(): void;
+  /** Fail provider responses until the server is closed. */
+  failResponses(errorMessage?: string): void;
   /** Release a held response so the turn can settle. */
   release(): void;
   close(): Promise<void>;
@@ -114,6 +116,7 @@ export async function startFakeProvider(): Promise<FakeProvider> {
   const requests: RecordedProviderRequest[] = [];
   let pendingRelease: (() => void) | undefined;
   let holdRequested = false;
+  let failureMessage: string | undefined;
 
   const server: Server = createServer(async (request, response) => {
     const path = request.url ?? "/";
@@ -135,6 +138,15 @@ export async function startFakeProvider(): Promise<FakeProvider> {
       headers: request.headers,
       body,
     });
+    if (failureMessage !== undefined) {
+      response.writeHead(500, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: { message: failureMessage, type: "provider_error" },
+        }),
+      );
+      return;
+    }
     if (holdRequested) {
       holdRequested = false;
       await new Promise<void>((resolve) => {
@@ -162,6 +174,9 @@ export async function startFakeProvider(): Promise<FakeProvider> {
     requests,
     holdNextResponse() {
       holdRequested = true;
+    },
+    failResponses(errorMessage = "Synthetic provider failure") {
+      failureMessage = errorMessage;
     },
     release() {
       const release = pendingRelease;

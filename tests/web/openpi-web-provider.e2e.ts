@@ -139,3 +139,78 @@ test("thinking level reaches the provider request end to end", async ({
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+test("provider failures remain visible through SSE, snapshot, and reload", async ({
+  page,
+}) => {
+  const provider = await startFakeProvider();
+  const workspace = await mkdtemp(join(tmpdir(), "openpi-provider-error-"));
+  try {
+    const imported = await page.request.post("/api/workspaces", {
+      headers: authHeaders,
+      data: { path: workspace },
+    });
+    expect(imported.status()).toBe(201);
+    const { path: canonicalWorkspace } = await imported.json();
+    const created = await page.request.post("/api/sessions", {
+      headers: authHeaders,
+      data: {
+        workspacePath: canonicalWorkspace,
+        commandId: "provider-error-e2e-session",
+      },
+    });
+    expect(created.status()).toBe(201);
+
+    const initialSnapshot = await page.request.get("/api/snapshot", {
+      headers: authHeaders,
+    });
+    const sessionId = (await initialSnapshot.json()).currentSessionId as string;
+    const selected = await page.request.post("/api/model", {
+      headers: authHeaders,
+      data: { provider: PROVIDER_ID, modelId: MODEL_ID, sessionId },
+    });
+    expect(selected.status()).toBe(200);
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const input = page.getByRole("textbox", { name: "描述任务" });
+    await expect(input).toBeVisible();
+    provider.failResponses();
+    await input.fill("Trigger a provider failure");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+
+    const failure = page.locator(".assistant-outcome.error");
+    await expect(failure).toContainText("助手回复失败。", {
+      timeout: 30_000,
+    });
+    await expect(failure).toContainText("Synthetic provider failure", {
+      timeout: 30_000,
+    });
+    expect(provider.requests.length).toBeGreaterThan(0);
+
+    const snapshot = await page.request.get("/api/snapshot", {
+      headers: authHeaders,
+    });
+    const selectedSession = (await snapshot.json()).selectedSession as {
+      entries: Array<{
+        message?: {
+          role?: string;
+          stopReason?: string;
+          errorMessage?: string;
+        };
+      }>;
+    };
+    const assistant = selectedSession.entries.find(
+      (entry) => entry.message?.role === "assistant",
+    )?.message;
+    expect(assistant?.stopReason).toBe("error");
+    expect(assistant?.errorMessage).toContain("Synthetic provider failure");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.locator(".assistant-outcome.error")).toContainText(
+      "Synthetic provider failure",
+    );
+  } finally {
+    await provider.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});

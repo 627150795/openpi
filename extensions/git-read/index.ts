@@ -205,7 +205,15 @@ export default function gitReadTools(pi: ExtensionAPI) {
       return new Text(`git show ${displayRevision(args.revision)}`, 0, 0);
     },
 
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, { expanded }, theme, context) {
+      if (context.isError) {
+        return new Text(
+          theme.fg("error", "git show failed") +
+            expandedResultPreview(result, undefined, theme),
+          0,
+          0,
+        );
+      }
       const details = result.details;
       let text = details?.command
         ? `showed ${details.lineCount ?? 0} lines`
@@ -250,7 +258,15 @@ export default function gitReadTools(pi: ExtensionAPI) {
       return new Text(text, 0, 0);
     },
 
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, { expanded }, theme, context) {
+      if (context.isError) {
+        return new Text(
+          theme.fg("error", "git diff failed") +
+            expandedResultPreview(result, undefined, theme),
+          0,
+          0,
+        );
+      }
       const details = result.details;
       let text = details?.command
         ? `${details.lineCount ?? 0} diff lines`
@@ -290,7 +306,15 @@ export default function gitReadTools(pi: ExtensionAPI) {
       return new Text(text, 0, 0);
     },
 
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, { expanded }, theme, context) {
+      if (context.isError) {
+        return new Text(
+          theme.fg("error", "git log failed") +
+            expandedResultPreview(result, undefined, theme),
+          0,
+          0,
+        );
+      }
       const details = result.details;
       let text = details?.command
         ? `${details.lineCount ?? 0} output lines`

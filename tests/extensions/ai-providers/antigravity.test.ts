@@ -738,6 +738,57 @@ test("variant collapse drops a family when discovery only exposes a retired memb
   assert.deepEqual(collapsed, []);
 });
 
+for (const [logicalId, retiredId, liveId] of [
+  ["claude-opus-4-6", "claude-opus-4-6", "claude-opus-4-6-thinking"],
+  ["claude-sonnet-4-6", "claude-sonnet-4-6-thinking", "claude-sonnet-4-6"],
+  ["gemini-3.1-pro", "gemini-3.1-pro-high", "gemini-3.1-pro-low"],
+] as const) {
+  for (const [scenario, wireIds] of [
+    ["retired only", [retiredId]],
+    ["live only", [liveId]],
+    ["retired and live", [retiredId, liveId]],
+  ] as const) {
+    test(`discovery respects ${logicalId} retirement: ${scenario}`, async () => {
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            models: Object.fromEntries(
+              wireIds.map((id) => [
+                id,
+                { supportsThinking: true, supportsImages: true },
+              ]),
+            ),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )) as typeof fetch;
+      const models = await fetchAntigravityModels({
+        allowNetwork: true,
+        credential: {
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+        },
+        publish: async () => true,
+        signal: new AbortController().signal,
+      });
+      if (scenario === "retired only") {
+        assert.deepEqual(models, []);
+      } else {
+        assert.equal(models.length, 1);
+        assert.equal(models[0]?.id, logicalId);
+        const body = buildRequestBody(
+          { ...GEMINI_MODEL, ...models[0] },
+          SIMPLE_CONTEXT,
+          { reasoning: "low" },
+          "p",
+        );
+        assert.equal(body.model, liveId);
+      }
+    });
+  }
+}
+
 test("Claude discovery and request output tokens are capped at 64000", async () => {
   globalThis.fetch = (async () =>
     new Response(

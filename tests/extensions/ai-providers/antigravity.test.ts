@@ -358,6 +358,118 @@ test("OAuth callback ignores a wrong state without consuming the real waiter", a
   assert.equal(credentials.projectId, "project");
 });
 
+test("manual OAuth denial with matching state preserves the authorization error", async () => {
+  let requests = 0;
+  globalThis.fetch = (async () => {
+    requests++;
+    throw new Error("No token exchange expected for denied authorization");
+  }) as typeof fetch;
+  const controller = new AbortController();
+  let callback: URL | undefined;
+  let prompts = 0;
+  try {
+    await assert.rejects(
+      loginAntigravity({
+        signal: controller.signal,
+        onAuth({ url }) {
+          const auth = new URL(url);
+          callback = new URL(auth.searchParams.get("redirect_uri")!);
+          callback.searchParams.set("state", auth.searchParams.get("state")!);
+          callback.searchParams.set("error", "access_denied");
+        },
+        onDeviceCode() {},
+        onPrompt: async () => "",
+        onSelect: async () => undefined,
+        onManualCodeInput: async () => {
+          prompts++;
+          // Bound the pre-fix loop without a timer-dependent failure.
+          if (prompts > 1) controller.abort("unexpected repeat prompt");
+          assert.ok(callback);
+          return callback.href;
+        },
+      }),
+      /Authorization failed: access_denied/,
+    );
+    assert.equal(prompts, 1);
+    assert.equal(requests, 0);
+  } finally {
+    controller.abort();
+  }
+});
+
+for (const scenario of [
+  "raw code",
+  "matching callback",
+  "callback without state",
+  "denial with wrong state",
+  "denial without state",
+] as const) {
+  test(`manual OAuth accepts valid authorization after ${scenario}`, async () => {
+    let exchangedCode: string | null | undefined;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url.includes("oauth2.googleapis.com/token")) {
+        assert.ok(init?.body instanceof URLSearchParams);
+        exchangedCode = init.body.get("code");
+        return Response.json({
+          access_token: "access",
+          refresh_token: "refresh",
+          expires_in: 3_600,
+        });
+      }
+      if (url.includes("v1internal:loadCodeAssist")) {
+        return Response.json({
+          currentTier: { id: "free-tier" },
+          paidTier: null,
+          cloudaicompanionProject: "project",
+        });
+      }
+      if (url.includes("googleapis.com/oauth2/v1/userinfo")) {
+        return Response.json({ email: "user@example.test" });
+      }
+      throw new Error(`Unexpected OAuth fetch: ${url}`);
+    }) as typeof fetch;
+    let callback: URL | undefined;
+    let prompts = 0;
+    const controller = new AbortController();
+    try {
+      const credentials = await loginAntigravity({
+        signal: controller.signal,
+        onAuth({ url }) {
+          const auth = new URL(url);
+          callback = new URL(auth.searchParams.get("redirect_uri")!);
+          if (scenario === "matching callback") {
+            callback.searchParams.set("state", auth.searchParams.get("state")!);
+          } else if (scenario === "denial with wrong state") {
+            callback.searchParams.set("state", "unrelated-login");
+          }
+          callback.searchParams.set(
+            scenario.startsWith("denial") ? "error" : "code",
+            scenario.startsWith("denial") ? "access_denied" : "valid-code",
+          );
+        },
+        onDeviceCode() {},
+        onPrompt: async () => "",
+        onSelect: async () => undefined,
+        onManualCodeInput: async () => {
+          prompts++;
+          if (prompts > 2) controller.abort("unexpected repeat prompt");
+          assert.ok(callback);
+          return scenario === "raw code" || prompts > 1
+            ? "valid-code"
+            : callback.href;
+        },
+      });
+      assert.equal(prompts, scenario.startsWith("denial") ? 2 : 1);
+      assert.equal(exchangedCode, "valid-code");
+      assert.equal(credentials.access, "access");
+      assert.equal(credentials.projectId, "project");
+    } finally {
+      controller.abort();
+    }
+  });
+}
+
 test("OAuth refresh preserves provider metadata and the old refresh token", async () => {
   const originalFetch = globalThis.fetch;
   try {

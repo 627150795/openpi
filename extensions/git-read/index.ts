@@ -155,6 +155,14 @@ function displayRevision(value: string | undefined, fallback = "HEAD") {
   return value === undefined || value.trim() === "" ? fallback : value.trim();
 }
 
+function renderCallLine(text: string) {
+  return new Text(
+    sanitizeTerminalText(text).replace(/\s+/gu, " ").trim(),
+    0,
+    0,
+  );
+}
+
 export default function gitReadTools(pi: ExtensionAPI) {
   const resultDirectories = new Set<string>();
   const rememberOutput = (outcome: GitOutcome) => {
@@ -202,7 +210,7 @@ export default function gitReadTools(pi: ExtensionAPI) {
     },
 
     renderCall(args) {
-      return new Text(`git show ${displayRevision(args.revision)}`, 0, 0);
+      return renderCallLine(`git show ${displayRevision(args.revision)}`);
     },
 
     renderResult(result, { expanded }, theme, context) {
@@ -255,7 +263,7 @@ export default function gitReadTools(pi: ExtensionAPI) {
       let text = `git diff ${from} → ${to}`;
       if (args.stat) text += " (stat)";
       if (args.path) text += ` ${args.path}`;
-      return new Text(text, 0, 0);
+      return renderCallLine(text);
     },
 
     renderResult(result, { expanded }, theme, context) {
@@ -303,7 +311,7 @@ export default function gitReadTools(pi: ExtensionAPI) {
       let text = `git log ${displayRevision(args.revision)}`;
       if (args.file) text += ` -- ${args.file}`;
       if (args.limit !== undefined) text += ` -n ${args.limit}`;
-      return new Text(text, 0, 0);
+      return renderCallLine(text);
     },
 
     renderResult(result, { expanded }, theme, context) {

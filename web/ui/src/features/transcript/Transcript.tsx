@@ -1,4 +1,6 @@
+import { StatusDot } from "@astryxdesign/core/StatusDot";
 import {
+  ArrowDown,
   Bot,
   Check,
   Clipboard,
@@ -6,8 +8,10 @@ import {
   FileText,
   Folder,
   Globe,
+  Image as ImageIcon,
   Lightbulb,
   Pencil,
+  RotateCcw,
   Search,
   Terminal,
   Workflow,
@@ -24,6 +28,8 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
+import type { WebSubagentActivity } from "../../../../../extensions/shared/web-observer-registry.ts";
+import { evidenceText, isEvidenceTool } from "../../../../protocol/evidence.ts";
 import type {
   WebLiveMessage,
   WebMessagePart,
@@ -39,8 +45,6 @@ import {
 } from "../../lib/format.ts";
 import type { LiveEntry } from "../../store/web-store.ts";
 import { ToolEvidence } from "./ToolEvidence.tsx";
-import { evidenceText, isEvidenceTool } from "../../../../protocol/evidence.ts";
-import { ArtifactProvider } from "../artifacts/Artifacts.tsx";
 
 type PersistedEntry = NonNullable<
   WebSnapshot["selectedSession"]
@@ -61,15 +65,54 @@ interface TranscriptProps {
   thinkingDurations: Record<string, number>;
   scrollToBottom: number;
   onResend: (content: string) => Promise<boolean>;
+  onInspectSubagent?: (id: string) => void;
+}
+
+function UserImageAttachments({ message }: { message: WebLiveMessage }) {
+  const { t } = useTranslation();
+  const images =
+    message.parts?.filter(
+      (part): part is Extract<WebMessagePart, { type: "image" }> =>
+        part.type === "image",
+    ) ?? [];
+  if (images.length === 0) return null;
+  const occurrences = new Map<string, number>();
+  const keyedImages = images.map((image) => {
+    const identity = `${image.mimeType}:${image.name ?? ""}:${image.previewUrl ?? ""}`;
+    const occurrence = occurrences.get(identity) ?? 0;
+    occurrences.set(identity, occurrence + 1);
+    return { image, key: `${identity}:${occurrence}` };
+  });
+  return (
+    <section className="message-attachments" aria-label={t("imageAttachments")}>
+      {keyedImages.map(({ image, key }) => (
+        <div className="message-attachment" key={key}>
+          {image.previewUrl ? (
+            <img
+              src={image.previewUrl}
+              alt={image.name ?? t("attachedImage")}
+            />
+          ) : (
+            <ImageIcon aria-hidden="true" />
+          )}
+          <span>{image.name ?? t("attachedImage")}</span>
+        </div>
+      ))}
+    </section>
+  );
 }
 
 type Status = "running" | "done" | "error" | "warn" | "unknown";
 interface RenderRow {
   key: string;
+  turn: number;
+  kind: "prompt" | "process" | "response" | "outcome" | "custom";
   content: ReactNode;
-  groupable?: boolean;
+  processType?: "thinking" | "tool" | "activity";
+  processPreview?: string;
+  processStatus?: Status;
   error?: boolean;
-  icon?: ReactNode;
+  outcome?: "failed" | "interrupted";
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -129,6 +172,50 @@ function StatusMark({ status }: { status: Status }) {
   return null;
 }
 
+function ProviderOutcome({
+  failed,
+  error,
+  retryPrompt,
+  canRetry,
+  onRetry,
+}: {
+  failed: boolean;
+  error?: string;
+  retryPrompt?: string;
+  canRetry: boolean;
+  onRetry: (content: string) => Promise<boolean>;
+}) {
+  const { t } = useTranslation();
+  const [retrying, setRetrying] = useState(false);
+  return (
+    <div
+      className={`provider-outcome ${failed ? "failed" : "aborted"}`}
+      role={failed ? "alert" : "status"}
+    >
+      <strong>
+        {t(failed ? "modelRequestFailed" : "modelRequestStopped")}
+      </strong>
+      {failed && <p>{error || t("modelFailureUnknown")}</p>}
+      {failed && <small>{t("modelFailureNextStep")}</small>}
+      {failed && retryPrompt && (
+        <div className="provider-outcome-actions">
+          <button
+            type="button"
+            disabled={!canRetry || retrying}
+            onClick={() => {
+              setRetrying(true);
+              void onRetry(retryPrompt).finally(() => setRetrying(false));
+            }}
+          >
+            <RotateCcw aria-hidden="true" />
+            {t(retrying ? "retryingPrompt" : "retryPrompt")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function iconForTool(name: string) {
   const lowered = name.toLowerCase();
   if (lowered === "bash") return <Terminal />;
@@ -158,6 +245,23 @@ function toolSummary(name: string, args: Record<string, unknown>) {
     : "";
 }
 
+function thinkingPreview(body: string) {
+  const line = body
+    .split("\n")
+    .map((value) => value.trim())
+    .find(Boolean);
+  if (!line) return "";
+  return compactSummary(
+    line
+      .replace(/^#{1,6}\s+/u, "")
+      .replace(/^>\s*/u, "")
+      .replace(/[*_~`]+/gu, "")
+      .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
+      .trim(),
+    110,
+  );
+}
+
 function EvidenceDetails({
   body,
   icon,
@@ -165,6 +269,7 @@ function EvidenceDetails({
   status,
   summary,
   thinking = false,
+  defaultOpen = false,
 }: {
   body: string;
   icon: ReactNode;
@@ -172,10 +277,12 @@ function EvidenceDetails({
   status: Status;
   summary?: string;
   thinking?: boolean;
+  defaultOpen?: boolean;
 }) {
   return (
     <details
-      className={`message-details tool-line ${status === "error" ? "error" : ""} ${thinking ? "thinking-line" : ""}`}
+      className={`message-details tool-line ${status} ${thinking ? "thinking-line" : ""}`}
+      open={defaultOpen || undefined}
     >
       <summary>
         <span className="details-mark" aria-hidden="true" />
@@ -229,22 +336,26 @@ function ActivityCard({
 function familyCard(
   part: Extract<WebMessagePart, { type: "toolCall" }>,
   result?: WebLiveMessage,
+  subagents: readonly WebSubagentActivity[] = [],
+  onInspectSubagent?: (id: string) => void,
 ) {
   const name = part.name || "";
   const args = parseArguments(part.arguments);
   const details = record(result?.details);
   const status = resultStatus(result);
   if (name === "subagent_spawn") {
-    const meta = [args.agent_type, args.model, args.working_dir]
+    const meta = [args.agent_type, details.model || args.model]
       .filter(Boolean)
       .join(" · ");
     return (
-      <ActivityCard
-        family="subagent"
-        title={`Spawn Subagent · ${String(details.title || args.name || "subagent")}`}
-        meta={meta || String(details.cwd || "")}
+      <SubagentCard
+        id={typeof details.id === "string" ? details.id : undefined}
+        title={String(details.title || args.name || "subagent")}
+        meta={meta}
         body={result?.content || String(args.prompt || part.arguments)}
-        status={status}
+        activity={subagents.find((item) => item.id === details.id)}
+        spawnFailed={result?.isError === true}
+        onInspect={onInspectSubagent}
       />
     );
   }
@@ -302,6 +413,61 @@ function familyCard(
   return null;
 }
 
+function SubagentCard({
+  id,
+  title,
+  meta,
+  body,
+  activity,
+  spawnFailed,
+  onInspect,
+}: {
+  id?: string;
+  title: string;
+  meta: string;
+  body: string;
+  activity?: WebSubagentActivity;
+  spawnFailed: boolean;
+  onInspect?: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  const state =
+    activity?.outcome === "interrupted" ? "interrupted" : activity?.status;
+  const label = state
+    ? t(`subagentState_${state}`)
+    : spawnFailed
+      ? t("subagentSpawnFailed")
+      : id
+        ? t("subagentStateUnavailable")
+        : t("subagentStarting");
+  return (
+    <section className="message-details activity-card subagent">
+      <button
+        className="subagent-card-open"
+        type="button"
+        disabled={!id || !onInspect}
+        aria-label={t("inspectSubagent", { name: title })}
+        onClick={() => id && onInspect?.(id)}
+      >
+        <span className="activity-icon" aria-hidden="true">
+          <Bot />
+        </span>
+        <span className="activity-main">
+          <strong className="activity-title">{title}</strong>
+          {meta && <span className="activity-meta">{meta}</span>}
+        </span>
+        <span className={`subagent-state ${state ?? "unknown"}`}>{label}</span>
+        <span aria-hidden="true">›</span>
+      </button>
+      <details className="subagent-receipt">
+        <summary>{t("subagentSpawnReceipt")}</summary>
+        <p>{t("subagentSpawnReceiptHint")}</p>
+        <pre className="details-body tool-evidence">{body}</pre>
+      </details>
+    </section>
+  );
+}
+
 function useElapsed(start: number | undefined, active: boolean) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -318,16 +484,19 @@ function ThinkingEvidence({
   duration,
   active,
   level,
+  defaultOpen,
 }: {
   body: string;
   start?: number;
   duration?: number;
   active: boolean;
   level?: string;
+  defaultOpen: boolean;
 }) {
   const { t } = useTranslation();
   const elapsed = useElapsed(start, active);
   const settled = duration ? formatElapsedMs(0, duration) : elapsed;
+  const preview = thinkingPreview(body);
   return (
     <EvidenceDetails
       body={body}
@@ -340,8 +509,9 @@ function ThinkingEvidence({
           : t("thinkingDone")
       }
       status={active ? "running" : "done"}
-      summary={settled ? `· ${settled}` : undefined}
+      summary={[preview, settled].filter(Boolean).join(" · ") || undefined}
       thinking
+      defaultOpen={defaultOpen}
     />
   );
 }
@@ -372,43 +542,51 @@ function MessageActions({
   );
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(content);
+  const [submitting, setSubmitting] = useState(false);
   const editInput = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (editing) editInput.current?.focus();
   }, [editing]);
+  const submitEdit = async () => {
+    if (submitting || !draft.trim() || !editable) return;
+    setSubmitting(true);
+    try {
+      if (await onResend(draft.trim())) setEditing(false);
+    } finally {
+      setSubmitting(false);
+    }
+  };
   if (editing) {
     return (
       <div className="message-editor">
         <textarea
           ref={editInput}
           value={draft}
+          aria-label={t("editMessage")}
+          readOnly={submitting}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || submitting) return;
             if (event.key === "Escape") setEditing(false);
-            if (
-              event.key === "Enter" &&
-              !event.shiftKey &&
-              !event.nativeEvent.isComposing
-            ) {
+            if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
-              void onResend(draft.trim()).then(
-                (sent) => sent && setEditing(false),
-              );
+              void submitEdit();
             }
           }}
         />
         <div className="message-edit-actions">
-          <button type="button" onClick={() => setEditing(false)}>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => setEditing(false)}
+          >
             {t("cancel")}
           </button>
           <button
             type="button"
             className="confirm"
-            onClick={() =>
-              void onResend(draft.trim()).then(
-                (sent) => sent && setEditing(false),
-              )
-            }
+            disabled={submitting || !draft.trim() || !editable}
+            onClick={() => void submitEdit()}
           >
             {t("confirmEdit")}
           </button>
@@ -425,7 +603,10 @@ function MessageActions({
           type="button"
           aria-label={t("editMessage")}
           title={t("editMessage")}
-          onClick={() => setEditing(true)}
+          onClick={() => {
+            setDraft(content);
+            setEditing(true);
+          }}
         >
           <Pencil />
         </button>
@@ -530,11 +711,20 @@ function buildEntries(
       ? [{ key: entry.id, timestamp: entry.timestamp, message: entry.message }]
       : [],
   );
-  const signatures = new Set(
-    entries.map(
-      (entry) => `${entry.message.role || ""}:${entry.message.content}`,
-    ),
-  );
+  const signature = (message: WebLiveMessage) =>
+    JSON.stringify([
+      message.role,
+      message.content,
+      message.parts?.map((part) =>
+        part.type === "image"
+          ? [part.type, part.mimeType, part.name]
+          : part.type,
+      ),
+      message.stopReason,
+      message.errorMessage,
+      message.toolCallId,
+    ]);
+  const signatures = new Set(entries.map((entry) => signature(entry.message)));
   const persistedToolIds = new Set(
     entries.flatMap((entry) =>
       entry.message.role === "toolResult" && entry.message.toolCallId
@@ -546,7 +736,7 @@ function buildEntries(
     if (
       live.message.role === "toolResult" && live.message.toolCallId
         ? persistedToolIds.has(live.message.toolCallId)
-        : signatures.has(`${live.message.role || ""}:${live.message.content}`)
+        : signatures.has(signature(live.message))
     )
       continue;
     entries.push({
@@ -555,19 +745,101 @@ function buildEntries(
       message: live.message,
     });
   }
-  return entries;
+  let setupEpisode = false;
+  return entries.filter(({ message }) => {
+    if (message.customType === "openpi-setup-request") {
+      setupEpisode = true;
+      return false;
+    }
+    if (!setupEpisode) return true;
+    if (message.role === "user") {
+      setupEpisode = false;
+      return true;
+    }
+    return false;
+  });
 }
 
-function groupRows(rows: RenderRow[], stepsLabel: string) {
-  const blocks: Array<{ grouped: boolean; rows: RenderRow[] }> = [];
+function ProcessSequence({
+  rows,
+  active,
+  defaultOpen,
+}: {
+  rows: RenderRow[];
+  active: boolean;
+  defaultOpen: boolean;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(active || defaultOpen);
+  const previous = useRef({ active, defaultOpen });
+  useEffect(() => {
+    const prior = previous.current;
+    if (active && !prior.active) setOpen(true);
+    else if (!active && prior.active) setOpen(defaultOpen);
+    else if (!active && defaultOpen !== prior.defaultOpen) setOpen(defaultOpen);
+    previous.current = { active, defaultOpen };
+  }, [active, defaultOpen]);
+  const thinking = rows.filter((row) => row.processType === "thinking").length;
+  const tools = rows.filter((row) => row.processType === "tool").length;
+  const activities = rows.filter(
+    (row) => row.processType === "activity",
+  ).length;
+  const counts = [
+    thinking ? t("processThinkingCount", { count: thinking }) : "",
+    tools ? t("processToolCount", { count: tools }) : "",
+    activities ? t("processActivityCount", { count: activities }) : "",
+  ].filter(Boolean);
+  const preview = rows.find((row) => row.processPreview)?.processPreview;
+  const failed = rows.some((row) => row.error);
+  const status: Status = active ? "running" : failed ? "error" : "done";
+  return (
+    <details
+      className={`process-sequence ${status}`}
+      open={open}
+      data-status={status}
+      data-running={active ? "true" : undefined}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <span className="details-mark" aria-hidden="true" />
+        <span className="process-sequence-title">
+          <strong>{t(active ? "processRunning" : "processDetails")}</strong>
+          {counts.length > 0 && <small>{counts.join(" · ")}</small>}
+        </span>
+        {preview && <span className="process-sequence-preview">{preview}</span>}
+        <StatusMark status={status} />
+      </summary>
+      <div className="process-sequence-body">
+        <div>
+          {rows.map((row) => (
+            <div
+              className={`process-step ${row.processStatus ?? "unknown"}`}
+              data-status={row.processStatus ?? "unknown"}
+              key={row.key}
+            >
+              {row.content}
+            </div>
+          ))}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function groupRows(rows: RenderRow[], active: boolean, defaultOpen: boolean) {
+  const blocks: Array<{ process: boolean; rows: RenderRow[] }> = [];
   for (const row of rows) {
     const last = blocks.at(-1);
-    if (row.groupable && last?.grouped) last.rows.push(row);
-    else blocks.push({ grouped: Boolean(row.groupable), rows: [row] });
+    if (row.kind === "process" && last?.process) last.rows.push(row);
+    else blocks.push({ process: row.kind === "process", rows: [row] });
   }
-  return blocks.map((block) => {
-    const blockKey = `${block.grouped ? "group" : "rows"}-${block.rows[0]?.key}`;
-    if (!block.grouped || block.rows.length < 4) {
+  let lastProcess = -1;
+  blocks.forEach((block, index) => {
+    if (block.process) lastProcess = index;
+  });
+  return blocks.map((block, index) => {
+    const blockKey = `${block.process ? "process" : "rows"}-${block.rows[0]?.key}`;
+    if (!block.process) {
       return (
         <Fragment key={blockKey}>
           {block.rows.map((row) => (
@@ -577,35 +849,107 @@ function groupRows(rows: RenderRow[], stepsLabel: string) {
       );
     }
     return (
-      <details
-        className={`tool-group ${block.rows.some((row) => row.error) ? "error" : ""}`}
+      <ProcessSequence
         key={blockKey}
-      >
-        <summary>
-          <span className="details-mark" aria-hidden="true" />
-          <span className="tool-group-icons" aria-hidden="true">
-            {block.rows.slice(0, 4).map((row) => (
-              <Fragment key={row.key}>{row.icon}</Fragment>
-            ))}
-          </span>
-          <span>
-            {block.rows.length} {stepsLabel}
-          </span>
-        </summary>
-        <div className="tool-group-body">
-          {block.rows.map((row) => (
-            <Fragment key={row.key}>{row.content}</Fragment>
-          ))}
-        </div>
-      </details>
+        rows={block.rows}
+        active={active && index === lastProcess}
+        defaultOpen={defaultOpen}
+      />
     );
   });
+}
+
+function ConversationTurn({
+  id,
+  rows,
+  active,
+  expandProcesses,
+}: {
+  id: number;
+  rows: RenderRow[];
+  active: boolean;
+  expandProcesses: boolean;
+}) {
+  const { t } = useTranslation();
+  const failed = rows.some((row) => row.outcome === "failed");
+  const interrupted = rows.some((row) => row.outcome === "interrupted");
+  const answered = rows.some((row) => row.kind === "response");
+  const status = failed
+    ? "failed"
+    : interrupted
+      ? "interrupted"
+      : active
+        ? "running"
+        : answered
+          ? "complete"
+          : "waiting";
+  const variant =
+    status === "failed"
+      ? "error"
+      : status === "interrupted"
+        ? "warning"
+        : status === "running"
+          ? "accent"
+          : status === "complete"
+            ? "success"
+            : "neutral";
+  const statusLabel = t(`turnState_${status}`);
+  return (
+    <section
+      className={`conversation-turn${id === 0 ? " prelude" : ""}`}
+      data-turn={id}
+    >
+      {id > 0 && status !== "complete" && (
+        <header className="turn-heading">
+          <span className="sr-only">{t("turnLabel", { number: id })}</span>
+          <span className={`turn-state ${status}`}>
+            <StatusDot
+              variant={variant}
+              label={statusLabel}
+              isPulsing={status === "running"}
+              icon={
+                status === "failed" || status === "interrupted" ? (
+                  <X aria-hidden="true" />
+                ) : undefined
+              }
+            />
+            {statusLabel}
+          </span>
+        </header>
+      )}
+      {groupRows(rows, active, expandProcesses)}
+    </section>
+  );
+}
+
+function renderTurns(
+  rows: RenderRow[],
+  running: boolean,
+  expandProcesses: boolean,
+) {
+  const turns: Array<{ id: number; rows: RenderRow[] }> = [];
+  for (const row of rows) {
+    const current = turns.at(-1);
+    if (current?.id === row.turn) current.rows.push(row);
+    else turns.push({ id: row.turn, rows: [row] });
+  }
+  const lastTurn = turns.at(-1)?.id;
+  return turns.map((turn) => (
+    <ConversationTurn
+      id={turn.id}
+      rows={turn.rows}
+      active={running && turn.id === lastTurn}
+      expandProcesses={expandProcesses}
+      key={`turn-group-${turn.id}-${turn.rows[0]?.key}`}
+    />
+  ));
 }
 
 export function Transcript(props: TranscriptProps) {
   const { t } = useTranslation();
   const viewport = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  const [readingHistory, setReadingHistory] = useState(false);
   const lastPath = useRef<string | undefined>(undefined);
   const lastScrollRequest = useRef(props.scrollToBottom);
   const entries = useMemo(
@@ -614,6 +958,23 @@ export function Transcript(props: TranscriptProps) {
   );
   const selected = props.snapshot.selectedSession;
   const active = selected?.id === props.snapshot.currentSessionId;
+
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      // Composer growth and window resizing must preserve bottom following.
+      // Reading older messages still owns the scroll position.
+      if (!pinned.current) return;
+      if (typeof element.scrollTo === "function") {
+        element.scrollTo({ top: element.scrollHeight, behavior: "instant" });
+      } else {
+        element.scrollTop = element.scrollHeight;
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   const { rows, turns } = useMemo(() => {
     const results = new Map<string, WebLiveMessage>();
@@ -636,6 +997,8 @@ export function Transcript(props: TranscriptProps) {
     });
     const turnItems: Array<{ id: number; title: string }> = [];
     let turn = 0;
+    let latestUserPrompt: string | undefined;
+    let latestUserIndex = -1;
     let lastUserIndex = -1;
     for (let index = entries.length - 1; index >= 0; index--) {
       if (entries[index]?.message.role === "user") {
@@ -661,6 +1024,8 @@ export function Transcript(props: TranscriptProps) {
         return [
           {
             key: entry.key,
+            turn,
+            kind: "custom",
             content: (
               <article className="message-row assistant detail-only">
                 <div className="message-content">
@@ -672,19 +1037,30 @@ export function Transcript(props: TranscriptProps) {
         ];
       }
       if (message.role === "user") {
+        const hasImages = message.parts?.some((part) => part.type === "image");
+        latestUserPrompt = message.content;
+        latestUserIndex = index;
         turn++;
-        turnItems.push({ id: turn, title: turnTitle(message.content) });
+        turnItems.push({
+          id: turn,
+          title: turnTitle(message.content || t("attachedImage")),
+        });
         return [
           {
             key: entry.key,
+            turn,
+            kind: "prompt",
             content: (
               <article className="message-row user" id={`turn-${turn}`}>
                 <div className="message-content">
-                  <div className="message-body">{message.content}</div>
+                  <UserImageAttachments message={message} />
+                  {message.content && (
+                    <div className="message-body">{message.content}</div>
+                  )}
                 </div>
                 <MessageActions
                   content={message.content}
-                  editable={active && index === lastUserIndex}
+                  editable={active && index === lastUserIndex && !hasImages}
                   timestamp={entry.timestamp}
                   onResend={props.onResend}
                 />
@@ -701,7 +1077,11 @@ export function Transcript(props: TranscriptProps) {
               active && props.liveRunning && index === entries.length - 1;
             detailRows.push({
               key: `${entry.key}-thinking-${partIndex}`,
-              icon: <Lightbulb />,
+              turn,
+              kind: "process",
+              processType: "thinking",
+              processPreview: thinkingPreview(part.text),
+              processStatus: isLive ? "running" : "done",
               content: (
                 <article className="message-row assistant detail-only">
                   <div className="message-content">
@@ -713,6 +1093,9 @@ export function Transcript(props: TranscriptProps) {
                       }
                       start={props.thinkingStarts[entry.key]}
                       duration={props.thinkingDurations[entry.key]}
+                      defaultOpen={
+                        props.snapshot.preferences.expandThinking === true
+                      }
                     />
                   </div>
                 </article>
@@ -734,15 +1117,27 @@ export function Transcript(props: TranscriptProps) {
                 cwd={selected?.cwd}
               />
             ) : (
-              familyCard(part, result)
+              familyCard(
+                part,
+                result,
+                active
+                  ? props.snapshot.runtime.capabilities.subagents?.items
+                  : undefined,
+                props.onInspectSubagent,
+              )
             );
             const args = parseArguments(part.arguments);
             const toolIcon = iconForTool(part.name);
+            const status = resultStatus(result);
             detailRows.push({
               key: `${entry.key}-tool-${part.id || partIndex}`,
-              groupable: !card || isEvidenceTool(part.name),
+              turn,
+              kind: "process",
+              processType: /^(subagent|workflow)/u.test(part.name)
+                ? "activity"
+                : "tool",
+              processStatus: status,
               error: Boolean(result?.isError),
-              icon: toolIcon,
               content: (
                 <article className="message-row assistant detail-only">
                   <div className="message-content">
@@ -757,7 +1152,7 @@ export function Transcript(props: TranscriptProps) {
                         icon={toolIcon}
                         name={part.name || "tool"}
                         summary={toolSummary(part.name, args)}
-                        status={resultStatus(result)}
+                        status={status}
                       />
                     )}
                   </div>
@@ -769,8 +1164,12 @@ export function Transcript(props: TranscriptProps) {
         if (message.content.trim())
           detailRows.push({
             key: `${entry.key}-answer`,
+            turn,
+            kind: "response",
             content: (
-              <article className="message-row assistant">
+              <article
+                className={`message-row assistant response${lastAssistantByTurn.has(index) ? " final-response" : ""}`}
+              >
                 <div className="message-content">
                   <Markdown>{message.content}</Markdown>
                 </div>
@@ -785,6 +1184,36 @@ export function Transcript(props: TranscriptProps) {
               </article>
             ),
           });
+        if (
+          message.stopReason === "error" ||
+          message.stopReason === "aborted"
+        ) {
+          const failed = message.stopReason === "error";
+          const retryPrompt =
+            latestUserIndex === lastUserIndex ? latestUserPrompt : undefined;
+          detailRows.push({
+            key: `${entry.key}-outcome`,
+            turn,
+            kind: "outcome",
+            error: failed,
+            outcome: failed ? "failed" : "interrupted",
+            content: (
+              <article className="message-row assistant outcome-row">
+                <ProviderOutcome
+                  failed={failed}
+                  error={message.errorMessage}
+                  retryPrompt={retryPrompt}
+                  canRetry={
+                    active &&
+                    !props.liveRunning &&
+                    props.snapshot.runtime.status !== "running"
+                  }
+                  onRetry={props.onResend}
+                />
+              </article>
+            ),
+          });
+        }
         return detailRows;
       }
       if (message.role === "toolResult") {
@@ -834,9 +1263,11 @@ export function Transcript(props: TranscriptProps) {
         return [
           {
             key: entry.key,
-            groupable: !family,
+            turn,
+            kind: "process",
+            processType: family ? "activity" : "tool",
+            processStatus: status,
             error: status === "error",
-            icon,
             content: (
               <article className="message-row assistant detail-only">
                 <div className="message-content">{content}</div>
@@ -853,6 +1284,10 @@ export function Transcript(props: TranscriptProps) {
     entries,
     props.liveRunning,
     props.onResend,
+    props.onInspectSubagent,
+    props.snapshot.runtime.capabilities.subagents,
+    props.snapshot.preferences.expandThinking,
+    props.snapshot.runtime.status,
     props.snapshot.thinking?.level,
     props.thinkingDurations,
     props.thinkingStarts,
@@ -871,6 +1306,7 @@ export function Transcript(props: TranscriptProps) {
     lastScrollRequest.current = props.scrollToBottom;
     if (changed || requested || pinned.current) {
       pinned.current = true;
+      setReadingHistory(false);
       if (typeof element.scrollTo === "function") {
         element.scrollTo({ top: element.scrollHeight, behavior: "instant" });
       } else {
@@ -890,7 +1326,7 @@ export function Transcript(props: TranscriptProps) {
       : t("modelRunning");
 
   return (
-    <ArtifactProvider sessionId={selected?.id}>
+    <>
       <div
         ref={viewport}
         className="conversation"
@@ -901,9 +1337,14 @@ export function Transcript(props: TranscriptProps) {
           pinned.current =
             element.scrollTop + element.clientHeight >=
             element.scrollHeight - 48;
+          setReadingHistory(!pinned.current);
         }}
       >
-        {groupRows(rows, t("stepsLabel"))}
+        {renderTurns(
+          rows,
+          running,
+          props.snapshot.preferences.expandThinking === true,
+        )}
         {running && (
           <div
             className="conversation-running"
@@ -915,6 +1356,21 @@ export function Transcript(props: TranscriptProps) {
           </div>
         )}
       </div>
+      {readingHistory && rows.length > 0 && (
+        <button
+          className="jump-to-latest"
+          type="button"
+          onClick={() => {
+            const element = viewport.current;
+            if (!element) return;
+            pinned.current = true;
+            setReadingHistory(false);
+            element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+          }}
+        >
+          <ArrowDown aria-hidden="true" /> {t("jumpToLatest")}
+        </button>
+      )}
       {turns.length > 1 && (
         <nav className="turn-rail" aria-label={t("conversationTurns")}>
           {turns.map((item) => (
@@ -935,6 +1391,6 @@ export function Transcript(props: TranscriptProps) {
           ))}
         </nav>
       )}
-    </ArtifactProvider>
+    </>
   );
 }

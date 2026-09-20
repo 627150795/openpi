@@ -32,9 +32,7 @@ import {
   type WebTurnCancellationResult,
   WebRuntimeRequestError,
 } from "./types.ts";
-import {
-  projectMessage,
-} from "../protocol/types.ts";
+import { projectMessage, projectAssistantError } from "../protocol/types.ts";
 import { elapsed, traceWeb } from "../trace.ts";
 import {
   applyHttpProxySettings,
@@ -54,6 +52,9 @@ import {
   projectWebTrustStatus,
 } from "./trust-status.ts";
 import { projectWebModelSearch } from "./model-discovery.ts";
+import {
+  projectWebSettingsResources,
+} from "./settings-catalog.ts";
 
 const STARTUP_TIMEOUT_MS = 15_000;
 const TURN_CANCELLATION_SETTLEMENT_TIMEOUT_MS = 10_000;
@@ -401,6 +402,12 @@ export class PiWebRuntime implements WebRuntimeController {
     return commandsForServices(this.runtime.services);
   }
 
+  listSettingsResources() {
+    this.assertActive();
+    this.assertWorkspaceSelected();
+    return projectWebSettingsResources(this.runtime.services.resourceLoader);
+  }
+
   listProviderAuth(): WebProviderAuthProjection {
     const modelRuntime = this.runtime.services.modelRuntime;
     const allProviders = modelRuntime.getProviders();
@@ -453,6 +460,26 @@ export class PiWebRuntime implements WebRuntimeController {
         namesTruncated,
         maxProviders: WEB_MAX_PROVIDER_AUTH_ITEMS,
       },
+    };
+  }
+
+  getSessionUsage() {
+    const stats = this.runtime.session.getSessionStats();
+    return {
+      input: stats.tokens.input,
+      output: stats.tokens.output,
+      cacheRead: stats.tokens.cacheRead,
+      cacheWrite: stats.tokens.cacheWrite,
+      total: stats.tokens.total,
+      ...(stats.contextUsage
+        ? {
+            context: {
+              tokens: stats.contextUsage.tokens,
+              contextWindow: stats.contextUsage.contextWindow,
+              percent: stats.contextUsage.percent,
+            },
+          }
+        : {}),
     };
   }
 
@@ -722,6 +749,15 @@ export class PiWebRuntime implements WebRuntimeController {
           }
         });
         await session.prompt(content, {
+          ...(options?.images?.length
+            ? {
+                images: options.images.map(({ data, mimeType }) => ({
+                  type: "image" as const,
+                  data,
+                  mimeType,
+                })),
+              }
+            : {}),
           ...(session.isStreaming
             ? { streamingBehavior: "followUp" as const }
             : {}),
@@ -810,7 +846,7 @@ export class PiWebRuntime implements WebRuntimeController {
           this.emit("prompt_failed", {
             ...(options?.commandId ? { commandId: options.commandId } : {}),
             sessionId,
-            error: errorText(error),
+            error: projectAssistantError(errorText(error)).value,
           });
         }
         if (promptTrace) {
@@ -819,7 +855,7 @@ export class PiWebRuntime implements WebRuntimeController {
             commandId: promptTrace.commandId,
             sessionId,
             elapsedMs: elapsed(startedAt),
-            error: errorText(error),
+            error: projectAssistantError(errorText(error)).value,
           });
           this.removePromptTrace(promptTrace);
         }
@@ -1161,19 +1197,19 @@ export class PiWebRuntime implements WebRuntimeController {
           eventDetail.stopReason = message.stopReason;
         }
         if (typeof message.errorMessage === "string") {
-          eventDetail.errorMessage = message.errorMessage;
+          eventDetail.errorMessage = projectAssistantError(message.errorMessage).value;
         }
       }
       if (event.type === "auto_retry_start") {
         eventDetail.attempt = event.attempt;
         eventDetail.maxAttempts = event.maxAttempts;
         eventDetail.delayMs = event.delayMs;
-        eventDetail.errorMessage = event.errorMessage;
+        eventDetail.errorMessage = projectAssistantError(event.errorMessage).value;
       }
       if (event.type === "auto_retry_end") {
         eventDetail.attempt = event.attempt;
         eventDetail.success = event.success;
-        if (event.finalError) eventDetail.finalError = event.finalError;
+        if (event.finalError) eventDetail.finalError = projectAssistantError(event.finalError).value;
       }
       if (event.type === "agent_end") eventDetail.willRetry = event.willRetry;
       traceWeb("agent_event", eventDetail);

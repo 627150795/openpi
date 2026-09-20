@@ -3,6 +3,9 @@ import type {
   WebModelSearchResult,
   WebCommandDiscoveryResult,
   WebModelSummary,
+  WebSettingsResourceCatalog,
+  WebSessionUsage,
+  WebPromptImage,
 } from "../protocol/types.ts";
 import type { WebProjectTrustStatus } from "./trust-status.ts";
 
@@ -65,6 +68,7 @@ export class WebRuntimeRequestError extends Error {
 export interface WebPromptOptions {
   commandId?: string;
   expectedSessionId?: string;
+  images?: readonly WebPromptImage[];
 }
 
 export interface WebPromptAdmissionReceipt {
@@ -141,7 +145,9 @@ export interface WebRuntimeController {
   listModels(): WebModelSummary[];
   searchModels(query: string, limit?: number): WebModelSearchResult;
   listCommands?(): WebCommandDiscoveryResult;
+  listSettingsResources?(): WebSettingsResourceCatalog;
   listProviderAuth?(): WebProviderAuthProjection;
+  getSessionUsage?(): WebSessionUsage;
   getThinkingState?(): WebThinkingProjection;
   setThinkingLevel?(
     level: string,

@@ -1,5 +1,10 @@
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
   createServer,
@@ -10,11 +15,14 @@ import {
 import { URL } from "node:url";
 import { promisify } from "node:util";
 import {
+  runWebCapabilityAction,
   subscribeWebCapabilities,
+  type WebCapabilityActionRequest,
   webCapabilityDetail,
   webCapabilitySnapshot,
 } from "../../extensions/shared/web-observer-registry.ts";
 import { loadSetupConfig } from "../../extensions/shared/setup-config.ts";
+import { projectWebSetupConfig } from "../runtime/settings-catalog.ts";
 import {
   PiWebAdapter,
   WebReadOnlySessionError,
@@ -28,8 +36,14 @@ import {
   WEB_MAX_MODEL_QUERY,
   WEB_MAX_MODEL_SEARCH_RESULTS,
   WEB_MAX_SNAPSHOT_BYTES,
+  WEB_PROMPT_IMAGE_MAX_BYTES,
+  WEB_PROMPT_IMAGE_MAX_COUNT,
+  WEB_PROMPT_IMAGE_MAX_TOTAL_BYTES,
   WEB_PROTOCOL_VERSION,
   type WebEvent,
+  type WebEmbeddedBrowserAction,
+  type WebInteractiveTerminalEvent,
+  type WebPromptImage,
   type WebSnapshot,
 } from "../protocol/types.ts";
 import {
@@ -40,11 +54,26 @@ import { elapsed, traceWeb } from "../trace.ts";
 import { reduceLiveTools } from "../protocol/live-tools.ts";
 import type { LiveToolEvidence } from "../protocol/evidence.ts";
 import { ArtifactError, ArtifactReader } from "./artifacts.ts";
+import {
+  EmbeddedBrowserManager,
+  type EmbeddedBrowserService,
+} from "./embedded-browser.ts";
+import {
+  GitReviewBaselineStore,
+  type GitReviewService,
+} from "./git-review.ts";
+import {
+  InteractiveTerminalManager,
+  INTERACTIVE_TERMINAL_MAX_INPUT,
+  type InteractiveTerminalService,
+} from "./interactive-terminal.ts";
 
 const HOST = "127.0.0.1";
 const UI_ROOT = new URL("../dist/", import.meta.url);
 const MAX_COMMAND_BYTES = 16 * 1024;
+const MAX_PROMPT_REQUEST_BYTES = 12 * 1024 * 1024;
 const MAX_SSE_CLIENTS = 8;
+const MAX_TERMINAL_STREAMS = 8;
 const MAX_SSE_BUFFER_BYTES = 256 * 1024;
 const MAX_SSE_REPLAY_BYTES = MAX_SSE_BUFFER_BYTES;
 const DEFAULT_SSE_HEARTBEAT_MS = 15_000;
@@ -62,6 +91,210 @@ const THINKING_LEVELS = new Set([
 ]);
 const execFileAsync = promisify(execFile);
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+const promptImageMimeTypes = new Set<WebPromptImage["mimeType"]>([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+
+function hasImageSignature(bytes: Buffer, mimeType: WebPromptImage["mimeType"]) {
+  if (mimeType === "image/png")
+    return bytes
+      .subarray(0, 8)
+      .equals(Buffer.from("89504e470d0a1a0a", "hex"));
+  if (mimeType === "image/jpeg")
+    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (mimeType === "image/gif") {
+    const signature = bytes.subarray(0, 6).toString("ascii");
+    return signature === "GIF87a" || signature === "GIF89a";
+  }
+  return (
+    bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+    bytes.subarray(8, 12).toString("ascii") === "WEBP"
+  );
+}
+
+function parsePromptImages(value: unknown) {
+  if (value === undefined)
+    return { ok: true as const, images: [] as WebPromptImage[], bytes: 0 };
+  if (!Array.isArray(value) || value.length > WEB_PROMPT_IMAGE_MAX_COUNT)
+    return { ok: false as const, error: "prompt images exceed the count limit" };
+  const images: WebPromptImage[] = [];
+  let totalBytes = 0;
+  for (const item of value) {
+    if (!isRecord(item))
+      return { ok: false as const, error: "prompt images must be objects" };
+    const mimeType = item.mimeType;
+    const data = item.data;
+    const name = item.name;
+    if (
+      typeof mimeType !== "string" ||
+      !promptImageMimeTypes.has(mimeType as WebPromptImage["mimeType"]) ||
+      typeof data !== "string" ||
+      data.length === 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+        data,
+      ) ||
+      (name !== undefined &&
+        (typeof name !== "string" || name.length === 0 || name.length > 255)) ||
+      Object.keys(item).some(
+        (key) => !["data", "mimeType", "name"].includes(key),
+      )
+    ) {
+      return { ok: false as const, error: "prompt image metadata is invalid" };
+    }
+    const bytes = Buffer.from(data, "base64");
+    if (
+      bytes.length === 0 ||
+      bytes.length > WEB_PROMPT_IMAGE_MAX_BYTES ||
+      !hasImageSignature(bytes, mimeType as WebPromptImage["mimeType"])
+    ) {
+      return {
+        ok: false as const,
+        error: "prompt image data is invalid or too large",
+      };
+    }
+    totalBytes += bytes.length;
+    if (totalBytes > WEB_PROMPT_IMAGE_MAX_TOTAL_BYTES)
+      return {
+        ok: false as const,
+        error: "prompt images exceed the total size limit",
+      };
+    images.push({
+      data,
+      mimeType: mimeType as WebPromptImage["mimeType"],
+      ...(typeof name === "string" ? { name } : {}),
+    });
+  }
+  return { ok: true as const, images, bytes: totalBytes };
+}
+
+function promptImageSignature(images: readonly WebPromptImage[]) {
+  const hash = createHash("sha256");
+  for (const image of images) {
+    hash.update(image.mimeType);
+    hash.update("\0");
+    hash.update(image.name ?? "");
+    hash.update("\0");
+    hash.update(image.data);
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function browserAddress(value: unknown) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_048)
+    return undefined;
+  try {
+    const target = new URL(value);
+    if (
+      (target.protocol !== "http:" && target.protocol !== "https:") ||
+      target.username ||
+      target.password
+    )
+      return undefined;
+    return target.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function finiteNumber(
+  value: unknown,
+  min: number,
+  max: number,
+): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
+}
+
+function parseBrowserAction(
+  body: Record<string, unknown>,
+): WebEmbeddedBrowserAction | undefined {
+  const action = body.action;
+  if (action === "navigate") {
+    const url = browserAddress(body.url);
+    return url ? ({ type: "navigate", url } satisfies WebEmbeddedBrowserAction) : undefined;
+  }
+  if (
+    action === "back" ||
+    action === "forward" ||
+    action === "reload" ||
+    action === "stop"
+  )
+    return { type: action } satisfies WebEmbeddedBrowserAction;
+  if (
+    action === "resize" &&
+    isBoundedInteger(body.width, 320, 2_560) &&
+    isBoundedInteger(body.height, 240, 2_560)
+  ) {
+    return {
+      type: "resize",
+      width: body.width,
+      height: body.height,
+    } satisfies WebEmbeddedBrowserAction;
+  }
+  if (
+    action === "mouse" &&
+    ["move", "down", "up", "wheel"].includes(String(body.event)) &&
+    finiteNumber(body.x, 0, 4_096) &&
+    finiteNumber(body.y, 0, 4_096) &&
+    (body.button === undefined ||
+      ["left", "middle", "right"].includes(String(body.button))) &&
+    (body.deltaX === undefined || finiteNumber(body.deltaX, -10_000, 10_000)) &&
+    (body.deltaY === undefined || finiteNumber(body.deltaY, -10_000, 10_000))
+  ) {
+    return {
+      type: "mouse",
+      event: body.event as "move" | "down" | "up" | "wheel",
+      x: body.x,
+      y: body.y,
+      ...(body.button
+        ? { button: body.button as "left" | "middle" | "right" }
+        : {}),
+      ...(typeof body.deltaX === "number" ? { deltaX: body.deltaX } : {}),
+      ...(typeof body.deltaY === "number" ? { deltaY: body.deltaY } : {}),
+    } satisfies WebEmbeddedBrowserAction;
+  }
+  if (
+    action === "key" &&
+    (body.event === "down" || body.event === "up") &&
+    typeof body.key === "string" &&
+    body.key.length > 0 &&
+    body.key.length <= 32 &&
+    (body.code === undefined ||
+      (typeof body.code === "string" && body.code.length <= 64)) &&
+    (body.text === undefined ||
+      (typeof body.text === "string" && body.text.length <= 8))
+  ) {
+    return {
+      type: "key",
+      event: body.event,
+      key: body.key,
+      ...(typeof body.code === "string" ? { code: body.code } : {}),
+      ...(typeof body.text === "string" ? { text: body.text } : {}),
+    } satisfies WebEmbeddedBrowserAction;
+  }
+  return undefined;
+}
+
+function isBoundedInteger(
+  value: unknown,
+  min: number,
+  max: number,
+): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= min &&
+    value <= max
+  );
+}
+
 type PromptAdmissionResponse = {
   readonly status: number;
   readonly body: Record<string, unknown>;
@@ -70,6 +303,7 @@ type PromptAdmissionResponse = {
 type PromptAdmission = {
   readonly sessionId: string;
   readonly content: string;
+  readonly imageSignature: string;
   readonly completion: Promise<PromptAdmissionResponse>;
   result?: PromptAdmissionResponse;
 };
@@ -104,6 +338,9 @@ export interface WebHostOptions {
   token?: string;
   allowedOrigins?: readonly string[];
   directoryChooser?: (signal: AbortSignal) => Promise<string | undefined>;
+  embeddedBrowser?: EmbeddedBrowserService;
+  gitReviews?: GitReviewService;
+  interactiveTerminals?: InteractiveTerminalService;
   shutdownTimeoutMs?: number;
   sseHeartbeatMs?: number;
 }
@@ -113,6 +350,7 @@ export class WebHost {
   private readonly token: Buffer;
   private readonly adapter: PiWebAdapter;
   private readonly clients = new Set<ServerResponse>();
+  private readonly terminalStreams = new Set<ServerResponse>();
   private readonly clientHeartbeats = new Map<
     ServerResponse,
     ReturnType<typeof setInterval>
@@ -129,6 +367,9 @@ export class WebHost {
   private readonly directoryChooser: NonNullable<
     WebHostOptions["directoryChooser"]
   >;
+  private readonly embeddedBrowser: EmbeddedBrowserService;
+  private readonly gitReviews: GitReviewService;
+  private readonly interactiveTerminals: InteractiveTerminalService;
   private readonly shutdownTimeoutMs: number;
   private readonly sseHeartbeatMs: number;
   private readonly unsubscribeCapabilities: () => void;
@@ -155,6 +396,12 @@ export class WebHost {
     this.allowedOrigins = new Set(options.allowedOrigins ?? []);
     this.directoryChooser =
       options.directoryChooser ?? (() => this.chooseDirectory());
+    this.embeddedBrowser = options.embeddedBrowser ?? new EmbeddedBrowserManager();
+    this.gitReviews =
+      options.gitReviews ??
+      new GitReviewBaselineStore(this.runtime.sessionDirectory);
+    this.interactiveTerminals =
+      options.interactiveTerminals ?? new InteractiveTerminalManager();
     this.shutdownTimeoutMs =
       options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
     if (
@@ -238,7 +485,21 @@ export class WebHost {
   }
 
   publish(type: string, detail?: Record<string, unknown>) {
-    if (["session_start", "session_switched", "session_created", "session_archived", "workspace_removed"].includes(type)) this.artifacts.revoke();
+    if (["session_start", "session_switched", "session_created", "session_archived", "workspace_removed"].includes(type)) {
+      this.artifacts.revoke();
+      if (this.runtime.workspaceSelected) {
+        this.embeddedBrowser.retain(
+          this.runtime.sessionManager.getSessionId(),
+        );
+        this.interactiveTerminals.retain(
+          this.runtime.sessionManager.getSessionId(),
+          this.runtime.cwd,
+        );
+      } else {
+        this.embeddedBrowser.retain();
+        this.interactiveTerminals.dispose();
+      }
+    }
     this.liveTools = reduceLiveTools(this.liveTools, type, detail ?? {});
     let event: WebEvent = {
       protocolVersion: WEB_PROTOCOL_VERSION,
@@ -285,9 +546,14 @@ export class WebHost {
     this.stopPromise = (async () => {
       this.unsubscribeCapabilities();
       this.artifacts.dispose();
+      this.interactiveTerminals.dispose();
       this.unsubscribeRuntime();
       this.chooserAbort.abort();
       for (const client of [...this.clients]) this.removeSseClient(client, "end");
+      for (const stream of [...this.terminalStreams]) {
+        if (!stream.writableEnded) stream.end();
+      }
+      this.terminalStreams.clear();
       const closeServer = this.server.listening
         ? new Promise<void>((resolve) => {
             const forceClose = setTimeout(
@@ -309,7 +575,11 @@ export class WebHost {
         : Promise.resolve();
       const disposeRuntime = (async () => {
         await this.drainLeaseSensitiveRequests();
-        await this.runtime.dispose();
+        await Promise.all([
+          this.runtime.dispose(),
+          this.gitReviews.dispose?.(),
+          this.embeddedBrowser.dispose(),
+        ]);
       })();
       const cleanup = Promise.all([disposeRuntime, closeServer]).then(
         () => undefined,
@@ -371,8 +641,11 @@ export class WebHost {
     if (pathname === "/api/turns/cancel") return true;
     return pathname.startsWith("/api/workspaces") ||
       pathname.startsWith("/api/sessions") ||
+      pathname.startsWith("/api/terminal") ||
+      pathname.startsWith("/api/browser") ||
       pathname === "/api/model" ||
-      pathname === "/api/thinking";
+      pathname === "/api/thinking" ||
+      pathname === "/api/capabilities/action";
   }
 
   private async drainLeaseSensitiveRequests() {
@@ -418,7 +691,7 @@ export class WebHost {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
         "Content-Security-Policy":
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         "Referrer-Policy": "no-referrer",
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cross-Origin-Opener-Policy": "same-origin",
@@ -452,6 +725,238 @@ export class WebHost {
     }
     if (!this.authorized(request))
       return this.json(response, 401, { error: "invalid or missing token" });
+    if (url.pathname === "/api/browser/open") {
+      if (request.method !== "POST")
+        return this.json(response, 405, {
+          error: "browser launch requires POST",
+        });
+      const body = await this.readJson(request);
+      const target = browserAddress(body.url);
+      if (
+        typeof body.sessionId !== "string" ||
+        !target ||
+        (body.width !== undefined && !isBoundedInteger(body.width, 320, 2_560)) ||
+        (body.height !== undefined && !isBoundedInteger(body.height, 240, 2_560)) ||
+        Object.keys(body).some(
+          (key) => !["sessionId", "url", "width", "height"].includes(key),
+        )
+      ) {
+        return this.json(response, 400, {
+          code: "INVALID_BROWSER_OPEN_REQUEST",
+          error:
+            "an exact Session id, bounded HTTP address, and optional viewport are required",
+        });
+      }
+      if (!(await this.requireActiveToolSession(body.sessionId, response)))
+        return;
+      const state = await this.embeddedBrowser.open(
+        body.sessionId,
+        target,
+        {
+          width: typeof body.width === "number" ? body.width : 1_024,
+          height: typeof body.height === "number" ? body.height : 768,
+        },
+      );
+      return this.json(response, 200, state);
+    }
+    if (url.pathname === "/api/browser/state") {
+      if (request.method !== "GET")
+        return this.json(response, 405, { error: "browser state requires GET" });
+      const sessionId = url.searchParams.get("sessionId");
+      if (!sessionId || !this.validTerminalQuery(url, ["sessionId"]))
+        return this.json(response, 400, {
+          code: "INVALID_BROWSER_TARGET",
+          error: "an exact Session id is required",
+        });
+      if (!(await this.requireActiveToolSession(sessionId, response))) return;
+      const state = await this.embeddedBrowser.state(sessionId);
+      return state
+        ? this.json(response, 200, state)
+        : this.json(response, 404, {
+            code: "BROWSER_NOT_FOUND",
+            error: "the embedded browser is not running",
+          });
+    }
+    if (url.pathname === "/api/browser/frame") {
+      if (request.method !== "GET")
+        return this.json(response, 405, { error: "browser frame requires GET" });
+      const sessionId = url.searchParams.get("sessionId");
+      if (!sessionId || !this.validTerminalQuery(url, ["sessionId"]))
+        return this.json(response, 400, {
+          code: "INVALID_BROWSER_TARGET",
+          error: "an exact Session id is required",
+        });
+      if (!(await this.requireActiveToolSession(sessionId, response))) return;
+      const frame = await this.embeddedBrowser.frame(sessionId);
+      if (!frame)
+        return this.json(response, 404, {
+          code: "BROWSER_NOT_FOUND",
+          error: "the embedded browser is not running",
+        });
+      response.writeHead(200, {
+        "Content-Type": "image/jpeg",
+        "Content-Length": frame.length,
+        "Cache-Control": "no-store",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "X-Content-Type-Options": "nosniff",
+      });
+      response.end(frame);
+      return;
+    }
+    if (url.pathname === "/api/browser/action") {
+      if (request.method !== "POST")
+        return this.json(response, 405, { error: "browser actions require POST" });
+      const body = await this.readJson(request);
+      if (typeof body.sessionId !== "string")
+        return this.json(response, 400, {
+          code: "INVALID_BROWSER_ACTION",
+          error: "an exact Session id and browser action are required",
+        });
+      const action = parseBrowserAction(body);
+      if (!action)
+        return this.json(response, 400, {
+          code: "INVALID_BROWSER_ACTION",
+          error: "the browser action is invalid",
+        });
+      if (!(await this.requireActiveToolSession(body.sessionId, response)))
+        return;
+      const state = await this.embeddedBrowser.action(body.sessionId, action);
+      return state
+        ? this.json(response, 200, state)
+        : this.json(response, 404, {
+            code: "BROWSER_NOT_FOUND",
+            error: "the embedded browser is not running",
+          });
+    }
+    if (url.pathname === "/api/terminal/events") {
+      if (request.method !== "GET")
+        return this.json(response, 405, {
+          error: "terminal events require GET",
+        });
+      return this.interactiveTerminalEvents(request, response, url);
+    }
+    if (url.pathname === "/api/terminal") {
+      if (request.method === "POST") {
+        const body = await this.readJson(request);
+        if (
+          Object.keys(body).length !== 3 ||
+          typeof body.sessionId !== "string" ||
+          !isBoundedInteger(body.cols, 2, 1_000) ||
+          !isBoundedInteger(body.rows, 2, 1_000)
+        ) {
+          return this.json(response, 400, {
+            code: "INVALID_TERMINAL_CREATE_REQUEST",
+            error:
+              "an exact Session id and bounded terminal dimensions are required",
+          });
+        }
+        const cwd = await this.requireActiveToolSession(
+          body.sessionId,
+          response,
+        );
+        if (!cwd) return;
+        const terminal = await this.interactiveTerminals.create({
+          sessionId: body.sessionId,
+          cwd,
+          cols: body.cols,
+          rows: body.rows,
+        });
+        return this.json(response, terminal.reused ? 200 : 201, terminal);
+      }
+      const sessionId = url.searchParams.get("sessionId");
+      const id = url.searchParams.get("id");
+      if (
+        !this.validTerminalQuery(url, ["sessionId", "id"]) ||
+        !sessionId ||
+        !id
+      ) {
+        return this.json(response, 400, {
+          code: "INVALID_TERMINAL_TARGET",
+          error: "an exact terminal and Session id are required",
+        });
+      }
+      if (!(await this.requireActiveToolSession(sessionId, response))) return;
+      if (request.method === "GET") {
+        const terminal = this.interactiveTerminals.get(sessionId, id);
+        return terminal
+          ? this.json(response, 200, terminal)
+          : this.json(response, 404, {
+              code: "TERMINAL_NOT_FOUND",
+              error: "the interactive terminal expired or closed",
+            });
+      }
+      if (request.method === "DELETE") {
+        this.interactiveTerminals.close(sessionId, id);
+        return this.json(response, 200, { closed: true });
+      }
+      return this.json(response, 405, {
+        error: "terminal accepts GET, POST, or DELETE",
+      });
+    }
+    if (url.pathname === "/api/terminal/input") {
+      if (request.method !== "POST")
+        return this.json(response, 405, {
+          error: "terminal input requires POST",
+        });
+      const body = await this.readJson(request);
+      if (
+        Object.keys(body).length !== 3 ||
+        typeof body.sessionId !== "string" ||
+        typeof body.id !== "string" ||
+        typeof body.data !== "string" ||
+        body.data.length === 0 ||
+        body.data.length > INTERACTIVE_TERMINAL_MAX_INPUT
+      ) {
+        return this.json(response, 400, {
+          code: "INVALID_TERMINAL_INPUT",
+          error: "bounded input for an exact terminal is required",
+        });
+      }
+      if (!(await this.requireActiveToolSession(body.sessionId, response)))
+        return;
+      return this.interactiveTerminals.write(
+        body.sessionId,
+        body.id,
+        body.data,
+      )
+        ? this.json(response, 200, { written: true })
+        : this.json(response, 404, {
+            code: "TERMINAL_NOT_FOUND",
+            error: "the interactive terminal expired or closed",
+          });
+    }
+    if (url.pathname === "/api/terminal/resize") {
+      if (request.method !== "POST")
+        return this.json(response, 405, {
+          error: "terminal resize requires POST",
+        });
+      const body = await this.readJson(request);
+      if (
+        Object.keys(body).length !== 4 ||
+        typeof body.sessionId !== "string" ||
+        typeof body.id !== "string" ||
+        !isBoundedInteger(body.cols, 2, 1_000) ||
+        !isBoundedInteger(body.rows, 2, 1_000)
+      ) {
+        return this.json(response, 400, {
+          code: "INVALID_TERMINAL_RESIZE",
+          error: "bounded dimensions for an exact terminal are required",
+        });
+      }
+      if (!(await this.requireActiveToolSession(body.sessionId, response)))
+        return;
+      return this.interactiveTerminals.resize(
+        body.sessionId,
+        body.id,
+        body.cols,
+        body.rows,
+      )
+        ? this.json(response, 200, { resized: true })
+        : this.json(response, 404, {
+            code: "TERMINAL_NOT_FOUND",
+            error: "the interactive terminal expired or closed",
+          });
+    }
     if (url.pathname.startsWith("/api/artifacts/")) {
       try { await this.adapter.requireWorkspace(this.runtime.cwd); }
       catch { throw new ArtifactError("ARTIFACT_DENIED", 403, "File access requires an available Session workspace."); }
@@ -547,6 +1052,11 @@ export class WebHost {
       const result = await this.runtime.newSession(workspacePath, {
         commandId: body.commandId,
       });
+      const sessionPath =
+        result.sessionPath ??
+        this.runtime.sessionManager.getSessionFile() ??
+        `current:${result.sessionId}`;
+      await this.gitReviews.capture(sessionPath, this.runtime.cwd);
       if (!result.replayed) this.publish("session_created", {
         workspacePath,
         sessionId: result.sessionId,
@@ -636,14 +1146,22 @@ export class WebHost {
     }
     if (url.pathname === "/api/prompt" && request.method === "POST") {
       const requestStarted = performance.now();
-      const body = await this.readJson(request);
+      const body = await this.readJson(request, MAX_PROMPT_REQUEST_BYTES);
       const content =
         typeof body.content === "string" ? body.content.trim() : "";
-      if (!content || content.length > 12_000) {
+      const parsedImages = parsePromptImages(body.images);
+      if (!parsedImages.ok) {
         return this.json(response, 400, {
-          error: "prompt must be 1-12000 characters",
+          code: "INVALID_PROMPT_IMAGES",
+          error: parsedImages.error,
         });
       }
+      if ((!content && parsedImages.images.length === 0) || content.length > 12_000) {
+        return this.json(response, 400, {
+          error: "prompt must contain text or images and at most 12000 characters",
+        });
+      }
+      const imageSignature = promptImageSignature(parsedImages.images);
       const commandId =
         typeof body.commandId === "string" && body.commandId.length > 0
           ? body.commandId
@@ -667,7 +1185,8 @@ export class WebHost {
       if (existing) {
         if (
           existing.sessionId !== body.sessionId ||
-          existing.content !== content
+          existing.content !== content ||
+          existing.imageSignature !== imageSignature
         ) {
           return this.json(response, 409, {
             code: "COMMAND_CONFLICT",
@@ -713,6 +1232,8 @@ export class WebHost {
         commandId,
         body.sessionId,
         content,
+        parsedImages.images,
+        imageSignature,
       );
       const result = await admission.completion;
       return this.json(response, result.status, result.body);
@@ -806,13 +1327,137 @@ export class WebHost {
         });
       }
     }
+    if (
+      url.pathname === "/api/capabilities/action" &&
+      request.method === "POST"
+    ) {
+      const body = await this.readJson(request);
+      const keys = Object.keys(body);
+      const sessionId = body.sessionId;
+      const kind = body.kind;
+      const action = body.action;
+      const id = body.id;
+      const prompt = body.prompt;
+      const text = body.text;
+      const validBase =
+        typeof sessionId === "string" &&
+        sessionId.length > 0 &&
+        sessionId.length <= 128 &&
+        kind === "subagents";
+      const validId =
+        typeof id === "string" &&
+        id.length > 0 &&
+        id.length <= 160 &&
+        !/[\u0000-\u001f\u007f]/u.test(id);
+      const validPrompt =
+        typeof prompt === "string" &&
+        prompt.trim().length > 0 &&
+        prompt.length <= 12_000;
+      const validText =
+        typeof text === "string" &&
+        text.trim().length > 0 &&
+        text.length <= 12_000;
+      const validAction =
+        (action === "spawn-btw" &&
+          validPrompt &&
+          keys.length === 4 &&
+          keys.every((key) =>
+            ["sessionId", "kind", "action", "prompt"].includes(key),
+          )) ||
+        (action === "send-btw" &&
+          validId &&
+          validText &&
+          keys.length === 5 &&
+          keys.every((key) =>
+            ["sessionId", "kind", "action", "id", "text"].includes(key),
+          )) ||
+        (action === "cancel-btw" &&
+          validId &&
+          keys.length === 4 &&
+          keys.every((key) =>
+            ["sessionId", "kind", "action", "id"].includes(key),
+          ));
+      if (!validBase || !validAction) {
+        return this.json(response, 400, {
+          code: "INVALID_CAPABILITY_ACTION",
+          error: "a bounded action for the active Session is required",
+        });
+      }
+      if (sessionId !== this.runtime.sessionManager.getSessionId()) {
+        return this.json(response, 409, {
+          code: "SESSION_CHANGED",
+          error: "The active Session changed. Reopen the tool panel.",
+        });
+      }
+      if (this.runtime.workspaceSelected !== true) {
+        return this.json(response, 409, {
+          code: "WORKSPACE_REQUIRED",
+          error: "Choose a workspace before using Session tools",
+        });
+      }
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      request.once("aborted", abort);
+      response.once("close", abort);
+      try {
+        let requestAction: WebCapabilityActionRequest;
+        if (action === "spawn-btw" && typeof prompt === "string") {
+          requestAction = {
+            kind: "subagents",
+            action,
+            prompt: prompt.trim(),
+          };
+        } else if (
+          action === "send-btw" &&
+          typeof id === "string" &&
+          typeof text === "string"
+        ) {
+          requestAction = {
+            kind: "subagents",
+            action,
+            id,
+            text: text.trim(),
+          };
+        } else if (action === "cancel-btw" && typeof id === "string") {
+          requestAction = { kind: "subagents", action, id };
+        } else {
+          return this.json(response, 400, {
+            code: "INVALID_CAPABILITY_ACTION",
+            error: "a bounded action for the active Session is required",
+          });
+        }
+        const detail = await runWebCapabilityAction(
+          this.runtime.sessionManager,
+          requestAction,
+          controller.signal,
+        );
+        if (!detail) {
+          return this.json(response, 501, {
+            code: "CAPABILITY_ACTION_UNAVAILABLE",
+            error: "This Session does not expose the requested action",
+          });
+        }
+        return this.json(response, 200, { sessionId, detail });
+      } catch (error) {
+        return this.json(response, 409, {
+          code: "CAPABILITY_ACTION_FAILED",
+          error:
+            error instanceof Error
+              ? error.message
+              : "The capability action failed",
+        });
+      } finally {
+        request.off("aborted", abort);
+        response.off("close", abort);
+      }
+    }
     if (request.method !== "GET") {
       return this.json(response, 405, { error: "method not allowed" });
     }
     const diagnosticSession = url.searchParams.get("sessionId");
     if (
       diagnosticSession !== null &&
-      ["/api/thinking", "/api/trust", "/api/providers/auth-status", "/api/capabilities/detail"].includes(url.pathname) &&
+      ["/api/thinking", "/api/trust", "/api/providers/auth-status", "/api/capabilities/detail", "/api/settings/catalog"].includes(url.pathname) &&
       diagnosticSession !== this.runtime.sessionManager.getSessionId()
     ) {
       return this.json(response, 409, {
@@ -853,6 +1498,68 @@ export class WebHost {
         });
       }
       return this.json(response, 200, this.runtime.listCommands());
+    }
+    if (url.pathname === "/api/settings/catalog") {
+      if (
+        diagnosticSession === null ||
+        diagnosticSession.length === 0 ||
+        diagnosticSession.length > 128 ||
+        url.searchParams.getAll("sessionId").length !== 1 ||
+        [...url.searchParams.keys()].some((key) => key !== "sessionId")
+      ) {
+        return this.json(response, 400, {
+          code: "INVALID_SETTINGS_CATALOG_REQUEST",
+          error: "the active Session id is required",
+        });
+      }
+      if (this.runtime.workspaceSelected !== true) {
+        return this.json(response, 409, {
+          code: "WORKSPACE_REQUIRED",
+          error: "Choose a workspace before reading settings resources",
+        });
+      }
+      if (!this.runtime.listSettingsResources) {
+        return this.json(response, 501, {
+          code: "SETTINGS_CATALOG_UNAVAILABLE",
+          error: "Pi settings resources are unavailable",
+        });
+      }
+      return this.json(response, 200, {
+        sessionId: diagnosticSession,
+        setup: projectWebSetupConfig(loadSetupConfig()),
+        resources: this.runtime.listSettingsResources(),
+      });
+    }
+    if (url.pathname === "/api/git-review") {
+      const sessionId = url.searchParams.get("sessionId");
+      const sessionPath = url.searchParams.get("path");
+      if (
+        !sessionId ||
+        sessionId.length > 256 ||
+        !sessionPath ||
+        url.searchParams.getAll("sessionId").length !== 1 ||
+        url.searchParams.getAll("path").length !== 1 ||
+        [...url.searchParams.keys()].some(
+          (key) => key !== "sessionId" && key !== "path",
+        )
+      ) {
+        return this.json(response, 400, {
+          code: "INVALID_GIT_REVIEW_REQUEST",
+          error: "an exact Session id and path are required",
+        });
+      }
+      const session = await this.adapter.getSession(sessionPath);
+      if (!session || session.id !== sessionId) {
+        return this.json(response, 404, {
+          code: "SESSION_NOT_FOUND",
+          error: "the Session is not available in the current workspace",
+        });
+      }
+      return this.json(
+        response,
+        200,
+        await this.gitReviews.read(session.path, session.cwd),
+      );
     }
     if (url.pathname === "/api/sessions") {
       const projection = await this.adapter.listSessionProjection();
@@ -1100,11 +1807,17 @@ export class WebHost {
       const projection = await this.adapter.getSnapshot(
         url.searchParams.get("path") ?? undefined,
       );
+      const setup = loadSetupConfig();
       const snapshot: WebSnapshot = {
         protocolVersion: WEB_PROTOCOL_VERSION,
         generatedAt: new Date().toISOString(),
         cursor,
-        preferences: { theme: loadSetupConfig().ui.webTheme },
+        preferences: {
+          theme: setup.ui.webTheme,
+          chatWidth: setup.ui.webChatWidth,
+          chatFontSize: setup.ui.webChatFontSize,
+          expandThinking: setup.ui.webExpandThinking,
+        },
         ...projection,
         runtime: { ...projection.runtime, liveTools: this.liveTools },
         thinking: projection.thinking
@@ -1190,11 +1903,14 @@ export class WebHost {
     commandId: string,
     sessionId: string,
     content: string,
+    images: readonly WebPromptImage[],
+    imageSignature: string,
   ) {
     let settle!: (result: PromptAdmissionResponse) => void;
     const admission: PromptAdmission = {
       sessionId,
       content,
+      imageSignature,
       completion: new Promise<PromptAdmissionResponse>((resolve) => {
         settle = resolve;
       }),
@@ -1206,6 +1922,7 @@ export class WebHost {
         commandId,
         sessionId,
         chars: content.length,
+        images: images.length,
       });
     } catch {}
     void Promise.resolve()
@@ -1213,6 +1930,7 @@ export class WebHost {
         this.runtime.sendPrompt(content, {
           commandId,
           expectedSessionId: sessionId,
+          ...(images.length > 0 ? { images } : {}),
         }),
       )
       .then(
@@ -1277,18 +1995,21 @@ export class WebHost {
     return admission;
   }
 
-  private async readJson(request: IncomingMessage) {
+  private async readJson(
+    request: IncomingMessage,
+    maxBytes = MAX_COMMAND_BYTES,
+  ) {
     const chunks: Buffer[] = [];
     let bytes = 0;
     for await (const chunk of request) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bytes += buffer.length;
-      if (bytes > MAX_COMMAND_BYTES) {
+      if (bytes > maxBytes) {
         throw new WebRequestError(
           "request body is too large",
           "REQUEST_BODY_TOO_LARGE",
           413,
-          MAX_COMMAND_BYTES,
+          maxBytes,
         );
       }
       chunks.push(buffer);
@@ -1311,6 +2032,170 @@ export class WebHost {
       );
     }
     return value as Record<string, unknown>;
+  }
+
+  private async requireActiveToolSession(
+    sessionId: string,
+    response: ServerResponse,
+  ) {
+    if (
+      sessionId.length === 0 ||
+      sessionId.length > 128 ||
+      /[\u0000-\u001f\u007f]/u.test(sessionId)
+    ) {
+      this.json(response, 400, {
+        code: "INVALID_SESSION_ID",
+        error: "a bounded active Session id is required",
+      });
+      return undefined;
+    }
+    if (!this.runtime.workspaceSelected) {
+      this.json(response, 409, {
+        code: "WORKSPACE_REQUIRED",
+        error: "Choose a workspace before using Session tools",
+      });
+      return undefined;
+    }
+    if (sessionId !== this.runtime.sessionManager.getSessionId()) {
+      this.json(response, 409, {
+        code: "SESSION_CHANGED",
+        error: "The active Session changed. Reopen the tool panel.",
+      });
+      return undefined;
+    }
+    try {
+      return await this.adapter.requireWorkspace(this.runtime.cwd);
+    } catch {
+      this.json(response, 403, {
+        code: "WORKSPACE_UNAVAILABLE",
+        error: "The active Session workspace is unavailable",
+      });
+      return undefined;
+    }
+  }
+
+  private validTerminalQuery(
+    url: URL,
+    required: readonly string[],
+    optional: readonly string[] = [],
+  ) {
+    const allowed = new Set([...required, ...optional]);
+    const keys = [...url.searchParams.keys()];
+    return (
+      required.every(
+        (key) => url.searchParams.getAll(key).length === 1,
+      ) &&
+      optional.every(
+        (key) => url.searchParams.getAll(key).length <= 1,
+      ) &&
+      keys.every((key) => allowed.has(key))
+    );
+  }
+
+  private async interactiveTerminalEvents(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+  ) {
+    const sessionId = url.searchParams.get("sessionId");
+    const id = url.searchParams.get("id");
+    const afterValue = url.searchParams.get("after");
+    const after = this.parseCursor(afterValue);
+    if (
+      !this.validTerminalQuery(url, ["sessionId", "id"], ["after"]) ||
+      !sessionId ||
+      !id ||
+      id.length > 128 ||
+      /[\u0000-\u001f\u007f]/u.test(id) ||
+      after.invalid ||
+      (url.searchParams.has("after") && afterValue === "")
+    ) {
+      return this.json(response, 400, {
+        code: "INVALID_TERMINAL_STREAM",
+        error: "an exact terminal, Session, and optional output cursor are required",
+      });
+    }
+    if (!(await this.requireActiveToolSession(sessionId, response))) return;
+    if (this.terminalStreams.size >= MAX_TERMINAL_STREAMS) {
+      return this.json(response, 503, {
+        code: "TERMINAL_STREAM_LIMIT",
+        error: "too many interactive terminal streams",
+      });
+    }
+
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let closed = false;
+    let ready = false;
+    const pendingEvents: WebInteractiveTerminalEvent[] = [];
+    let subscription: ReturnType<
+      InteractiveTerminalService["subscribe"]
+    >;
+    const cleanup = (close?: "end" | "destroy") => {
+      if (closed) return;
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
+      subscription?.unsubscribe();
+      this.terminalStreams.delete(response);
+      request.off("aborted", abort);
+      response.off("close", onClose);
+      if (close === "end" && !response.writableEnded) response.end();
+      else if (close === "destroy" && !response.destroyed) response.destroy();
+    };
+    const abort = () => cleanup("destroy");
+    const onClose = () => cleanup();
+    const send = (event: WebInteractiveTerminalEvent) => {
+      if (!ready) {
+        pendingEvents.push(event);
+        return;
+      }
+      if (closed || response.destroyed || response.writableEnded) return;
+      if (response.writableLength > MAX_SSE_BUFFER_BYTES) {
+        cleanup("destroy");
+        return;
+      }
+      const eventId = event.type === "output" ? `id: ${event.offset}\n` : "";
+      response.write(`${eventId}data: ${JSON.stringify(event)}\n\n`);
+      if (event.type === "exit" || event.type === "closed") cleanup("end");
+    };
+    subscription = this.interactiveTerminals.subscribe(
+      sessionId,
+      id,
+      send,
+      after.value,
+    );
+    if (!subscription) {
+      return this.json(response, 404, {
+        code: "TERMINAL_NOT_FOUND",
+        error: "the interactive terminal expired or closed",
+      });
+    }
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    this.terminalStreams.add(response);
+    request.once("aborted", abort);
+    response.once("close", onClose);
+    ready = true;
+    response.write(": connected\n\n");
+    send(subscription.output);
+    for (const event of pendingEvents.splice(0)) send(event);
+    if (subscription.exited && !closed) {
+      send({ type: "exit", exitCode: subscription.exitCode ?? 0 });
+    }
+    if (closed) return;
+    heartbeat = setInterval(() => {
+      if (
+        response.destroyed ||
+        response.writableEnded ||
+        response.writableLength > MAX_SSE_BUFFER_BYTES
+      ) {
+        cleanup("destroy");
+      } else response.write(": heartbeat\n\n");
+    }, this.sseHeartbeatMs);
+    heartbeat.unref();
   }
 
   private authorized(request: IncomingMessage) {

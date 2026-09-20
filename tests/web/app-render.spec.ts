@@ -10,7 +10,7 @@ import {
 import { createElement } from "react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { WebSnapshot } from "../../web/protocol/types.ts";
+import { projectEntry, type WebSnapshot } from "../../web/protocol/types.ts";
 import { App } from "../../web/ui/src/app/App.tsx";
 import { Providers } from "../../web/ui/src/app/providers.tsx";
 import { Markdown } from "../../web/ui/src/components/Markdown.tsx";
@@ -18,6 +18,7 @@ import { OpenPiLogo } from "../../web/ui/src/components/OpenPiLogo.tsx";
 import { ActivityBar } from "../../web/ui/src/features/activity/ActivityBar.tsx";
 import { Composer } from "../../web/ui/src/features/composer/Composer.tsx";
 import { SessionSidebar } from "../../web/ui/src/features/sessions/SessionSidebar.tsx";
+import { SubagentDetailView } from "../../web/ui/src/features/subagents/SubagentPanel.tsx";
 import { Transcript } from "../../web/ui/src/features/transcript/Transcript.tsx";
 import { i18n } from "../../web/ui/src/i18n.ts";
 import { WebClient } from "../../web/ui/src/protocol/client.ts";
@@ -130,6 +131,57 @@ describe("OpenPI React transcript", () => {
     expect(container.querySelector("br")).toBeTruthy();
   });
 
+  it("copies only fenced code and leaves inline code without an action", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const { container } = renderWithI18n(
+      createElement(
+        Markdown,
+        null,
+        "Use `inline()` here.\n\n```ts\nconst value = 42;\nconsole.log(value);\n```",
+      ),
+    );
+
+    expect(container.querySelectorAll(".markdown-code-block")).toHaveLength(1);
+    expect(
+      screen.getAllByRole("button", { name: i18n.t("copyCode") }),
+    ).toHaveLength(1);
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: i18n.t("copyCode") })),
+    );
+    expect(writeText).toHaveBeenCalledWith(
+      "const value = 42;\nconsole.log(value);\n",
+    );
+    expect(
+      screen.getByRole("button", { name: i18n.t("copiedCode") }),
+    ).toBeTruthy();
+  });
+
+  it("keeps a failed code copy visible", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("blocked")) },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    renderWithI18n(createElement(Markdown, null, "```\nvalue\n```"));
+
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: i18n.t("copyCode") })),
+    );
+    expect(screen.getByRole("status").textContent).toBe(
+      i18n.t("copyCodeFailed"),
+    );
+    expect(
+      screen.getByRole("button", { name: i18n.t("copyCode") }),
+    ).toBeTruthy();
+  });
+
   it("matches Session searches after preserving a trailing input space", () => {
     const store = createWebStore();
     store.getState().actions.setQuery("foo ");
@@ -169,6 +221,8 @@ describe("OpenPI React transcript", () => {
         query: store.getState().query,
         searchOpen: true,
         mobileOpen: false,
+        settingsDisabled: false,
+        onOpenSettings: vi.fn(),
         actions: store.getState().actions,
       }),
     );
@@ -294,9 +348,19 @@ describe("OpenPI React transcript", () => {
       }),
     );
 
-    expect(container.querySelectorAll(".tool-group")).toHaveLength(1);
-    expect(screen.getAllByText(/4 (steps|个步骤)/u)).toHaveLength(1);
+    const process =
+      container.querySelector<HTMLDetailsElement>(".process-sequence");
+    expect(process).toBeTruthy();
+    expect(process?.open).toBe(false);
+    expect(screen.getByText(/4 (tool calls|次工具调用)/u)).toBeTruthy();
+    expect(screen.getByText(/1 (agent activity|项 Agent 活动)/u)).toBeTruthy();
+    expect(
+      container.querySelector(".process-sequence-preview")?.textContent,
+    ).not.toMatch(/[*_`]/u);
     expect(container.querySelectorAll(".tool-evidence-card")).toHaveLength(4);
+    expect(
+      container.querySelectorAll(".tool-evidence-card .tool-name"),
+    ).toHaveLength(4);
     expect(container.querySelectorAll(".activity-card.subagent")).toHaveLength(
       1,
     );
@@ -304,7 +368,221 @@ describe("OpenPI React transcript", () => {
     expect(
       container.querySelectorAll("[aria-label=completed]").length,
     ).toBeGreaterThan(0);
+
+    fireEvent.click(process!.querySelector("summary")!);
+    expect(process?.open).toBe(true);
+    expect(process?.querySelectorAll(".process-step")).toHaveLength(6);
   });
+});
+
+it("marks only live execution evidence for shimmer styling", () => {
+  const snapshot = activeSnapshot();
+  snapshot.selectedSession!.entries = [
+    {
+      id: "prompt",
+      type: "message",
+      timestamp: "2026-09-19T10:00:00Z",
+      message: { role: "user", content: "Inspect it" },
+    },
+    {
+      id: "assistant",
+      type: "message",
+      timestamp: "2026-09-19T10:00:01Z",
+      message: {
+        role: "assistant",
+        content: "",
+        parts: [
+          { type: "thinking", text: "Checking the current state." },
+          {
+            type: "toolCall",
+            id: "read-live",
+            name: "read",
+            arguments: '{"path":"src/index.ts"}',
+          },
+        ],
+      },
+    },
+  ];
+
+  const view = renderWithI18n(
+    createElement(Transcript, {
+      snapshot,
+      liveMessages: [],
+      liveRunning: true,
+      livePhase: "running",
+      liveRetry: null,
+      thinkingStarts: { assistant: Date.now() },
+      thinkingDurations: {},
+      scrollToBottom: 0,
+      onResend: async () => true,
+    }),
+  );
+
+  const process = view.container.querySelector<HTMLDetailsElement>(
+    ".process-sequence.running",
+  );
+  expect(process?.dataset.status).toBe("running");
+  expect(process?.open).toBe(true);
+  expect(process?.querySelectorAll(".process-step.running")).toHaveLength(2);
+});
+
+it("keeps OpenPI setup episodes out of the main conversation", () => {
+  const snapshot = activeSnapshot();
+  snapshot.selectedSession!.entries = [
+    {
+      id: "before-user",
+      type: "message",
+      timestamp: "2026-09-19T10:00:00Z",
+      message: { role: "user", content: "Keep this task message" },
+    },
+    {
+      id: "before-assistant",
+      type: "message",
+      timestamp: "2026-09-19T10:00:01Z",
+      message: { role: "assistant", content: "Visible task response" },
+    },
+    projectEntry({
+      id: "setup-request",
+      parentId: "before-assistant",
+      type: "custom_message",
+      timestamp: "2026-09-19T10:00:02Z",
+      customType: "openpi-setup-request",
+      content: "Apply a dark theme",
+      display: false,
+    }),
+    {
+      id: "setup-assistant",
+      type: "message",
+      timestamp: "2026-09-19T10:00:03Z",
+      message: {
+        role: "assistant",
+        content: "Hidden configuration response",
+      },
+    },
+    {
+      id: "setup-result",
+      type: "message",
+      timestamp: "2026-09-19T10:00:04Z",
+      message: {
+        role: "toolResult",
+        toolName: "configure_my_pi_setup",
+        toolCallId: "setup-call",
+        content: "Hidden configuration evidence",
+        isError: false,
+      },
+    },
+    {
+      id: "after-user",
+      type: "message",
+      timestamp: "2026-09-19T10:00:05Z",
+      message: { role: "user", content: "Continue the actual task" },
+    },
+    {
+      id: "after-assistant",
+      type: "message",
+      timestamp: "2026-09-19T10:00:06Z",
+      message: { role: "assistant", content: "Visible continuation" },
+    },
+  ];
+
+  renderWithI18n(
+    createElement(Transcript, {
+      snapshot,
+      liveMessages: [],
+      liveRunning: false,
+      livePhase: "idle",
+      liveRetry: null,
+      thinkingStarts: {},
+      thinkingDurations: {},
+      scrollToBottom: 0,
+      onResend: async () => true,
+    }),
+  );
+
+  expect(screen.getAllByText("Keep this task message").length).toBeGreaterThan(
+    0,
+  );
+  expect(screen.getByText("Visible task response")).toBeTruthy();
+  expect(
+    screen.getAllByText("Continue the actual task").length,
+  ).toBeGreaterThan(0);
+  expect(screen.getByText("Visible continuation")).toBeTruthy();
+  expect(screen.queryByText("Hidden configuration response")).toBeNull();
+  expect(screen.queryByText("Hidden configuration evidence")).toBeNull();
+});
+
+it("renders side conversation messages with transcript role styling", async () => {
+  const client = new WebClient();
+  const detail = vi.spyOn(client, "subagentDetail").mockResolvedValue({
+    sessionId: "session",
+    detail: {
+      kind: "subagents",
+      id: "btw-1",
+      title: "Aside",
+      origin: "btw",
+      status: "done",
+      outcome: "completed",
+      createdAt: 1,
+      settledAt: 2,
+      cwd: "/tmp",
+      model: "test/model",
+      prompt: "Initial question",
+      transcript: [
+        { kind: "user", text: "Right aligned question" },
+        {
+          kind: "assistant",
+          parts: [
+            { type: "text", text: "Natural assistant answer" },
+            { type: "thinking", text: "Checked the evidence" },
+            {
+              type: "toolCall",
+              toolId: "tool-live",
+              name: "read",
+              argsPreview: "src/index.ts",
+            },
+          ],
+        },
+      ],
+      liveTools: [
+        {
+          toolId: "tool-live",
+          name: "read",
+          argsPreview: "src/index.ts",
+          done: false,
+        },
+      ],
+      finalText: "",
+      truncated: false,
+      omittedEntries: 0,
+    },
+  });
+
+  const view = renderWithI18n(
+    createElement(SubagentDetailView, {
+      sessionId: "session",
+      id: "btw-1",
+      client,
+      liveAvailable: true,
+      fullView: false,
+      readOnlyNote: false,
+    }),
+  );
+
+  const user = await screen.findByText("Right aligned question");
+  const assistant = await screen.findByText("Natural assistant answer");
+  expect(
+    user.closest<HTMLElement>(".subagent-message.user")?.dataset.role,
+  ).toBe("user");
+  expect(
+    assistant.closest<HTMLElement>(".subagent-message.assistant")?.dataset.role,
+  ).toBe("assistant");
+  expect(view.container.querySelector(".subagent-thinking.done")).toBeTruthy();
+  expect(view.container.querySelector(".subagent-tool.running")).toBeTruthy();
+  expect(detail).toHaveBeenCalledWith(
+    "session",
+    "btw-1",
+    expect.any(AbortSignal),
+  );
 });
 
 function activeSnapshot(): WebSnapshot {
@@ -329,6 +607,231 @@ function activeSnapshot(): WebSnapshot {
     },
   };
 }
+
+it("groups transcript turns with state and confirmed file change receipts", () => {
+  const snapshot = activeSnapshot();
+  snapshot.runtime.status = "idle";
+  snapshot.selectedSession!.entries = [
+    {
+      id: "prompt-1",
+      type: "message",
+      timestamp: "2026-09-18T00:00:00Z",
+      message: { role: "user", content: "Update report" },
+    },
+    {
+      id: "call-1",
+      type: "message",
+      timestamp: "2026-09-18T00:00:01Z",
+      message: {
+        role: "assistant",
+        content: "",
+        parts: [
+          {
+            type: "toolCall",
+            id: "edit-1",
+            name: "edit",
+            arguments: '{"path":"src/report.ts"}',
+          },
+        ],
+      },
+    },
+    {
+      id: "result-1",
+      type: "message",
+      timestamp: "2026-09-18T00:00:02Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "edit-1",
+        content: "updated",
+        isError: false,
+        details: { diff: "@@ -1 +1 @@\n-old\n+new" },
+      },
+    },
+    {
+      id: "answer-1",
+      type: "message",
+      timestamp: "2026-09-18T00:00:03Z",
+      message: { role: "assistant", content: "Report updated." },
+    },
+    {
+      id: "prompt-2",
+      type: "message",
+      timestamp: "2026-09-18T00:00:04Z",
+      message: { role: "user", content: "Explain it" },
+    },
+    {
+      id: "answer-2",
+      type: "message",
+      timestamp: "2026-09-18T00:00:05Z",
+      message: { role: "assistant", content: "Explanation." },
+    },
+  ];
+  const { container } = renderWithI18n(
+    createElement(Transcript, {
+      snapshot,
+      liveMessages: [],
+      liveRunning: false,
+      livePhase: "idle",
+      liveRetry: null,
+      thinkingStarts: {},
+      thinkingDurations: {},
+      scrollToBottom: 0,
+      onResend: async () => true,
+    }),
+  );
+
+  const turns = container.querySelectorAll(".conversation-turn");
+  expect(turns).toHaveLength(2);
+  expect(turns[0]?.textContent).toContain("Update report");
+  expect(turns[0]?.textContent).toContain("Report updated.");
+  expect(turns[1]?.textContent).toContain("Explain it");
+  expect(container.querySelectorAll(".final-response")).toHaveLength(2);
+  expect(container.querySelectorAll(".turn-heading")).toHaveLength(0);
+});
+
+function renderEditableTranscript(onResend = vi.fn(async () => false)) {
+  const snapshot = activeSnapshot();
+  return renderWithI18n(
+    createElement(Transcript, {
+      snapshot,
+      liveMessages: [
+        {
+          key: "user-edit",
+          message: { role: "user", content: "Original message" },
+        },
+      ],
+      liveRunning: false,
+      livePhase: "idle",
+      liveRetry: null,
+      thinkingStarts: {},
+      thinkingDurations: {},
+      scrollToBottom: 0,
+      onResend,
+    }),
+  );
+}
+
+it("discards cancelled message edits when reopening the editor", () => {
+  renderEditableTranscript();
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("editMessage") }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Cancelled draft" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("cancel") }));
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("editMessage") }));
+  expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe(
+    "Original message",
+  );
+});
+
+it("locks message edits during admission and retains rejected edits for retry", async () => {
+  const result = deferred<boolean>();
+  const resend = vi.fn(() => result.promise);
+  renderEditableTranscript(resend);
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("editMessage") }));
+  const input = screen.getByRole<HTMLTextAreaElement>("textbox");
+  fireEvent.change(input, { target: { value: "Edited message" } });
+  const confirm = screen.getByRole<HTMLButtonElement>("button", {
+    name: i18n.t("confirmEdit"),
+  });
+  fireEvent.click(confirm);
+  expect(input.readOnly).toBe(true);
+  expect(confirm.disabled).toBe(true);
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(resend).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    result.resolve(false);
+    await result.promise;
+  });
+  expect(input.value).toBe("Edited message");
+  expect(input.readOnly).toBe(false);
+  expect(confirm.disabled).toBe(false);
+  fireEvent.change(input, { target: { value: "   " } });
+  expect(confirm.disabled).toBe(true);
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(resend).toHaveBeenCalledTimes(1);
+});
+
+it("resizes the composer when a session switch clears a tall draft", () => {
+  const snapshot = activeSnapshot();
+  const props = {
+    snapshot,
+    selectedPath: "/tmp/session",
+    selectedWorkspace: "/tmp",
+    sessionSwitching: false,
+    promptAdmissionPending: false,
+    liveRunning: false,
+    landing: false,
+    activeTurn: null,
+    turnCancellationPending: false,
+    turnTerminalStatus: null,
+    pendingFollowUpsReceipt: null,
+    thinkingPendingLevel: null,
+    actions: createWebStore().getState().actions,
+  };
+  const node = (path: string) =>
+    createElement(
+      I18nextProvider,
+      { i18n },
+      createElement(Composer, {
+        ...props,
+        selectedPath: path,
+        snapshot: {
+          ...snapshot,
+          selectedSession: { ...snapshot.selectedSession!, path },
+        },
+      }),
+    );
+  const view = render(node("/tmp/session"));
+  const input = screen.getByRole<HTMLTextAreaElement>("textbox");
+  Object.defineProperty(input, "scrollHeight", {
+    configurable: true,
+    get: () => (input.value ? 400 : 52),
+  });
+  fireEvent.change(input, { target: { value: "Long draft" } });
+  expect(input.style.height).toBe("220px");
+  view.rerender(node("/tmp/other-session"));
+  expect(input.value).toBe("");
+  expect(input.style.height).toBe("52px");
+  expect(input.style.overflowY).toBe("hidden");
+});
+
+it("keeps a pinned transcript at the bottom on viewport resize without moving a reader", () => {
+  let resized: ResizeObserverCallback | undefined;
+  const disconnect = vi.fn();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resized = callback;
+      }
+      observe() {}
+      disconnect = disconnect;
+    },
+  );
+  try {
+    const view = renderEditableTranscript();
+    const viewport = screen.getByRole("log");
+    const scroll = vi.fn();
+    viewport.scrollTo = scroll;
+    Object.defineProperties(viewport, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+    });
+    expect(resized).toBeDefined();
+    act(() => resized?.([], {} as ResizeObserver));
+    expect(scroll).toHaveBeenCalledWith({ top: 1000, behavior: "instant" });
+    scroll.mockClear();
+    viewport.scrollTop = 100;
+    fireEvent.scroll(viewport);
+    act(() => resized?.([], {} as ResizeObserver));
+    expect(scroll).not.toHaveBeenCalled();
+    view.unmount();
+    expect(disconnect).toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 it("follows same-key streamed growth, preserves reading position, and honors explicit send scroll", () => {
   const snapshot = activeSnapshot();
@@ -468,13 +971,133 @@ it("resolves canonical system theme changes and explicit overrides", () => {
   expect(document.documentElement.dataset.theme).toBe("dark");
   act(() =>
     webStore.setState({
-      snapshot: { ...snapshot, preferences: { theme: "light" } },
+      snapshot: {
+        ...snapshot,
+        preferences: {
+          theme: "pine",
+          chatWidth: 960,
+          chatFontSize: 16,
+          expandThinking: true,
+        },
+      },
     }),
   );
-  expect(document.documentElement.dataset.theme).toBe("light");
+  expect(document.documentElement.dataset.theme).toBe("pine");
+  expect(
+    document.documentElement.style.getPropertyValue(
+      "--conversation-content-width",
+    ),
+  ).toBe("960px");
+  expect(
+    document.documentElement.style.getPropertyValue("--conversation-font-size"),
+  ).toBe("16px");
   unmount();
   webStore.setState({ snapshot: initial });
   vi.unstubAllGlobals();
+});
+
+it("opens recorded thinking by default only when the canonical preference is enabled", () => {
+  const snapshot = activeSnapshot();
+  snapshot.runtime.status = "idle";
+  snapshot.preferences.expandThinking = true;
+  snapshot.selectedSession!.entries = [
+    {
+      id: "prompt",
+      type: "message",
+      timestamp: "2026-09-19T00:00:00Z",
+      message: { role: "user", content: "Inspect it" },
+    },
+    {
+      id: "answer",
+      type: "message",
+      timestamp: "2026-09-19T00:00:01Z",
+      message: {
+        role: "assistant",
+        content: "Done.",
+        parts: [{ type: "thinking", text: "Check the implementation." }],
+      },
+    },
+  ];
+
+  const view = renderWithI18n(
+    createElement(Transcript, {
+      snapshot,
+      liveMessages: [],
+      liveRunning: false,
+      livePhase: "idle",
+      liveRetry: null,
+      thinkingStarts: {},
+      thinkingDurations: {},
+      scrollToBottom: 0,
+      onResend: async () => true,
+    }),
+  );
+
+  expect(
+    view.container.querySelector<HTMLDetailsElement>(".thinking-line")?.open,
+  ).toBe(true);
+});
+
+it("applies the thinking preference to grouped completed process evidence", () => {
+  const snapshot = activeSnapshot();
+  snapshot.runtime.status = "idle";
+  snapshot.preferences.expandThinking = true;
+  snapshot.selectedSession!.entries = [
+    {
+      id: "prompt",
+      type: "message",
+      timestamp: "2026-09-19T00:00:00Z",
+      message: { role: "user", content: "Inspect it" },
+    },
+    {
+      id: "answer",
+      type: "message",
+      timestamp: "2026-09-19T00:00:01Z",
+      message: {
+        role: "assistant",
+        content: "Done.",
+        parts: [
+          { type: "thinking", text: "Check the implementation." },
+          {
+            type: "toolCall",
+            id: "read-1",
+            name: "read",
+            arguments: '{"path":"src/index.ts"}',
+          },
+        ],
+      },
+    },
+    {
+      id: "result",
+      type: "message",
+      timestamp: "2026-09-19T00:00:02Z",
+      message: {
+        role: "toolResult",
+        toolName: "read",
+        toolCallId: "read-1",
+        content: "source",
+        isError: false,
+      },
+    },
+  ];
+
+  const view = renderWithI18n(
+    createElement(Transcript, {
+      snapshot,
+      liveMessages: [],
+      liveRunning: false,
+      livePhase: "idle",
+      liveRetry: null,
+      thinkingStarts: {},
+      thinkingDurations: {},
+      scrollToBottom: 0,
+      onResend: async () => true,
+    }),
+  );
+
+  expect(
+    view.container.querySelector<HTMLDetailsElement>(".process-sequence")?.open,
+  ).toBe(true);
 });
 
 it("does not attribute current runtime activity to a historical session", () => {
@@ -661,12 +1284,14 @@ it("shows bounded archive history even when its workspace summary was omitted", 
       query: "",
       searchOpen: false,
       mobileOpen: false,
+      settingsDisabled: false,
+      onOpenSettings: vi.fn(),
       actions: store.getState().actions,
     }),
   );
   fireEvent.click(screen.getByRole("button", { name: "Archived" }));
   expect(screen.getByText("Archived work")).toBeTruthy();
-  expect(screen.getByText("/omitted")).toBeTruthy();
+  expect(screen.getAllByText("/omitted").length).toBeGreaterThan(0);
   expect(
     screen.getByText(
       "20 more sessions and 1 workspace summaries are not loaded. Search covers the loaded list only.",
@@ -992,7 +1617,7 @@ describe("thinking level picker", () => {
       createElement(Composer, { ...props, thinkingPendingLevel: "high" }),
     );
     const picker = screen.getByRole<HTMLButtonElement>("button", {
-      name: thinkingPickerName("high"),
+      name: /^Thinking level: high/u,
     });
     expect(picker.disabled).toBe(false);
     expect(

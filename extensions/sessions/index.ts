@@ -974,7 +974,10 @@ async function showSessionPicker(
       return {
         render: (width) => {
           const layout = getSessionPaneLayout(width);
-          if (layout.mode === "single") return renderSinglePane(width);
+          if (layout.mode === "single") {
+            focus = "list";
+            return renderSinglePane(width);
+          }
           return renderSplitPane(width);
         },
         invalidate: () => {
@@ -986,6 +989,13 @@ async function showSessionPicker(
         },
         dispose: disposePicker,
         handleInput: (data) => {
+          const currentLayout = getSessionPaneLayout(
+            tui.terminal?.columns ?? 80,
+          );
+          // A resize can arrive before the next render. Hidden panes must not
+          // retain focus or take it from the visible session list.
+          if (currentLayout.mode === "single") focus = "list";
+
           if (data === "\u0014" || data === "\u001bw") {
             showAllWorkspaces = !showAllWorkspaces;
             void loadWorkspaceSessions(showAllWorkspaces);
@@ -993,8 +1003,10 @@ async function showSessionPicker(
           }
 
           if (data === "\t") {
-            focus = focus === "list" ? "preview" : "list";
-            tui.requestRender();
+            if (currentLayout.mode === "split") {
+              focus = focus === "list" ? "preview" : "list";
+              tui.requestRender();
+            }
             return;
           }
           if (matchesKey(data, Key.left)) {
@@ -1005,7 +1017,7 @@ async function showSessionPicker(
             return;
           }
           if (matchesKey(data, Key.right)) {
-            if (focus === "list") {
+            if (currentLayout.mode === "split" && focus === "list") {
               focus = "preview";
               tui.requestRender();
             }
@@ -1023,9 +1035,6 @@ async function showSessionPicker(
             return;
           }
 
-          const currentLayout = getSessionPaneLayout(
-            tui.terminal?.columns ?? 80,
-          );
           if (currentLayout.mode === "split" && focus === "preview") {
             // t/h toggle the preview's tool/thinking visibility. They only
             // belong to the preview pane; when the list is focused they must

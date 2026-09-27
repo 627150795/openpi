@@ -602,17 +602,12 @@ export function createWorkspaceCleanupGuard(
     return { path: contained.absolute, existed, observeOnCommandError };
   };
 
-  const unverifiedCleanup = async (attempt: BashAttempt) => {
-    if (mode === "ask" && (await attempt.confirmDelete([]))) {
-      return { kind: "allow" as const };
-    }
-    return {
-      kind: "block" as const,
-      protectedPaths: [],
-      reason:
-        "Blocked cleanup: OpenPI could not verify which workspace files this command may delete. Use a direct rm command with literal workspace-relative paths, or explicitly confirm the unverified cleanup in ask mode.",
-    };
-  };
+  const unverifiedCleanup = () => ({
+    kind: "block" as const,
+    protectedPaths: [],
+    reason:
+      "Blocked cleanup: OpenPI recognized a source-visible deletion outside its supported direct rm command grammar. Use a direct rm command with literal workspace-relative paths so OpenPI can determine whether each target is session-created scratch or a pre-existing path requiring confirmation.",
+  });
 
   return {
     async beforeWrite(attempt: WriteAttempt) {
@@ -627,13 +622,18 @@ export function createWorkspaceCleanupGuard(
     async before(attempt: BashAttempt) {
       if (mode === "off") return { kind: "allow" as const };
       const inspected = inspectShell(attempt.command);
-      if (inspected.opaqueDestructiveCommand) return unverifiedCleanup(attempt);
+      if (inspected.opaqueDestructiveCommand) {
+        if (mode === "ask" && (await attempt.confirmDelete([]))) {
+          return { kind: "allow" as const };
+        }
+        return unverifiedCleanup();
+      }
 
       const containedRemovals = inspected.removals.map((candidate) =>
         containedPath(attempt.cwd, candidate),
       );
       if (containedRemovals.some((candidate) => !candidate)) {
-        return unverifiedCleanup(attempt);
+        return unverifiedCleanup();
       }
 
       const creations: PendingEffects["creations"] = [];

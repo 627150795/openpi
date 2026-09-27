@@ -69,6 +69,18 @@ test("cleanup guard modes keep enforce default, ask on opaque commands, and bypa
     );
     assert.deepEqual(confirmations, [noPaths, baselinePath]);
 
+    assert.equal(
+      (
+        await ask.before({
+          id: "ask-outside-path",
+          command: "rm ../outside.txt",
+          cwd: workspace,
+        })
+      ).kind,
+      "block",
+    );
+    assert.deepEqual(confirmations, [noPaths, baselinePath]);
+
     const denyAsk = guardFor(async (paths) => {
       confirmations.push([...paths]);
       return false;

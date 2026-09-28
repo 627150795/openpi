@@ -289,12 +289,39 @@ export default function openPiSetup(pi: ExtensionAPI) {
     resetEpisode();
     if (!ctx.hasUI) return;
     const inspected = inspectSetupConfig();
-    if (inspected.diagnostics.length === 0) return;
+    const diagnostics = inspected.diagnostics;
+    if (diagnostics.length === 0) return;
+    const actionableDiagnostics = diagnostics.filter(
+      (diagnostic) =>
+        !(
+          diagnostic.severity === "warning" &&
+          diagnostic.path === "configVersion" &&
+          diagnostic.message.startsWith("Legacy unversioned")
+        ),
+    );
+    if (
+      inspected.writable &&
+      diagnostics.length === 1 &&
+      actionableDiagnostics.length === 0
+    )
+      return;
+    const hasErrors = actionableDiagnostics.some(
+      (diagnostic) => diagnostic.severity === "error",
+    );
+    const details = actionableDiagnostics
+      .map((diagnostic) => {
+        const message =
+          diagnostic.path === "configVersion" && diagnostic.severity === "error"
+            ? "Unsupported configuration version"
+            : diagnostic.message;
+        return `${diagnostic.severity} @ ${diagnostic.path || inspected.path}: ${message}`;
+      })
+      .join("; ");
     ctx.ui.notify(
-      inspected.writable
-        ? "OpenPI configuration loaded with warnings (legacy format or unknown fields). The file is unchanged. Run /openpi-setup for details."
-        : "OpenPI could not load the saved configuration; safe defaults are in use and configuration writes are blocked. The file is unchanged. Run /openpi-setup for diagnostics and recovery guidance.",
-      inspected.writable ? "warning" : "error",
+      hasErrors
+        ? `OpenPI could not load the saved configuration; safe defaults are in use and configuration writes are blocked (${details}). The file is unchanged. Run /openpi-setup for diagnostics and recovery guidance.`
+        : `OpenPI configuration loaded with warnings (${details}). The file is unchanged. Run /openpi-setup for full diagnostics.`,
+      hasErrors ? "error" : "warning",
     );
   });
 

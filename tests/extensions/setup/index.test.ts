@@ -1093,6 +1093,40 @@ test("session start warns about unknown fields with their location without migra
   rmSync(SETUP_CONFIG_PATH);
 });
 
+test("session start bounds and sanitizes unknown diagnostic paths", async () => {
+  const longKey = `unknown-long-\u001bfield\n${"😀".repeat(100)}`;
+  const raw = JSON.stringify({
+    configVersion: 1,
+    [longKey]: true,
+    futureSecond: true,
+    futureThird: true,
+    futureFourth: true,
+    futureFifth: true,
+  });
+  writeFileSync(SETUP_CONFIG_PATH, raw);
+  try {
+    const h = visibilityHarness();
+    h.ctx.hasUI = true;
+    await h.emit("session_start");
+    assert.equal(h.notifications.length, 1);
+    const notice = h.notifications[0];
+    assert.equal(notice.level, "warning");
+    assert.equal((notice.message.match(/warning @ /g) ?? []).length, 3);
+    assert.match(notice.message, /…/);
+    assert.match(notice.message, /unknown-long-/);
+    assert.doesNotMatch(notice.message, /futureFourth|futureFifth/);
+    assert.doesNotMatch(notice.message, /[\u0000-\u001f\u007f-\u009f]/);
+    const firstPath = /warning @ (.*?): Unknown field preserved/.exec(
+      notice.message,
+    )?.[1];
+    assert.ok(firstPath);
+    assert.ok(Array.from(firstPath).length <= 80);
+    assert.equal(readFileSync(SETUP_CONFIG_PATH, "utf8"), raw);
+  } finally {
+    rmSync(SETUP_CONFIG_PATH, { force: true });
+  }
+});
+
 test("session start is quiet for missing or valid configuration and clears errors after repair", async () => {
   rmSync(SETUP_CONFIG_PATH, { force: true });
   const h = visibilityHarness();

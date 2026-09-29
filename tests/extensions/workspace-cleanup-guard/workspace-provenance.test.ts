@@ -143,6 +143,43 @@ test("cleanup guard modes keep enforce default, ask on opaque commands, and bypa
   });
 });
 
+test("mode changes invalidate pending cleanup confirmations", async () => {
+  await withWorkspace(async (workspace) => {
+    const confirmAfterModeChange = async (
+      command: string,
+      expectedPaths: string[],
+    ) => {
+      let resolveConfirmation!: (confirmed: boolean) => void;
+      let signalConfirmationStarted!: () => void;
+      const confirmation = new Promise<boolean>((resolve) => {
+        resolveConfirmation = resolve;
+      });
+      const confirmationStarted = new Promise<void>((resolve) => {
+        signalConfirmationStarted = resolve;
+      });
+      const guard = guardFor(async (paths) => {
+        assert.deepEqual(paths, expectedPaths);
+        signalConfirmationStarted();
+        return confirmation;
+      }, "ask");
+
+      const pending = guard.before({
+        id: command,
+        command,
+        cwd: workspace,
+      });
+      await confirmationStarted;
+      guard.setMode("enforce");
+      resolveConfirmation(true);
+      assert.equal((await pending).kind, "block");
+    };
+
+    await confirmAfterModeChange('rm "$(cat target)"', []);
+    await writeFile(path.join(workspace, "baseline.txt"), "keep");
+    await confirmAfterModeChange("rm baseline.txt", ["baseline.txt"]);
+  });
+});
+
 async function withWorkspace(run: (workspace: string) => Promise<void>) {
   const workspace = await mkdtemp(
     path.join(tmpdir(), "openpi-workspace-provenance-"),

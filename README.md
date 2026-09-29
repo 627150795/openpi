@@ -500,6 +500,7 @@ Footer 布局以 `footerLines` 作为唯一持久化格式。旧版 `footerItems
 
 | 配置                         | 默认值                                         |
 | ---------------------------- | ---------------------------------------------- |
+| Workspace cleanup guard      | `enforce`；另有 `ask` / `off`                  |
 | Capability discovery         | `explicit`；`adaptive` 必须显式开启            |
 | Next-action Suggestion       | 关闭；启用时显式选择 Registry 模型与 reasoning |
 | Workflow 并发 / 总调用       | 8 / 128；硬上限 64 / 1024                      |

@@ -28,7 +28,17 @@
 
 前轮第六浏览器页签的输入边界已定位并用原始扩展重复验证；Chromium 内部原因仍未知。本轮不以完整 Chromium 套件的绿色结果扩张为 Safari、真实移动软键盘或跨浏览器兼容保证。
 
-最终门禁、消融与发布结果在实现冻结后补记。
+最终本地门禁冻结于 `656df98c50b9d9896ebe4789bafacb876141b907`，隔离 `pi list` 唯一 OpenPI source 与该 checkout 匹配。Node 24.19.0 / Bun 1.3.14 / Pi 0.99.1 下，945 个 tracked inputs 在完整门禁前后 hash 一致：
+
+| 层级 | 结果与证据 |
+| --- | --- |
+| `bun run check` | 完整通过：config/docs/discipline contract、Web production build、format/lint、Web 与仓库 TypeScript；`full-check-04.log`。现有大 chunk 提示仍为构建 advisory。 |
+| `bun run test` / Node | 2136 passed，8 平台条件 skips，0 failed；`full-test-03.log`。 |
+| `bun run test` / Vitest | 82 files / 1154 passed，0 failed；同一日志。 |
+| Production Chrome | 104/104 passed，0 failed；`full-browser-02.log` 和独立 `full-browser-02-results`。包含真实 Host 文件/PTY、native history/fork 及明确分开的 mock admission 场景。 |
+| 真实模型 smoke | 下述同源码 runtime 的两次短 turn 完成；私有 `native-rerun-reading/real-provider/receipt.json`。其后的改动仅为 regression fixture 和本记录。 |
+
+最终结果补记仅修改文档，另跑 docs contract 与 diff whitespace 检查；不把补记后的 commit 伪称为之前已运行的模型 smoke revision。远端 CI 与发布链接由 Issue #641 关联的 PR 提供。
 
 ### 消融与失败证据
 

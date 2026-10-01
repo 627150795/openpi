@@ -240,8 +240,30 @@ for (const width of [1280, 390]) {
     );
     await page.route("**/api/snapshot**", async (route) => {
       const response = await route.fetch();
-      const snapshot = await response.json();
-      snapshot.selectedSession.entries = [
+      const snapshot = (await response.json()) as WebSnapshot;
+      const session = snapshot.selectedSession ?? {
+        id: "layout-source",
+        path: "/layout/source.jsonl",
+        cwd: "/layout",
+        entries: [],
+        bytes: 0,
+        truncation: {
+          truncated: false,
+          entriesOmitted: 0,
+          messagesTruncated: 0,
+          messagePartsOmitted: 0,
+          maxBytes: 2 * 1024 * 1024,
+        },
+        history: { leafEntryId: "layout-assistant", beforeEntryId: null },
+      };
+      snapshot.selectedSession = session;
+      session.id = "layout-source";
+      session.path = "/layout/source.jsonl";
+      snapshot.currentSessionId = session.id;
+      snapshot.runtime.status = "idle";
+      delete snapshot.runtime.activeTurn;
+      delete snapshot.selectedExecution;
+      session.entries = [
         {
           id: "layout-user",
           type: "message",
@@ -261,6 +283,11 @@ for (const width of [1280, 390]) {
           },
         },
       ];
+      session.history = {
+        leafEntryId: "layout-assistant",
+        beforeEntryId: null,
+      };
+      alignControlledSessionFixture(snapshot);
       await route.fulfill({ response, json: snapshot });
     });
     await openWorkbench(page);
@@ -292,9 +319,11 @@ for (const width of [1280, 390]) {
       .poll(() => conversation.evaluate((el) => el.scrollTop))
       .toBe(120);
     await input.fill("");
-    await page.getByRole("button", { name: "修改并重发", exact: true }).click();
+    await page
+      .getByRole("button", { name: "修改并从这里重跑", exact: true })
+      .click();
     const editor = page.getByRole("textbox", {
-      name: "修改并重发",
+      name: "修改并从这里重跑",
       exact: true,
     });
     await expect(editor).toBeVisible();
@@ -311,7 +340,9 @@ for (const width of [1280, 390]) {
     expect(dimensions.right).toBeLessThanOrEqual(dimensions.viewport);
     await editor.fill("Cancelled edit");
     await page.getByRole("button", { name: "取消", exact: true }).click();
-    await page.getByRole("button", { name: "修改并重发", exact: true }).click();
+    await page
+      .getByRole("button", { name: "修改并从这里重跑", exact: true })
+      .click();
     await expect(editor).toHaveValue("Original message ".repeat(30));
     // Finish active snapshot handlers before Playwright disposes their context.
     await page.unrouteAll({ behavior: "wait" });

@@ -318,6 +318,9 @@ test("workspace actions create, import and copy paths through the real Host on d
     ).toBeVisible();
     expect(await stat(join(cwd, ".openpi-trash"))).toBeTruthy();
     await expect(tree.locator('[data-file-row="新目录"]')).toHaveCount(0);
+    await expect(
+      page.getByText("File no longer exists.", { exact: true }),
+    ).toHaveCount(0);
     await page.screenshot({
       path: testInfo.outputPath("files-trash-batch-desktop.png"),
     });

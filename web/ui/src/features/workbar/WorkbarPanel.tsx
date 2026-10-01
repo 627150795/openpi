@@ -96,7 +96,7 @@ function WorkbarLauncher({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="workbar-launcher" role="region" aria-label={t("openTools")}>
+    <section className="workbar-launcher" aria-label={t("openTools")}>
       <div className="workbar-launcher-list">
         {launcherTools.map((tool) => {
           const Icon = tool.icon;
@@ -116,7 +116,7 @@ function WorkbarLauncher({
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -486,7 +486,7 @@ export function WorkbarPanel({
     () => () => {
       closeGeneration.current++;
     },
-    [browserScope],
+    [],
   );
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [renamingTerminal, setRenamingTerminal] = useState<WorkbarTabId | null>(
@@ -657,7 +657,8 @@ export function WorkbarPanel({
   const activeTool = tabs.active ? workbarTabTool(tabs.active) : null;
   const activeLabel = tabs.launcherOpen
     ? "openTools"
-    : launcherTools.find((tool) => tool.kind === activeTool)?.title ?? "openTools";
+    : (launcherTools.find((tool) => tool.kind === activeTool)?.title ??
+      "openTools");
 
   return (
     <WorkbarReadingContext.Provider value={readingState}>

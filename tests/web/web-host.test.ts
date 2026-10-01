@@ -34,7 +34,7 @@ const hostAgentDirectory = await mkdtemp(join(tmpdir(), "openpi-host-agent-"));
 const previousHostAgentDirectory = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = hostAgentDirectory;
 const { WebHost } = await import("../../web/host/web-host.ts");
-const { loadSetupConfig } = await import(
+const { loadSetupConfig, formatSetupConfig } = await import(
   "../../extensions/shared/setup-config.ts"
 );
 after(async () => {
@@ -148,6 +148,11 @@ test("appearance writes preserve package config, reject extra authority, and nev
         footerStyle: "powerline-mono",
       },
     });
+    const status = formatSetupConfig(loadSetupConfig());
+    assert.match(status, /Subagent results: full by default/u);
+    assert.match(status, /Bash operations: expanded by default/u);
+    assert.match(status, /Write\/Edit operations: expanded by default/u);
+    assert.match(status, /custom footer off/u);
     // Concurrent partial edits share the existing lock and preserve one another.
     const concurrent = await Promise.all([
       post({ chatWidth: 1200 }),
@@ -166,6 +171,9 @@ test("appearance writes preserve package config, reject extra authority, and nev
     assert.equal(preferences.chatWidth, 1200);
     assert.equal(preferences.sidebarWidth, 320);
     assert.equal(preferences.auxiliaryWidth, 600);
+    assert.equal(preferences.subagentResultDisplay, "full");
+    assert.equal(preferences.bashToolDisplay, "full");
+    assert.equal(preferences.fileMutationDisplay, "full");
     await writeFile(path, "{invalid-private-config");
     const blocked = await post({ theme: "light" });
     assert.equal(blocked.status, 422);

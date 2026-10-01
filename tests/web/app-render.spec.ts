@@ -2095,7 +2095,9 @@ it("groups transcript turns with state and confirmed file change receipts", () =
   expect(container.querySelectorAll(".turn-heading")).toHaveLength(0);
 });
 
-function renderEditableTranscript(onResend = vi.fn(async () => false)) {
+function renderEditableTranscript(
+  onResend: (content: string) => Promise<boolean> = vi.fn(async () => false),
+) {
   const snapshot = activeSnapshot();
   snapshot.runtime.status = "idle";
   snapshot.selectedSession!.entries = [
@@ -2378,6 +2380,7 @@ it("restores the same native entry offset after leaving a Session, without shari
     expect(saved.window?.anchor).toBe("e3");
     expect(saved.position).toMatchObject({
       key: "e2",
+      entryId: "e2",
       offset: -5,
       scrollTop: 150,
       pinned: false,

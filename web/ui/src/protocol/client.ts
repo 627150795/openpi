@@ -360,17 +360,38 @@ export class WebClient {
         sessionPath,
         access: "write-workspace-file",
         kind: mutation.kind,
-        ...(mutation.kind === "restore" ? { id: mutation.id, identity: mutation.identity } :
-          mutation.kind === "trash" ? { path: encodeURI(mutation.path), identity: mutation.identity } : {
-            directory: encodeURI(mutation.directory), name: mutation.name,
-            ...(mutation.kind === "move" ? { path: encodeURI(mutation.path), identity: mutation.identity } : {}),
-            ...(mutation.kind === "import-file" ? { data: mutation.data, ...(mutation.createParents ? { createParents: true } : {}) } : {}),
-          }),
+        ...(mutation.kind === "restore"
+          ? { id: mutation.id, identity: mutation.identity }
+          : mutation.kind === "trash"
+            ? { path: encodeURI(mutation.path), identity: mutation.identity }
+            : {
+                directory: encodeURI(mutation.directory),
+                name: mutation.name,
+                ...(mutation.kind === "move"
+                  ? {
+                      path: encodeURI(mutation.path),
+                      identity: mutation.identity,
+                    }
+                  : {}),
+                ...(mutation.kind === "import-file"
+                  ? {
+                      data: mutation.data,
+                      ...(mutation.createParents
+                        ? { createParents: true }
+                        : {}),
+                    }
+                  : {}),
+              }),
       }),
     });
   }
 
-  workspaceTrash(sessionId: string, sessionPath: string, signal?: AbortSignal, cursor?: string) {
+  workspaceTrash(
+    sessionId: string,
+    sessionPath: string,
+    signal?: AbortSignal,
+    cursor?: string,
+  ) {
     return this.request<WorkspaceTrashListing>(
       `/api/artifacts/trash?${new URLSearchParams({ sessionId, sessionPath, ...(cursor ? { cursor } : {}) })}`,
       { signal },
@@ -513,7 +534,12 @@ export class WebClient {
   ) {
     return this.request<WebInteractiveTerminal>("/api/terminal", {
       method: "POST",
-      body: JSON.stringify({ sessionId, cols, rows, ...(createKey ? { createKey } : {}) }),
+      body: JSON.stringify({
+        sessionId,
+        cols,
+        rows,
+        ...(createKey ? { createKey } : {}),
+      }),
       signal,
     });
   }

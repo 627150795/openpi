@@ -46,14 +46,27 @@ beforeEach(() => {
   removed = [];
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(900);
   vi.spyOn(WebClient.prototype, "workspaceFiles").mockImplementation(
-    async (_id, _session, path) => ({
-      path,
-      entries: entries.filter(
-        (entry) =>
-          (entry.path.split("/").slice(0, -1).join("/") || ".") === path,
-      ),
-      truncated: false,
-    }),
+    async (_id, _session, path) => {
+      if (
+        path !== "." &&
+        !entries.some(
+          (entry) => entry.path === path && entry.kind === "directory",
+        )
+      )
+        throw new WebApiError(
+          "File no longer exists.",
+          404,
+          "ARTIFACT_NOT_FOUND",
+        );
+      return {
+        path,
+        entries: entries.filter(
+          (entry) =>
+            (entry.path.split("/").slice(0, -1).join("/") || ".") === path,
+        ),
+        truncated: false,
+      };
+    },
   );
   vi.spyOn(WebClient.prototype, "releaseFileListing").mockResolvedValue({});
   vi.spyOn(WebClient.prototype, "workspaceTrash").mockImplementation(
@@ -138,7 +151,14 @@ beforeEach(() => {
           .filter(Boolean)
           .join("/");
         entries = entries.map((entry) =>
-          entry === source ? { ...entry, path, name: mutation.name } : entry,
+          entry === source
+            ? { ...entry, path, name: mutation.name }
+            : entry.path.startsWith(`${source.path}/`)
+              ? {
+                  ...entry,
+                  path: `${path}${entry.path.slice(source.path.length)}`,
+                }
+              : entry,
         );
         return {
           sessionId,
@@ -300,6 +320,10 @@ it("selecting a folder and its child removes contents once and offers an immedia
     "/sessions/one",
     { kind: "trash", path: "folder", identity: "folder" },
   );
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "folder" })).toBeNull(),
+  );
+  expect(screen.queryByText("File no longer exists.")).toBeNull();
   fireEvent.click(
     screen.getByRole("button", { name: i18n.t("filesUndoTrash") }),
   );
@@ -310,6 +334,47 @@ it("selecting a folder and its child removes contents once and offers an immedia
     "s",
     "/sessions/one",
     { kind: "restore", id: "folder", identity: "folder" },
+  );
+});
+
+it("renaming an expanded folder follows its selected child and unsaved draft, and creates the next file in the renamed directory", async () => {
+  render(node());
+  fireEvent.click(await screen.findByRole("button", { name: "folder" }));
+  fireEvent.click(await screen.findByRole("button", { name: "child.md" }));
+  await screen.findByRole("heading", { name: "Original" });
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("filesEdit") }));
+  fireEvent.change(
+    await screen.findByRole("textbox", { name: i18n.t("filesEditor") }),
+    { target: { value: "# Folder draft" } },
+  );
+  await menu("folder", i18n.t("filesRename"));
+  const input = screen.getByRole("textbox", { name: i18n.t("filesNewName") });
+  fireEvent.change(input, { target: { value: "renamed-folder" } });
+  fireEvent.submit(input.closest("form")!);
+  await screen.findByRole("button", { name: "renamed-folder" });
+  const child = await screen.findByRole("button", { name: "child.md" });
+  expect(child.getAttribute("data-file-row")).toBe("renamed-folder/child.md");
+  expect(child.getAttribute("aria-current")).toBe("true");
+  expect(screen.queryByText("File no longer exists.")).toBeNull();
+  await screen.findByRole("heading", { name: "Folder draft" });
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("filesEdit") }));
+  expect(
+    (
+      screen.getByRole("textbox", {
+        name: i18n.t("filesEditor"),
+      }) as HTMLTextAreaElement
+    ).value,
+  ).toBe("# Folder draft");
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("filesNewFile") }));
+  const name = screen.getByRole("textbox", { name: i18n.t("filesFileName") });
+  fireEvent.change(name, { target: { value: "next.txt" } });
+  fireEvent.submit(name.closest("form")!);
+  await waitFor(() =>
+    expect(WebClient.prototype.mutateWorkspaceFile).toHaveBeenLastCalledWith(
+      "s",
+      "/sessions/one",
+      { kind: "create-file", directory: "renamed-folder", name: "next.txt" },
+    ),
   );
 });
 

@@ -607,6 +607,31 @@ function FileTree({
               result.moved.from,
               result.moved.to,
             );
+          if (entry.kind === "directory") {
+            const contains = (path: string) =>
+              path === entry.path || path.startsWith(`${entry.path}/`);
+            setExpanded((current) =>
+              kind === "trash"
+                ? current.filter((path) => !contains(path))
+                : current.map((path) =>
+                    contains(path)
+                      ? `${result.path}${path.slice(entry.path.length)}`
+                      : path,
+                  ),
+            );
+            setDirectory((current) =>
+              !contains(current)
+                ? current
+                : kind === "move"
+                  ? `${result.path}${current.slice(entry.path.length)}`
+                  : entry.path.split("/").slice(0, -1).join("/") || ".",
+            );
+            if (kind === "move" && contains(selected)) {
+              const path = `${result.path}${selected.slice(entry.path.length)}`;
+              onSelect(path);
+              artifacts?.open(encodeURI(path));
+            }
+          }
           if (kind === "move") reveal(result);
           setOrganizationResults((current) => [
             ...current,

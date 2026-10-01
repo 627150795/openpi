@@ -168,7 +168,7 @@ test("editing an older native prompt excludes it and later messages, preserves c
     .find(
       (entry) => entry.type === "message" && entry.message.role === "assistant",
     );
-  assert.ok(answer?.type === "message");
+  assert.ok(answer?.type === "message" && answer.message.role === "assistant");
   manager.appendMessage(answer.message);
   const later = manager.appendMessage({
     role: "user",
@@ -518,6 +518,35 @@ test("an idle active Session can fork while another retained Session runs, witho
     internals.promptOperations.clear();
     background.session.abort = abort;
   }
+});
+
+test("rerun receipt byte limits fail before native creation and keep duplicate failures terminal", async (t) => {
+  const { runtime, internals, request, hooks } = await fixture(t);
+  const entry = runtime.sessionManager
+    .getBranch()
+    .find((entry) => entry.type === "message" && entry.message.role === "user");
+  assert.ok(entry);
+  Object.assign(internals, { historyForkPromptBytes: 128 * 1024 * 1024 });
+  const rerun = {
+    ...request,
+    entryId: entry.id,
+    rerun: { mode: "regenerate" as const },
+  };
+  const capacity = (error: unknown) =>
+    error instanceof WebRuntimeRequestError &&
+    error.code === "SESSION_FORK_CAPACITY";
+  await assert.rejects(runtime.forkSession(rerun), capacity);
+  assert.equal(
+    hooks.events.some((event) => event.type === "session_before_fork"),
+    false,
+  );
+  assert.equal(runtime.sessionManager.getSessionId(), request.sessionId);
+  Object.assign(internals, { historyForkPromptBytes: 0 });
+  await assert.rejects(runtime.forkSession(rerun), capacity);
+  assert.equal(
+    hooks.events.some((event) => event.type === "session_before_fork"),
+    false,
+  );
 });
 
 test("fork requires saved native evidence and bounds command identities and replay receipts", async (t) => {

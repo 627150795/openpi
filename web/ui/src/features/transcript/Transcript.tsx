@@ -115,7 +115,11 @@ interface TranscriptProps {
   readingCache?: SessionReadingCache;
   readingRestorePending?: boolean;
   historyNavigation?:
-    | (WebHistoryAnchor & { revision: number; session: WebSessionProjection; restorePosition?: ReadingPosition })
+    | (WebHistoryAnchor & {
+        revision: number;
+        session: WebSessionProjection;
+        restorePosition?: ReadingPosition;
+      })
     | null;
   onResend: (content: string) => Promise<boolean>;
   onEdit?: (anchor: WebHistoryAnchor, content: string) => Promise<boolean>;
@@ -492,7 +496,10 @@ function ActivityCard({
   defaultOpen?: boolean;
 }) {
   return (
-    <details className={`message-details activity-card ${family}`} open={defaultOpen || undefined}>
+    <details
+      className={`message-details activity-card ${family}`}
+      open={defaultOpen || undefined}
+    >
       <summary>
         <span className="activity-icon" aria-hidden="true">
           {family === "subagent" ? <Bot /> : <Workflow />}
@@ -864,7 +871,13 @@ function MessageActions({
   );
 }
 
-function CustomResult({ message, fullSubagent = false }: { message: WebLiveMessage; fullSubagent?: boolean }) {
+function CustomResult({
+  message,
+  fullSubagent = false,
+}: {
+  message: WebLiveMessage;
+  fullSubagent?: boolean;
+}) {
   const { t } = useTranslation();
   if (message.customType === "openpi-web-command-feedback")
     return (
@@ -1668,7 +1681,9 @@ function renderTurns(
       id={turn.id}
       rows={turn.rows}
       active={running && turn.id === activeTurn}
-      expandProcesses={expandProcesses || turn.rows.some((row) => row.defaultOpen)}
+      expandProcesses={
+        expandProcesses || turn.rows.some((row) => row.defaultOpen)
+      }
       changes={changesByPrompt?.get(
         turn.rows.find((row) => row.kind === "prompt" && !row.pendingPrompt)
           ?.promptEntryId ?? "",
@@ -1681,20 +1696,36 @@ function renderTurns(
   ));
 }
 
-function captureReadingPosition(element: HTMLElement, pinned: boolean, session?: WebSessionProjection) {
+function captureReadingPosition(
+  element: HTMLElement,
+  pinned: boolean,
+  session?: WebSessionProjection,
+) {
   const top = element.getBoundingClientRect().top;
   const anchor = Array.from(
-    element.querySelectorAll<HTMLElement>("[data-history-entry], [data-history-message], [data-history-result]"),
+    element.querySelectorAll<HTMLElement>(
+      "[data-history-entry], [data-history-message], [data-history-result]",
+    ),
   ).find((item) => {
     const bounds = item.getBoundingClientRect();
     return bounds.height > 0 && bounds.bottom > top;
   });
-  const key = anchor?.dataset.historyEntry ?? anchor?.dataset.historyMessage ?? anchor?.dataset.historyResult;
+  const key =
+    anchor?.dataset.historyEntry ??
+    anchor?.dataset.historyMessage ??
+    anchor?.dataset.historyResult;
   const owner = anchor?.dataset.historyMessage ?? anchor?.dataset.historyResult;
-  let entryId = session?.entries.find((entry) => entry.id === owner || entry.id === key)?.id;
-  if (!entryId && key) for (const entry of session?.entries ?? []) {
-    if (key.startsWith(`${entry.id}-`) && (!entryId || entry.id.length > entryId.length)) entryId = entry.id;
-  }
+  let entryId = session?.entries.find(
+    (entry) => entry.id === owner || entry.id === key,
+  )?.id;
+  if (!entryId && key)
+    for (const entry of session?.entries ?? []) {
+      if (
+        key.startsWith(`${entry.id}-`) &&
+        (!entryId || entry.id.length > entryId.length)
+      )
+        entryId = entry.id;
+    }
   return {
     key: entryId ? key : undefined,
     entryId,
@@ -1811,7 +1842,11 @@ export function Transcript(props: TranscriptProps) {
     const save = () => {
       if (restorePending.current) return;
       rememberSessionReading(readingCache, hydrationScope, {
-        position: captureReadingPosition(element, pinned.current, readingSession.current),
+        position: captureReadingPosition(
+          element,
+          pinned.current,
+          readingSession.current,
+        ),
       });
     };
     window.addEventListener("pagehide", save);
@@ -1936,7 +1971,11 @@ export function Transcript(props: TranscriptProps) {
         lastUserIndex = index;
         break;
       }
-      if (entries[index]?.message.role === "custom" && entries[index]?.message.customType === "openpi-setup-request") break;
+      if (
+        entries[index]?.message.role === "custom" &&
+        entries[index]?.message.customType === "openpi-setup-request"
+      )
+        break;
     }
     const lastAssistantByTurn = new Set<number>();
     let assistantCandidate = -1;
@@ -2029,7 +2068,13 @@ export function Transcript(props: TranscriptProps) {
                 tabIndex={-1}
               >
                 <div className="message-content">
-                  <CustomResult message={message} fullSubagent={props.snapshot.preferences.subagentResultDisplay === "full"} />
+                  <CustomResult
+                    message={message}
+                    fullSubagent={
+                      props.snapshot.preferences.subagentResultDisplay ===
+                      "full"
+                    }
+                  />
                 </div>
               </article>
             ),
@@ -2110,12 +2155,30 @@ export function Transcript(props: TranscriptProps) {
                   editable={
                     active &&
                     !running &&
-                    Boolean(props.forkAvailable && props.onEdit && entry.entryId && selectedId && selectedPath && !entry.optimistic) &&
+                    Boolean(
+                      props.forkAvailable &&
+                        props.onEdit &&
+                        entry.entryId &&
+                        selectedId &&
+                        selectedPath &&
+                        !entry.optimistic,
+                    ) &&
                     !awaitingFull
                   }
                   copyRequiresFull={awaitingFull}
                   timestamp={entry.timestamp}
-                  onResend={(content) => props.onEdit && entry.entryId && selectedId && selectedPath ? props.onEdit({ sessionId: selectedId, sessionPath: selectedPath, entryId: entry.entryId }, content) : Promise.resolve(false)}
+                  onResend={(content) =>
+                    props.onEdit && entry.entryId && selectedId && selectedPath
+                      ? props.onEdit(
+                          {
+                            sessionId: selectedId,
+                            sessionPath: selectedPath,
+                            entryId: entry.entryId,
+                          },
+                          content,
+                        )
+                      : Promise.resolve(false)
+                  }
                   onFork={
                     entry.entryId &&
                     selectedId &&
@@ -2220,8 +2283,20 @@ export function Transcript(props: TranscriptProps) {
                     timestamp={entry.timestamp}
                     onResend={props.onResend}
                     onRegenerate={
-                      landmark?.entryId && selectedId && selectedPath && props.onRegenerate && !entry.optimistic && !message.isError && (message.stopReason === "stop" || message.stopReason === "length")
-                        ? () => props.onRegenerate!({ sessionId: selectedId, sessionPath: selectedPath, entryId: landmark.entryId })
+                      landmark?.entryId &&
+                      selectedId &&
+                      selectedPath &&
+                      props.onRegenerate &&
+                      !entry.optimistic &&
+                      !message.isError &&
+                      (message.stopReason === "stop" ||
+                        message.stopReason === "length")
+                        ? () =>
+                            props.onRegenerate!({
+                              sessionId: selectedId,
+                              sessionPath: selectedPath,
+                              entryId: landmark.entryId,
+                            })
                         : undefined
                     }
                     onFork={
@@ -2521,13 +2596,14 @@ export function Transcript(props: TranscriptProps) {
             : null;
         const status = resultStatus(message);
         const toolName = message.toolName || "tool";
-        const defaultOpen = family === "subagent"
-          ? props.snapshot.preferences.subagentResultDisplay === "full"
-          : toolName === "bash"
-            ? props.snapshot.preferences.bashToolDisplay === "full"
-            : toolName === "write" || toolName === "edit"
-              ? props.snapshot.preferences.fileMutationDisplay === "full"
-              : false;
+        const defaultOpen =
+          family === "subagent"
+            ? props.snapshot.preferences.subagentResultDisplay === "full"
+            : toolName === "bash"
+              ? props.snapshot.preferences.bashToolDisplay === "full"
+              : toolName === "write" || toolName === "edit"
+                ? props.snapshot.preferences.fileMutationDisplay === "full"
+                : false;
         const icon =
           family === "subagent" ? (
             <Bot key={`${entry.key}-icon`} />
@@ -2717,10 +2793,23 @@ export function Transcript(props: TranscriptProps) {
       identityChanged && !historyChanged && !requested
         ? readingCache.get(identity)?.position
         : undefined;
-    const restoredInWindow = restored?.key && Array.from(element.querySelectorAll<HTMLElement>("[data-history-entry], [data-history-message], [data-history-result]")).some((item) => item.dataset.historyEntry === restored.key || item.dataset.historyMessage === restored.key || item.dataset.historyResult === restored.key);
+    const restoredInWindow =
+      restored?.key &&
+      Array.from(
+        element.querySelectorAll<HTMLElement>(
+          "[data-history-entry], [data-history-message], [data-history-result]",
+        ),
+      ).some(
+        (item) =>
+          item.dataset.historyEntry === restored.key ||
+          item.dataset.historyMessage === restored.key ||
+          item.dataset.historyResult === restored.key,
+      );
     const saved =
       prependAnchor.current ??
-      (restored && !restored.pinned && (!restorePending.current || restoredInWindow)
+      (restored &&
+      !restored.pinned &&
+      (!restorePending.current || restoredInWindow)
         ? { ...restored, scrollHeight: element.scrollHeight }
         : null);
     prependAnchor.current = null;
@@ -2793,9 +2882,17 @@ export function Transcript(props: TranscriptProps) {
         item.dataset.historyResult === navigation.entryId,
     );
     const restoredTarget = navigation.restorePosition?.key
-      ? candidates.find((item) => item.dataset.historyEntry === navigation.restorePosition!.key || item.dataset.historyMessage === navigation.restorePosition!.key || item.dataset.historyResult === navigation.restorePosition!.key)
+      ? candidates.find(
+          (item) =>
+            item.dataset.historyEntry === navigation.restorePosition!.key ||
+            item.dataset.historyMessage === navigation.restorePosition!.key ||
+            item.dataset.historyResult === navigation.restorePosition!.key,
+        )
       : undefined;
-    const target = restoredTarget ?? matches.find((item) => item.classList.contains("response")) ?? matches[0];
+    const target =
+      restoredTarget ??
+      matches.find((item) => item.classList.contains("response")) ??
+      matches[0];
     if (!target) return;
     // Native details retain their disclosure state; reveal only the ancestors
     // needed to make this particular message reachable.
@@ -2815,14 +2912,22 @@ export function Transcript(props: TranscriptProps) {
       }
     }
     const locate = () => {
-      if (!element.contains(target) || navigation.restorePosition && lastNavigation.current === navigationKey) return;
+      if (
+        !element.contains(target) ||
+        (navigation.restorePosition && lastNavigation.current === navigationKey)
+      )
+        return;
       const top = Math.max(
         0,
         element.scrollTop +
           target.getBoundingClientRect().top -
           element.getBoundingClientRect().top -
-          (navigation.restorePosition && (target.dataset.historyEntry === navigation.restorePosition.key || target.dataset.historyMessage === navigation.restorePosition.key || target.dataset.historyResult === navigation.restorePosition.key)
-            ? navigation.restorePosition.offset : 24),
+          (navigation.restorePosition &&
+          (target.dataset.historyEntry === navigation.restorePosition.key ||
+            target.dataset.historyMessage === navigation.restorePosition.key ||
+            target.dataset.historyResult === navigation.restorePosition.key)
+            ? navigation.restorePosition.offset
+            : 24),
       );
       element.scrollTo?.({ top, behavior: "instant" });
       if (typeof element.scrollTo !== "function") element.scrollTop = top;
@@ -3040,8 +3145,14 @@ export function Transcript(props: TranscriptProps) {
         aria-label="Conversation"
         // biome-ignore lint/a11y/noNoninteractiveTabindex: The scrollport needs keyboard reading with automatic pagination.
         tabIndex={0}
-        onPointerDownCapture={() => { if (navigation?.restorePosition) lastNavigation.current = navigationKey; }}
-        onTouchStartCapture={() => { if (navigation?.restorePosition) lastNavigation.current = navigationKey; }}
+        onPointerDownCapture={() => {
+          if (navigation?.restorePosition)
+            lastNavigation.current = navigationKey;
+        }}
+        onTouchStartCapture={() => {
+          if (navigation?.restorePosition)
+            lastNavigation.current = navigationKey;
+        }}
         onScroll={(event) => {
           const element = event.currentTarget;
           const upward = element.scrollTop < lastScrollTop.current;
@@ -3057,15 +3168,25 @@ export function Transcript(props: TranscriptProps) {
           setReadingHistory(!pinned.current);
           window.clearTimeout(savePositionTimer.current);
           savePositionTimer.current = window.setTimeout(() => {
-            if (!restorePending.current && selectedId && selectedPath && element.isConnected)
+            if (
+              !restorePending.current &&
+              selectedId &&
+              selectedPath &&
+              element.isConnected
+            )
               rememberSessionReading(readingCache, hydrationScope, {
-                position: captureReadingPosition(element, pinned.current, readingSession.current),
+                position: captureReadingPosition(
+                  element,
+                  pinned.current,
+                  readingSession.current,
+                ),
               });
           }, 200);
           if (upward) readEarlierNearTop(element);
         }}
         onWheel={(event) => {
-          if (navigation?.restorePosition) lastNavigation.current = navigationKey;
+          if (navigation?.restorePosition)
+            lastNavigation.current = navigationKey;
           if (
             !event.defaultPrevented &&
             !event.ctrlKey &&
@@ -3079,7 +3200,19 @@ export function Transcript(props: TranscriptProps) {
             readEarlierNearTop(event.currentTarget);
         }}
         onKeyDown={(event) => {
-          if (navigation?.restorePosition && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) lastNavigation.current = navigationKey;
+          if (
+            navigation?.restorePosition &&
+            [
+              "ArrowUp",
+              "ArrowDown",
+              "PageUp",
+              "PageDown",
+              "Home",
+              "End",
+              " ",
+            ].includes(event.key)
+          )
+            lastNavigation.current = navigationKey;
           const target = event.target;
           if (
             !event.defaultPrevented &&
@@ -3101,7 +3234,10 @@ export function Transcript(props: TranscriptProps) {
       >
         {selected?.rerun && props.onOpenOriginal && (
           <div className="message-branch-origin">
-            <button type="button" onClick={() => void props.onOpenOriginal!(selected.rerun!.source)}>
+            <button
+              type="button"
+              onClick={() => void props.onOpenOriginal!(selected.rerun!.source)}
+            >
               <GitBranch aria-hidden="true" /> {t("openOriginalConversation")}
             </button>
             <span>{t("messageRerunWorkspaceHint")}</span>

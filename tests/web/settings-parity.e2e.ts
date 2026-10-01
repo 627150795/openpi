@@ -6,17 +6,36 @@ import {
   MOCK_SESSION_ID,
 } from "./thinking-e2e-support.ts";
 
-test("General result and footer controls save, restore after reload, and preserve values on rejection", async ({ page }, testInfo) => {
+test("General result and footer controls save, restore after reload, and preserve values on rejection", async ({
+  page,
+}, testInfo) => {
   await installThinkingFixture(page);
   const setup = projectWebSetupConfig(DEFAULT_SETUP_CONFIG);
-  const resources = { skills: [], plugins: [], totals: { extensions: 0, skills: 0, prompts: 0, themes: 0 }, diagnostics: { extensionErrors: 0, skillErrors: 0 }, truncation: { truncated: false, skillsOmitted: 0, pluginsOmitted: 0, resourcesOmitted: 0 } };
-  await page.route("**/api/settings/catalog?**", (route) => route.fulfill({ json: { sessionId: MOCK_SESSION_ID, setup, resources } }));
+  const resources = {
+    skills: [],
+    plugins: [],
+    totals: { extensions: 0, skills: 0, prompts: 0, themes: 0 },
+    diagnostics: { extensionErrors: 0, skillErrors: 0 },
+    truncation: {
+      truncated: false,
+      skillsOmitted: 0,
+      pluginsOmitted: 0,
+      resourcesOmitted: 0,
+    },
+  };
+  await page.route("**/api/settings/catalog?**", (route) =>
+    route.fulfill({ json: { sessionId: MOCK_SESSION_ID, setup, resources } }),
+  );
   let reject = false;
   const patches: unknown[] = [];
   await page.route("**/api/settings/preferences", async (route) => {
     const patch = route.request().postDataJSON();
     patches.push(patch);
-    if (reject) return route.fulfill({ status: 422, json: { error: "configuration is read-only" } });
+    if (reject)
+      return route.fulfill({
+        status: 422,
+        json: { error: "configuration is read-only" },
+      });
     Object.assign(setup.ui, patch);
     return route.fulfill({ json: { saved: true, setup } });
   });
@@ -30,21 +49,50 @@ test("General result and footer controls save, restore after reload, and preserv
     await expect(control).toBeEnabled();
     await expect(control).toHaveValue("full");
   }
-  await dialog.getByRole("combobox", { name: "终端页脚样式", exact: true }).selectOption("powerline-mono");
-  await expect(dialog.getByRole("combobox", { name: "终端页脚样式", exact: true })).toBeEnabled();
-  await dialog.getByRole("switch", { name: "Pi 终端页脚", exact: true }).click();
-  await expect(dialog.getByRole("combobox", { name: "终端页脚样式", exact: true })).toBeDisabled();
-  await dialog.locator(".settings-general-panel").screenshot({ path: testInfo.outputPath("settings-editable-desktop.png") });
+  await dialog
+    .getByRole("combobox", { name: "终端页脚样式", exact: true })
+    .selectOption("powerline-mono");
+  await expect(
+    dialog.getByRole("combobox", { name: "终端页脚样式", exact: true }),
+  ).toBeEnabled();
+  await dialog
+    .getByRole("switch", { name: "Pi 终端页脚", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("combobox", { name: "终端页脚样式", exact: true }),
+  ).toBeDisabled();
+  await dialog
+    .locator(".settings-general-panel")
+    .screenshot({ path: testInfo.outputPath("settings-editable-desktop.png") });
   await page.reload();
   await page.getByRole("button", { name: "设置", exact: true }).click();
-  await expect(dialog.getByRole("combobox", { name: "Bash 操作", exact: true })).toHaveValue("full");
+  await expect(
+    dialog.getByRole("combobox", { name: "Bash 操作", exact: true }),
+  ).toHaveValue("full");
   reject = true;
-  await dialog.getByRole("combobox", { name: "Bash 操作", exact: true }).selectOption("compact");
-  await expect(dialog.getByText("无法保存显示设置，请检查配置诊断后重试。", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("combobox", { name: "Bash 操作", exact: true })).toHaveValue("full");
-  expect(patches).toEqual([{ subagentResultDisplay: "full" }, { bashToolDisplay: "full" }, { fileMutationDisplay: "full" }, { footerStyle: "powerline-mono" }, { customFooter: false }, { bashToolDisplay: "compact" }]);
+  await dialog
+    .getByRole("combobox", { name: "Bash 操作", exact: true })
+    .selectOption("compact");
+  await expect(
+    dialog.getByText("无法保存显示设置，请检查配置诊断后重试。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("combobox", { name: "Bash 操作", exact: true }),
+  ).toHaveValue("full");
+  expect(patches).toEqual([
+    { subagentResultDisplay: "full" },
+    { bashToolDisplay: "full" },
+    { fileMutationDisplay: "full" },
+    { footerStyle: "powerline-mono" },
+    { customFooter: false },
+    { bashToolDisplay: "compact" },
+  ]);
   await page.setViewportSize({ width: 390, height: 844 });
-  await dialog.locator(".settings-general-panel").screenshot({ path: testInfo.outputPath("settings-editable-mobile.png") });
+  await dialog
+    .locator(".settings-general-panel")
+    .screenshot({ path: testInfo.outputPath("settings-editable-mobile.png") });
 });
 
 test("model provider cards preserve drafts, stage discovery and keep the existing settings shell", async ({
@@ -138,7 +186,7 @@ test("model provider cards preserve drafts, stage discovery and keep the existin
   ).toBeDisabled();
   expect(
     await dialog
-      .locator(".settings-chat-controls")
+      .locator("section.settings-chat-controls")
       .evaluate((element) => element.clientWidth),
   ).toBeLessThanOrEqual(420);
   const dark = dialog.getByRole("radio", { name: "深色", exact: true });

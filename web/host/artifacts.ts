@@ -17,14 +17,20 @@ function protectedPath(path: string) {
   return path.split(/[\\/]/u).some((part) => [".git", ".pi", TRASH_DIRECTORY].includes(part.toLowerCase()));
 }
 
-function readPrivateJson(path: string) {
+function readPrivateText(path: string) {
+  const expected = lstatSync(path, { bigint: true });
+  if (!expected.isFile() || expected.isSymbolicLink() || (process.platform !== "win32" && (expected.mode & 0o077n) !== 0n)) throw denied();
   const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
-    const info = fstatSync(descriptor);
-    if (!info.isFile() || info.size > 16_384) throw denied();
-    return JSON.parse(readFileSync(descriptor, "utf8")) as unknown;
+    const info = fstatSync(descriptor, { bigint: true });
+    if (!info.isFile() || info.size > 16_384n || info.dev !== expected.dev || info.ino !== expected.ino) throw denied();
+    const text = readFileSync(descriptor, "utf8");
+    if (metadataIdentity(fstatSync(descriptor, { bigint: true })) !== metadataIdentity(expected)) throw denied();
+    return text;
   } finally { closeSync(descriptor); }
 }
+
+function readPrivateJson(path: string) { return JSON.parse(readPrivateText(path)) as unknown; }
 
 function writePrivateFile(path: string, content: string) {
   const descriptor = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
@@ -475,11 +481,11 @@ export class ArtifactReader {
       writePrivateFile(resolve(path, "owner.json"), JSON.stringify({ marker: TRASH_MARKER, root }));
       info = lstatSync(path);
     }
-    if (!info.isDirectory() || info.isSymbolicLink()) throw denied();
+    if (!info.isDirectory() || info.isSymbolicLink() || (process.platform !== "win32" && (info.mode & 0o077) !== 0)) throw denied();
     const owner = readPrivateJson(resolve(path, "owner.json"));
     if (!owner || typeof owner !== "object" || !("marker" in owner) || owner.marker !== TRASH_MARKER || !("root" in owner) || owner.root !== root) throw denied();
     const ignore = resolve(path, ".gitignore");
-    if (!lstatSync(ignore).isFile() || lstatSync(ignore).isSymbolicLink() || readFileSync(ignore, "utf8") !== "*\n") throw denied();
+    if (readPrivateText(ignore) !== "*\n") throw denied();
     return path;
   }
 
@@ -487,7 +493,7 @@ export class ArtifactReader {
     if (!UUID.test(id)) throw denied();
     const folder = resolve(directory, id);
     const folderInfo = lstatSync(folder);
-    if (!folderInfo.isDirectory() || folderInfo.isSymbolicLink()) throw denied();
+    if (!folderInfo.isDirectory() || folderInfo.isSymbolicLink() || (process.platform !== "win32" && (folderInfo.mode & 0o077) !== 0)) throw denied();
     const record = readPrivateJson(resolve(folder, "entry.json"));
     if (!record || typeof record !== "object" || !("path" in record) || typeof record.path !== "string" || !("kind" in record) || !["file", "directory"].includes(String(record.kind)) || !("identity" in record) || typeof record.identity !== "string" || !("deletedAt" in record) || typeof record.deletedAt !== "number" || !Number.isSafeInteger(record.deletedAt)) throw denied();
     const original = resolve(root, record.path);
@@ -592,7 +598,24 @@ export class ArtifactReader {
           // link is a no-clobber commit even if another process creates the name.
           linkSync(source, target);
           unlinkSync(source);
-        } else renameSync(source, target);
+        } else if (process.platform === "win32") {
+          // Windows does not replace an existing destination directory.
+          renameSync(source, target);
+        } else {
+          // POSIX rename would replace another process's empty directory.
+          // Claim the destination exclusively first; only our empty directory
+          // is replaceable. A concurrent creator now gets EEXIST.
+          mkdirSync(target, { mode: 0o700 });
+          const reservation = lstatSync(target, { bigint: true });
+          try { renameSync(source, target); }
+          catch (error) {
+            try {
+              const remaining = lstatSync(target, { bigint: true });
+              if (remaining.dev === reservation.dev && remaining.ino === reservation.ino && remaining.isDirectory() && !remaining.isSymbolicLink()) rmdirSync(target);
+            } catch { /* Preserve another process's replacement or contents. */ }
+            throw error;
+          }
+        }
         if (saved) {
           try { unlinkSync(resolve(saved.folder, "entry.json")); rmdirSync(saved.folder); }
           catch { /* Restored contents are authoritative; preserve leftover metadata rather than misreporting a failed restore. */ }

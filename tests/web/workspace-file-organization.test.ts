@@ -1,18 +1,21 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { ArtifactReader } from "../../web/host/artifacts.ts";
 
@@ -212,6 +215,71 @@ test("trash preserves ignored contents across reader recreation, stays out of Gi
     } finally {
       restoredReader.dispose();
     }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("POSIX recovery rejects widened private permissions without moving or deleting operator contents", {
+  skip: process.platform === "win32",
+}, async () => {
+  const f = await fixture();
+  try {
+    const bytes = Buffer.from([0, 255, 36, 128]);
+    await writeFile(join(f.cwd, "secret.bin"), bytes);
+    await writeFile(join(f.cwd, "keep.txt"), "original stays");
+    const result = await f.reader.mutateFile("s", f.scope.sessionPath, {
+      kind: "trash",
+      path: "secret.bin",
+      identity: await f.identity("secret.bin"),
+    });
+    assert.ok(result.trashed);
+    const root = join(f.cwd, ".openpi-trash");
+    const folder = join(root, result.trashed.id);
+    const payload = join(folder, "contents");
+    const restore = {
+      kind: "restore" as const,
+      id: result.trashed.id,
+      identity: result.trashed.identity,
+    };
+    for (const [path, originalMode] of [
+      [root, 0o700],
+      [folder, 0o700],
+      [join(root, "owner.json"), 0o600],
+      [join(root, ".gitignore"), 0o600],
+      [join(folder, "entry.json"), 0o600],
+    ] as const) {
+      assert.equal((await stat(path)).mode & 0o077, 0);
+      await chmod(path, originalMode | 0o044);
+      try {
+        await assert.rejects(
+          f.reader.mutateFile("s", f.scope.sessionPath, restore),
+          { code: "ARTIFACT_DENIED" },
+        );
+        assert.deepEqual(await readFile(payload), bytes);
+        await assert.rejects(stat(join(f.cwd, "secret.bin")), {
+          code: "ENOENT",
+        });
+        if (path === root) {
+          await assert.rejects(
+            f.reader.mutateFile("s", f.scope.sessionPath, {
+              kind: "trash",
+              path: "keep.txt",
+              identity: await f.identity("keep.txt"),
+            }),
+            { code: "ARTIFACT_DENIED" },
+          );
+          assert.equal(
+            await readFile(join(f.cwd, "keep.txt"), "utf8"),
+            "original stays",
+          );
+        }
+      } finally {
+        await chmod(path, originalMode);
+      }
+    }
+    await f.reader.mutateFile("s", f.scope.sessionPath, restore);
+    assert.deepEqual(await readFile(join(f.cwd, "secret.bin")), bytes);
   } finally {
     await f.cleanup();
   }
@@ -560,4 +628,74 @@ test("case-only renames share one native write lane without hanging on case-inse
   } finally {
     await f.cleanup();
   }
+});
+
+test("POSIX directory moves reserve the destination against a competing empty-directory creator and clean only owned reservations", {
+  skip: process.platform === "win32",
+}, () => {
+  // Interpose only in a fresh child: represent an external process racing the
+  // last native rename without changing another test's filesystem functions.
+  const script = `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    import { tmpdir } from "node:os";
+    import { join } from "node:path";
+    import { ArtifactReader } from ${JSON.stringify(new URL("../../web/host/artifacts.ts", import.meta.url).href)};
+    const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "openpi-directory-race-")));
+    const reader = new ArtifactReader(() => ({ sessionId: "s", sessionPath: "a", cwd: root }));
+    const nativeRename = fs.renameSync;
+    try {
+      for (const mode of ["creator", "failure", "replacement"]) {
+        const source = join(root, mode);
+        const target = join(root, mode + "-moved");
+        fs.mkdirSync(source);
+        fs.writeFileSync(join(source, "original.txt"), "original contents");
+        const { entries } = await reader.listFiles("s", ".", "", "a");
+        const identity = entries.find((entry) => entry.path === mode).identity;
+        let reserved = false;
+        fs.renameSync = (from, to) => {
+          if (from === source) {
+            if (mode === "creator") {
+              assert.throws(() => fs.mkdirSync(to), { code: "EEXIST" });
+              reserved = true;
+            } else {
+              assert.equal(fs.lstatSync(to).isDirectory(), true);
+              if (mode === "replacement") {
+                nativeRename(to, to + "-reserved");
+                fs.mkdirSync(to);
+                fs.writeFileSync(join(to, "new.txt"), "competing contents");
+              }
+              throw Object.assign(new Error("controlled failure"), { code: "EACCES" });
+            }
+          }
+          return nativeRename(from, to);
+        };
+        syncBuiltinESMExports();
+        const moving = reader.mutateFile("s", "a", { kind: "move", path: mode, identity, directory: ".", name: mode + "-moved" });
+        if (mode === "creator") {
+          await moving;
+          assert.equal(reserved, true);
+          assert.equal(fs.readFileSync(join(target, "original.txt"), "utf8"), "original contents");
+        } else {
+          await assert.rejects(moving, { code: "ARTIFACT_DENIED" });
+          assert.equal(fs.readFileSync(join(source, "original.txt"), "utf8"), "original contents");
+          if (mode === "failure") assert.equal(fs.existsSync(target), false);
+          else assert.equal(fs.readFileSync(join(target, "new.txt"), "utf8"), "competing contents");
+        }
+        fs.renameSync = nativeRename;
+        syncBuiltinESMExports();
+      }
+    } finally {
+      fs.renameSync = nativeRename;
+      syncBuiltinESMExports();
+      reader.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  `;
+  execFileSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "-e", script],
+    { cwd: fileURLToPath(new URL("../..", import.meta.url)), timeout: 15_000 },
+  );
 });

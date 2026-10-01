@@ -393,6 +393,15 @@
 }
 
 @media (hover: none), (pointer: coarse) {
+  .session-sidebar .session-row:has(.session[aria-current="page"]) :is(.session-pin-button, .astryx-menu-trigger) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .session-sidebar .session-row:has(.session[aria-current="page"]) .session-time {
+    visibility: hidden;
+  }
+
   .session-sidebar .workspace-row-actions {
     opacity: 1;
     pointer-events: auto;

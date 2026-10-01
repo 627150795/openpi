@@ -215,7 +215,17 @@ function settingsFetcher() {
         ...(patch.expandThinking !== undefined
           ? { webExpandThinking: patch.expandThinking }
           : {}),
-        ...Object.fromEntries(["subagentResultDisplay", "bashToolDisplay", "fileMutationDisplay", "customFooter", "footerStyle"].filter((key) => patch[key] !== undefined).map((key) => [key, patch[key]])),
+        ...Object.fromEntries(
+          [
+            "subagentResultDisplay",
+            "bashToolDisplay",
+            "fileMutationDisplay",
+            "customFooter",
+            "footerStyle",
+          ]
+            .filter((key) => patch[key] !== undefined)
+            .map((key) => [key, patch[key]]),
+        ),
       });
       return reply({ saved: true, setup: payload.setup });
     }
@@ -470,21 +480,59 @@ it("saves every result display and footer control through presentation preferenc
   renderSettings({ onConfigureOpenPi: configure });
   await screen.findByText(i18n.t("agentBehavior"));
   for (const label of ["subagentResults", "bashOperations", "fileMutations"]) {
-    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: i18n.t(label) });
+    const select = screen.getByRole<HTMLSelectElement>("combobox", {
+      name: i18n.t(label),
+    });
     fireEvent.change(select, { target: { value: "full" } });
     await waitFor(() => expect(select.value).toBe("full"));
     await waitFor(() => expect(select.disabled).toBe(false));
   }
-  fireEvent.change(screen.getByRole("combobox", { name: i18n.t("terminalFooterStyle") }), { target: { value: "powerline-mono" } });
-  await waitFor(() => expect(screen.getByRole<HTMLSelectElement>("combobox", { name: i18n.t("terminalFooterStyle") }).value).toBe("powerline-mono"));
-  fireEvent.click(screen.getByRole("switch", { name: i18n.t("terminalFooter") }));
-  await waitFor(() => expect(screen.getByRole<HTMLSelectElement>("combobox", { name: i18n.t("terminalFooterStyle") }).disabled).toBe(true));
+  fireEvent.change(
+    screen.getByRole("combobox", { name: i18n.t("terminalFooterStyle") }),
+    { target: { value: "powerline-mono" } },
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole<HTMLSelectElement>("combobox", {
+        name: i18n.t("terminalFooterStyle"),
+      }).value,
+    ).toBe("powerline-mono"),
+  );
+  fireEvent.click(
+    screen.getByRole("switch", { name: i18n.t("terminalFooter") }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole<HTMLSelectElement>("combobox", {
+        name: i18n.t("terminalFooterStyle"),
+      }).disabled,
+    ).toBe(true),
+  );
   expect(configure).not.toHaveBeenCalled();
-  expect(fetcher.mock.calls.filter(([input]) => String(input).includes("/api/settings/preferences"))).toHaveLength(5);
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "read-only configuration" }), { status: 422 })));
-  fireEvent.change(screen.getByRole("combobox", { name: i18n.t("bashOperations") }), { target: { value: "compact" } });
+  expect(
+    fetcher.mock.calls.filter(([input]) =>
+      String(input).includes("/api/settings/preferences"),
+    ),
+  ).toHaveLength(5);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "read-only configuration" }), {
+          status: 422,
+        }),
+    ),
+  );
+  fireEvent.change(
+    screen.getByRole("combobox", { name: i18n.t("bashOperations") }),
+    { target: { value: "compact" } },
+  );
   await screen.findByText(i18n.t("settingsPreferencesSaveFailed"));
-  expect(screen.getByRole<HTMLSelectElement>("combobox", { name: i18n.t("bashOperations") }).value).toBe("full");
+  expect(
+    screen.getByRole<HTMLSelectElement>("combobox", {
+      name: i18n.t("bashOperations"),
+    }).value,
+  ).toBe("full");
 });
 
 it("routes agent controls through canonical setup and waits for a save receipt", async () => {
@@ -493,11 +541,43 @@ it("routes agent controls through canonical setup and waits for a save receipt",
   const configure = vi.fn(async () => true);
   renderSettings({ onConfigureOpenPi: configure });
   await screen.findByText(i18n.t("agentBehavior"));
-  const discovery = screen.getByRole<HTMLSelectElement>("combobox", { name: i18n.t("capabilityDiscovery") });
+  const discovery = screen.getByRole<HTMLSelectElement>("combobox", {
+    name: i18n.t("capabilityDiscovery"),
+  });
   fireEvent.change(discovery, { target: { value: "adaptive" } });
-  await waitFor(() => expect(configure).toHaveBeenCalledWith(i18n.t("setupRequestDiscovery", { mode: "adaptive" })));
+  await waitFor(() =>
+    expect(configure).toHaveBeenCalledWith(
+      i18n.t("setupRequestDiscovery", { mode: "adaptive" }),
+    ),
+  );
   expect(discovery.value).toBe("explicit");
-  expect(fetcher.mock.calls.some(([input]) => String(input).includes("/api/settings/preferences"))).toBe(false);
+  const concurrency = screen.getByRole<HTMLInputElement>("spinbutton", {
+    name: i18n.t("workflowConcurrency"),
+  });
+  fireEvent.change(concurrency, { target: { value: "9" } });
+  fireEvent.change(
+    screen.getByRole("combobox", { name: i18n.t("bashOperations") }),
+    { target: { value: "full" } },
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole<HTMLSelectElement>("combobox", {
+        name: i18n.t("bashOperations"),
+      }).value,
+    ).toBe("full"),
+  );
+  expect(concurrency.value).toBe("9");
+  fireEvent.submit(concurrency.closest("form")!);
+  await waitFor(() =>
+    expect(configure).toHaveBeenCalledWith(
+      i18n.t("setupRequestLimits", { concurrency: 9, calls: 64 }),
+    ),
+  );
+  expect(
+    fetcher.mock.calls.filter(([input]) =>
+      String(input).includes("/api/settings/preferences"),
+    ),
+  ).toHaveLength(1);
 });
 
 it("explains unresolved message admission instead of asking the user to keep waiting", async () => {

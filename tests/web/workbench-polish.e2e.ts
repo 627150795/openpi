@@ -86,12 +86,14 @@ test("session actions stay quiet until hover or keyboard focus, and remain avail
   );
   await page.screenshot({
     path: testInfo.outputPath("sidebar-actions-quiet.png"),
+    animations: "disabled",
   });
   await row.hover();
   await expect(pin).toHaveCSS("opacity", "1");
   await expect(actions).toHaveCSS("opacity", "1");
   await page.screenshot({
     path: testInfo.outputPath("sidebar-actions-hover.png"),
+    animations: "disabled",
   });
   await page.mouse.move(1000, 80);
   await row.locator(".session").focus();
@@ -104,6 +106,7 @@ test("session actions stay quiet until hover or keyboard focus, and remain avail
   await page.keyboard.press("Enter");
   const menu = page.getByRole("menu", { name: "会话选项", exact: true });
   await expect(menu).toBeVisible();
+  await expect(menu).toHaveCSS("opacity", "1");
   await expect
     .poll(() =>
       menu.evaluate((element) => element.contains(document.activeElement)),
@@ -118,6 +121,7 @@ test("session actions stay quiet until hover or keyboard focus, and remain avail
   await expect(actions).toHaveCSS("opacity", "1");
   await page.screenshot({
     path: testInfo.outputPath("sidebar-actions-open-menu.png"),
+    animations: "disabled",
   });
   await page.getByRole("menuitem", { name: "重命名会话", exact: true }).click();
   await expect(
@@ -173,8 +177,10 @@ test.describe("touch sidebar actions", () => {
     await trigger.tap();
     const menu = page.getByRole("menu", { name: "会话选项", exact: true });
     await expect(menu).toBeVisible();
+    await expect(menu).toHaveCSS("opacity", "1");
     await page.screenshot({
       path: testInfo.outputPath("sidebar-actions-touch-menu.png"),
+      animations: "disabled",
     });
     await page.getByRole("menuitem", { name: "重命名会话", exact: true }).tap();
     await expect(

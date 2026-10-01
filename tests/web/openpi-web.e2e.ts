@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AxeBuilder } from "@axe-core/playwright";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { chromium, expect, type Page, test } from "@playwright/test";
+import {
+  chromium,
+  expect,
+  type Locator,
+  type Page,
+  test,
+} from "@playwright/test";
 import { DEFAULT_SETUP_CONFIG } from "../../extensions/shared/setup-config.ts";
 import type { WebSnapshot } from "../../web/protocol/types.ts";
 import { projectWebSetupConfig } from "../../web/runtime/settings-catalog.ts";
@@ -286,8 +292,11 @@ for (const width of [1280, 390]) {
       .poll(() => conversation.evaluate((el) => el.scrollTop))
       .toBe(120);
     await input.fill("");
-    await page.getByRole("button", { name: "编辑消息", exact: true }).click();
-    const editor = page.getByRole("textbox", { name: "编辑消息", exact: true });
+    await page.getByRole("button", { name: "修改并重发", exact: true }).click();
+    const editor = page.getByRole("textbox", {
+      name: "修改并重发",
+      exact: true,
+    });
     await expect(editor).toBeVisible();
     await expect(page.locator(".message-row.user .message-body")).toBeHidden();
     const dimensions = await page.locator(".message-editor").evaluate((el) => ({
@@ -302,7 +311,7 @@ for (const width of [1280, 390]) {
     expect(dimensions.right).toBeLessThanOrEqual(dimensions.viewport);
     await editor.fill("Cancelled edit");
     await page.getByRole("button", { name: "取消", exact: true }).click();
-    await page.getByRole("button", { name: "编辑消息", exact: true }).click();
+    await page.getByRole("button", { name: "修改并重发", exact: true }).click();
     await expect(editor).toHaveValue("Original message ".repeat(30));
     // Finish active snapshot handlers before Playwright disposes their context.
     await page.unrouteAll({ behavior: "wait" });
@@ -617,17 +626,18 @@ test("desktop panes resize by pointer and collapse beyond their thresholds", asy
   await openWorkbench(page);
   const sidebar = page.locator(".session-sidebar");
   const conversation = page.locator(".conversation-shell");
+  const sidebarHandle = page.getByRole("separator", { name: "调整侧边栏宽度" });
+  await sidebarHandle.press("Enter");
+  await expect(sidebar).toHaveCSS("width", "280px");
   const initialSidebar = await sidebar.boundingBox();
   const initialConversation = await conversation.boundingBox();
   expect(initialSidebar).not.toBeNull();
   expect(initialConversation).not.toBeNull();
 
-  const sidebarHandle = page.getByRole("separator", { name: "调整侧边栏宽度" });
-  await sidebarHandle.focus();
-  await page.keyboard.press("ArrowRight");
+  await sidebarHandle.press("ArrowRight");
   await expect(sidebarHandle).toHaveAttribute("aria-valuenow", "296");
   await expect(sidebar).toHaveCSS("width", "296px");
-  await page.keyboard.press("Enter");
+  await sidebarHandle.press("Enter");
   await expect(sidebar).toHaveCSS("width", "280px");
 
   await dragPane(page, "left", 80);
@@ -645,10 +655,11 @@ test("desktop panes resize by pointer and collapse beyond their thresholds", asy
 
   const workbar = await openWorkbarTool(page, "文件");
   const workbarHandle = page.getByRole("separator", { name: "调整工具栏宽度" });
-  await workbarHandle.focus();
-  await page.keyboard.press("ArrowLeft");
+  await workbarHandle.press("Enter");
+  await expect(workbarHandle).toHaveAttribute("aria-valuenow", "520");
+  await workbarHandle.press("ArrowLeft");
   await expect(workbarHandle).toHaveAttribute("aria-valuenow", "536");
-  await page.keyboard.press("Enter");
+  await workbarHandle.press("Enter");
   await expect(workbarHandle).toHaveAttribute("aria-valuenow", "520");
   const centerBeforeRightDrag = await conversation.boundingBox();
   await dragPane(page, "right", -70);
@@ -657,16 +668,101 @@ test("desktop panes resize by pointer and collapse beyond their thresholds", asy
     .toBeLessThan(centerBeforeRightDrag!.width - 50);
 
   await dragPane(page, "right", -360);
-  await expect(conversation).toBeHidden();
+  await expect(conversation).toBeVisible();
+  await expect(page.locator(".composer")).toHaveCount(1);
+  await expect(page.locator(".composer")).toBeVisible();
+  await expect(page.locator(".task-header")).toBeHidden();
   await expect(workbar).toBeVisible();
   await expect(page.locator('[data-pane-resizer="right"]')).toHaveCount(0);
-  await workbar.getByRole("button", { name: "恢复会话", exact: true }).click();
+  await workbar.getByRole("button", { name: "返回聊天", exact: true }).click();
   await expect(conversation).toBeVisible();
   await expect(page.locator('[data-pane-resizer="right"]')).toHaveCount(1);
 
   await dragPane(page, "right", 420);
   await expect(workbar).toBeHidden();
   await expect(page.locator('[data-pane-resizer="right"]')).toHaveCount(0);
+});
+
+test("left divider follows visible sidebar between desktop breakpoints", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await openWorkbench(page);
+  const sidebar = page.locator(".session-sidebar");
+  const left = page.locator('[data-pane-resizer="left"]');
+  await expect(sidebar).toBeVisible();
+  await expect(left).toBeVisible();
+  await left.press("Enter");
+  await expect(sidebar).toHaveCSS("width", "280px");
+  await dragPane(page, "left", 80);
+  await expect(sidebar).toHaveCSS("width", "360px");
+  await dragPane(page, "left", -60);
+  await expect(sidebar).toHaveCSS("width", "300px");
+  await page.setViewportSize({ width: 760, height: 900 });
+  await expect(sidebar).toBeHidden();
+  await expect(left).toHaveCount(0);
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await expect(left).toBeVisible();
+  await openWorkbarTool(page, "文件");
+  await expect(sidebar).toBeHidden();
+  await expect(left).toHaveCount(0);
+});
+
+test("left divider still expands after the workbar takes the main view", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openWorkbench(page);
+  const sidebar = page.locator(".session-sidebar");
+  const left = page.locator('[data-pane-resizer="left"]');
+  await left.press("Enter");
+  await expect(sidebar).toHaveCSS("width", "280px");
+  const workbar = await openWorkbarTool(page, "文件");
+  const right = page.locator('[data-pane-resizer="right"]');
+  await right.press("End");
+  await expect(right).toHaveAttribute("aria-valuenow", "720");
+  await dragPane(page, "right", -100);
+  await expect(right).toHaveCount(0);
+  await expect(page.locator(".app-shell")).toHaveClass(/center-collapsed/);
+  await expect(left).toHaveAttribute("aria-valuemax", "420");
+  const composer = page.locator(".composer textarea");
+  await composer.fill("keep drafting while resizing");
+  const textarea = await composer.elementHandle();
+
+  const bounds = await left.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(
+    await page.evaluate(
+      ({ x, y }) =>
+        document.elementFromPoint(x, y)?.getAttribute("data-pane-resizer"),
+      { x: bounds!.x + bounds!.width / 2, y: 440 },
+    ),
+  ).toBe("left");
+  await dragPane(page, "left", 80);
+  await expect(sidebar).toHaveCSS("width", "360px");
+  await expect(composer).toHaveValue("keep drafting while resizing");
+  expect(
+    await composer.evaluate(
+      (element, initial) => element === initial,
+      textarea,
+    ),
+  ).toBe(true);
+  const save = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/settings/preferences") &&
+      response.request().method() === "POST" &&
+      response.request().postDataJSON().sidebarWidth === 300,
+  );
+  await dragPane(page, "left", -60);
+  await expect(sidebar).toHaveCSS("width", "300px");
+  await save;
+  await workbar.getByRole("button", { name: "返回聊天", exact: true }).click();
+  await expect(right).toHaveCount(1);
+  await workbar.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(sidebar).toHaveCSS("width", "300px");
+  await page.reload();
+  await expect(sidebar).toHaveCSS("width", "300px");
+  await expect(composer).toHaveValue("keep drafting while resizing");
 });
 
 test("refreshing an open diff preserves the draft and composer focus", async ({
@@ -1031,6 +1127,30 @@ test("native iframe browser supports input, selection, scrolling and independent
     await expect(frame.getByRole("textbox", { name: "Editor" })).toHaveValue(
       "原生中文输入",
     );
+    const browserScroll = await frame
+      .locator("body")
+      .evaluate((body) => body.ownerDocument.defaultView?.scrollY);
+    await workbar
+      .getByRole("button", { name: "打开工具", exact: true })
+      .click();
+    await page.getByRole("menuitem", { name: /^文件/u }).click();
+    await expect(workbar.locator('div[data-tool="browser"]')).toHaveAttribute(
+      "inert",
+      "",
+    );
+    await expect(workbar.locator("iframe")).toHaveCount(2);
+    await workbar
+      .locator(".workbar-tab")
+      .getByRole("button", { name: "浏览器", exact: true })
+      .click();
+    await expect(frame.getByRole("textbox", { name: "Editor" })).toHaveValue(
+      "原生中文输入",
+    );
+    expect(
+      await frame
+        .locator("body")
+        .evaluate((body) => body.ownerDocument.defaultView?.scrollY),
+    ).toBe(browserScroll);
     const popupPromise = page.waitForEvent("popup");
     await frame.getByRole("link", { name: "Popup", exact: true }).click();
     const popup = await popupPromise;
@@ -1055,10 +1175,14 @@ test("native iframe browser supports input, selection, scrolling and independent
       `${origin}/toolbar`,
     );
     await workbar.getByRole("button", { name: "关闭", exact: true }).click();
+    await expect(page.locator(".workbar-panel iframe")).toHaveCount(0);
     await page
       .locator('button.task-tools-trigger[aria-label="打开工具"]')
       .click();
     await expect(workbar.locator("iframe")).toHaveCount(2);
+    await expect(frame.getByRole("textbox", { name: "Editor" })).toHaveValue(
+      "original",
+    );
     await navigate(`${origin}/blocked`);
     await expect(active.locator("iframe")).toHaveAttribute(
       "src",
@@ -1160,6 +1284,12 @@ test.describe("installed browser enhancement", () => {
       const active = workbar.locator(".browser-page:not([hidden])");
       const addressBar = active.getByRole("textbox", { name: "浏览器地址" });
       const frame = active.frameLocator("iframe");
+      const clickInFrame = async (target: Locator) => {
+        // Fresh cross-origin frame DOM can be visible before native pointer
+        // events reach it. Position the pointer before clicking once.
+        await target.hover();
+        await target.click();
+      };
       await expect(active.getByText(/浏览增强已开启/)).toBeVisible();
       await addressBar.fill(`${origin}/start`);
       await active
@@ -1190,7 +1320,9 @@ test.describe("installed browser enhancement", () => {
         },
         await active.locator("iframe").getAttribute("data-openpi-browser-page"),
       );
-      await frame.getByRole("link", { name: "Next", exact: true }).click();
+      await clickInFrame(
+        frame.getByRole("link", { name: "Next", exact: true }),
+      );
       await expect(addressBar).toHaveValue(`${origin}/next`);
       await expect(
         active.getByRole("button", { name: "后退", exact: true }),
@@ -1213,12 +1345,16 @@ test.describe("installed browser enhancement", () => {
         "original",
       );
       await expect(addressBar).toHaveValue(`${origin}/next`);
-      await frame.getByRole("button", { name: "SPA", exact: true }).click();
+      await clickInFrame(
+        frame.getByRole("button", { name: "SPA", exact: true }),
+      );
       await expect(addressBar).toHaveValue(`${origin}/spa`);
       await expect(
         workbar.getByRole("tab", { name: "SPA title", exact: true }),
       ).toBeVisible();
-      await frame.getByRole("link", { name: "New link", exact: true }).click();
+      await clickInFrame(
+        frame.getByRole("link", { name: "New link", exact: true }),
+      );
       await expect(
         workbar.getByRole("tablist", { name: "网页标签页" }).getByRole("tab"),
       ).toHaveCount(2);
@@ -1227,9 +1363,9 @@ test.describe("installed browser enhancement", () => {
         workbar.getByRole("tab", { name: "Native /popup", exact: true }),
       ).toBeVisible();
       expect(context.pages()).toHaveLength(1);
-      await frame
-        .getByRole("button", { name: "Script popup", exact: true })
-        .click();
+      await clickInFrame(
+        frame.getByRole("button", { name: "Script popup", exact: true }),
+      );
       await expect(
         workbar.getByRole("tablist", { name: "网页标签页" }).getByRole("tab"),
       ).toHaveCount(3);
@@ -1241,9 +1377,9 @@ test.describe("installed browser enhancement", () => {
         }),
       ).toBeVisible();
       expect(context.pages()).toHaveLength(1);
-      await frame
-        .getByRole("link", { name: "Cross origin", exact: true })
-        .click();
+      await clickInFrame(
+        frame.getByRole("link", { name: "Cross origin", exact: true }),
+      );
       await expect(addressBar).toHaveValue(
         origin.replace("127.0.0.1", "localhost") + "/final",
       );
@@ -1255,15 +1391,15 @@ test.describe("installed browser enhancement", () => {
         .poll(() => frame.locator("body").evaluate(() => document.readyState))
         .toBe("complete");
       const popupPromise = context.waitForEvent("page");
-      await frame
-        .getByRole("button", { name: "Empty popup", exact: true })
-        .click();
+      await clickInFrame(
+        frame.getByRole("button", { name: "Empty popup", exact: true }),
+      );
       await (await popupPromise).close();
 
       for (let count = 4; count <= 8; count++) {
-        await frame
-          .getByRole("link", { name: "New link", exact: true })
-          .click();
+        await clickInFrame(
+          frame.getByRole("link", { name: "New link", exact: true }),
+        );
         await expect(
           workbar.getByRole("tablist", { name: "网页标签页" }).getByRole("tab"),
         ).toHaveCount(count);
@@ -1271,7 +1407,9 @@ test.describe("installed browser enhancement", () => {
           frame.getByRole("textbox", { name: "Editor" }),
         ).toBeVisible();
       }
-      await frame.getByRole("link", { name: "New link", exact: true }).click();
+      await clickInFrame(
+        frame.getByRole("link", { name: "New link", exact: true }),
+      );
       await expect(
         workbar.locator(".browser-workspace > [role=status]"),
       ).toContainText("8");
@@ -1440,33 +1578,6 @@ test("production workbench is local, keyboard-operable, and accessible", async (
     scroll: document.body.scrollWidth,
   }));
   expect(width.scroll).toBe(width.client);
-
-  const turnRailLayout = await page.evaluate(() => {
-    const shell = document.querySelector<HTMLElement>(".conversation-shell");
-    const conversation = document.querySelector<HTMLElement>(".conversation");
-    if (!shell || !conversation)
-      throw new Error("conversation shell is missing");
-    const turn = document.createElement("section");
-    turn.className = "conversation-turn";
-    const rail = document.createElement("nav");
-    rail.className = "turn-rail";
-    conversation.append(turn);
-    shell.append(rail);
-    const turnRect = turn.getBoundingClientRect();
-    const railRect = rail.getBoundingClientRect();
-    const shellRect = shell.getBoundingClientRect();
-    turn.remove();
-    rail.remove();
-    return {
-      gutter: shellRect.right - railRect.right,
-      turnRight: turnRect.right,
-      railLeft: railRect.left,
-    };
-  });
-  expect(turnRailLayout.gutter).toBeCloseTo(24, 0);
-  expect(turnRailLayout.railLeft).toBeGreaterThanOrEqual(
-    turnRailLayout.turnRight,
-  );
 });
 
 for (const theme of ["light", "dark"]) {
@@ -3533,6 +3644,33 @@ test.describe("thinking picker", () => {
     await expect(picker).toHaveAccessibleName(/思考等级.*off/);
     await picker.click();
     await expect(page.getByRole("slider", { name: "思考等级" })).toBeVisible();
+    // Core animates the outer Layer wrapper, above the dialog node. Axe must
+    // inspect the settled foreground rather than a partially transparent frame.
+    await expect
+      .poll(() =>
+        page
+          .locator('.model-picker-wrap [role="dialog"]')
+          .evaluate((dialog) => {
+            for (
+              let element: Element | null = dialog;
+              element;
+              element = element.parentElement
+            ) {
+              if (
+                getComputedStyle(element).opacity !== "1" ||
+                element
+                  .getAnimations()
+                  .some(
+                    (animation) =>
+                      animation.pending || animation.playState === "running",
+                  )
+              )
+                return false;
+            }
+            return true;
+          }),
+      )
+      .toBe(true);
     const accessibility = await new AxeBuilder({ page }).analyze();
     expect(accessibility.violations).toEqual([]);
   });

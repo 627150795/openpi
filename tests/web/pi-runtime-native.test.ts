@@ -255,3 +255,90 @@ for (const origin of ["web", "extension", "startup"] as const) {
     }
   });
 }
+
+test("Web steering preserves native handled and queued input dispositions", {
+  timeout: 15_000,
+}, async (t) => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const inputs: string[][] = [];
+  const sources: string[] = [];
+  const { runtime, session, events } = await nativeRuntime(
+    t,
+    (pi) => {
+      pi.on("input", (event) => {
+        if (event.text === "handled steering") {
+          sources.push(event.source);
+          return { action: "handled" };
+        }
+        if (event.text === "queued steering") {
+          sources.push(event.source);
+          return { action: "transform", text: "transformed steering" };
+        }
+        return undefined;
+      });
+    },
+    [
+      async () => {
+        entered.resolve();
+        await release.promise;
+        return fauxAssistantMessage("Initial result.");
+      },
+      (context) => {
+        inputs.push(
+          context.messages
+            .filter((message) => message.role === "user")
+            .map((message) => contentText(message.content)),
+        );
+        return fauxAssistantMessage("Steered result.");
+      },
+    ],
+  );
+  try {
+    await runtime.sendPrompt("initial request", { commandId: "initial" });
+    await entered.promise;
+    const delivery = {
+      streamingBehavior: "steer" as const,
+      expectedTurnCommandId: "initial",
+    };
+    assert.deepEqual(
+      await runtime.sendPrompt("handled steering", {
+        ...delivery,
+        commandId: "handled",
+      }),
+      {
+        pendingFollowUps: 0,
+        pendingSteering: 0,
+        delivery: "steer",
+      },
+    );
+    assert.deepEqual(session.getSteeringMessages(), []);
+    assert.deepEqual(
+      await runtime.sendPrompt("queued steering", {
+        ...delivery,
+        commandId: "queued",
+      }),
+      {
+        pendingFollowUps: 0,
+        pendingSteering: 1,
+        delivery: "steer",
+      },
+    );
+    assert.deepEqual(session.getSteeringMessages(), ["transformed steering"]);
+    assert.deepEqual(sources, ["rpc", "rpc"]);
+    release.resolve();
+    await session.waitForIdle();
+    assert.equal(inputs.length, 1);
+    assert.ok(inputs[0]?.includes("transformed steering"));
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "turn_started" &&
+          event.detail?.commandId === "handled",
+      ),
+      false,
+    );
+  } finally {
+    release.resolve();
+  }
+});

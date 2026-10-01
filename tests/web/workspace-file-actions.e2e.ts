@@ -15,6 +15,10 @@ import { expect, test } from "@playwright/test";
 import { WebHost } from "../../web/host/web-host.ts";
 import { projectWebModelSearch } from "../../web/runtime/model-discovery.ts";
 import type { WebRuntimeController } from "../../web/runtime/types.ts";
+import {
+  WORKBAR_POSITION_STORAGE_KEY,
+  type WorkbarWorkspace,
+} from "../../web/ui/src/features/workbar/workbar-position-storage.ts";
 
 test("workspace actions create, import and copy paths through the real Host on desktop and mobile", async ({
   browser,
@@ -333,16 +337,36 @@ test("workspace actions create, import and copy paths through the real Host on d
     );
     await rowMenu("empty.txt", /^(移入回收站|Move to trash)$/u);
     await expect(tree.locator('[data-file-row="empty.txt"]')).toHaveCount(0);
+    // Reload saves and restores the open tool. Wait for its actual view instead
+    // of racing initial rendering with a reopen fallback.
     await page.reload();
-    if (!(await actions.isVisible())) {
-      await page
-        .getByRole("button", { name: /打开工具|Open tools/u, exact: true })
-        .click();
-      await page
-        .locator(".workbar-launcher")
-        .getByRole("button", { name: /^(文件|Files)/u })
-        .click();
-    }
+    await expect(actions).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          ({ storageKey, sessionId, sessionPath }) => {
+            const positions = JSON.parse(
+              localStorage.getItem(storageKey) ?? "[]",
+            ) as WorkbarWorkspace[];
+            const saved = positions.find(
+              (position) =>
+                position.sessionId === sessionId &&
+                position.sessionPath === sessionPath,
+            );
+            return {
+              open: saved?.open,
+              active: saved?.reading.tabs?.active,
+              launcherOpen: saved?.reading.tabs?.launcherOpen,
+            };
+          },
+          {
+            storageKey: WORKBAR_POSITION_STORAGE_KEY,
+            sessionId: manager.getSessionId(),
+            sessionPath: `current:${manager.getSessionId()}`,
+          },
+        ),
+      )
+      .toEqual({ open: true, active: "files", launcherOpen: false });
     await actions
       .getByRole("button", { name: /工作区回收站|Workspace trash/u })
       .click();

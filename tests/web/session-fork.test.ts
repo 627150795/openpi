@@ -149,6 +149,9 @@ test("editing an older native prompt excludes it and later messages, preserves c
   const { root, runtime, request } = await fixture(t);
   const manager = runtime.sessionManager;
   const reference = formatSourceReference(join(root, "attached file.txt"));
+  const windowsReference = formatSourceReference(
+    String.raw`C:\Users\operator\workspace\attached file.txt`,
+  );
   const image = {
     type: "image" as const,
     mimeType: "image/png",
@@ -158,7 +161,10 @@ test("editing an older native prompt excludes it and later messages, preserves c
   const entryId = manager.appendMessage({
     role: "user",
     content: [
-      { type: "text", text: `Original full question\n\n${reference}` },
+      {
+        type: "text",
+        text: `Original full question\n\n${reference}\n${windowsReference}`,
+      },
       image,
     ],
     timestamp: 4,
@@ -184,7 +190,7 @@ test("editing an older native prompt excludes it and later messages, preserves c
   const result = await runtime.forkSession(edit);
   assert.equal(result.state, "forked");
   assert.deepEqual(result.prompt, {
-    content: `Revised full question\n\n${reference}`,
+    content: `Revised full question\n\n${reference}\n${windowsReference}`,
     images: [{ mimeType: "image/png", data: image.data, name: image.name }],
   });
   assert.equal(
@@ -257,20 +263,27 @@ test("rerun validates the complete source and retained references before creatin
     runtime.forkSession({ ...request, rerun: { mode: "regenerate" } }),
     unavailable,
   );
-  const entryId = runtime.sessionManager.appendMessage({
-    role: "user",
-    content: formatSourceReference(join(root, "required.txt")),
-    timestamp: 4,
-  });
-  await assert.rejects(
-    runtime.forkSession({
-      ...request,
-      commandId: "too-long-edit",
-      entryId,
-      rerun: { mode: "edit", content: "x".repeat(12_000) },
-    }),
-    unavailable,
-  );
+  for (const [index, reference] of [
+    join(root, "required.txt"),
+    String.raw`C:\Users\operator\workspace\required.txt`,
+  ].entries()) {
+    const entryId = runtime.sessionManager.appendMessage({
+      role: "user",
+      content: formatSourceReference(reference),
+      timestamp: 4,
+    });
+    const original = await readFile(request.sessionPath, "utf8");
+    await assert.rejects(
+      runtime.forkSession({
+        ...request,
+        commandId: `too-long-edit-${index}`,
+        entryId,
+        rerun: { mode: "edit", content: "x".repeat(12_000) },
+      }),
+      unavailable,
+    );
+    assert.equal(await readFile(request.sessionPath, "utf8"), original);
+  }
   const invalidImage = runtime.sessionManager.appendMessage({
     role: "user",
     content: [{ type: "image", data: "not-base64", mimeType: "image/png" }],

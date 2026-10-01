@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+/// <reference types="vitest/jsdom" />
 
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   loadWorkbarPositions,
   saveWorkbarPositions,
@@ -8,9 +9,14 @@ import {
   type WorkbarWorkspace,
 } from "../../web/ui/src/features/workbar/workbar-position-storage.ts";
 
+beforeEach(() => {
+  vi.stubGlobal("localStorage", jsdom.window.localStorage);
+});
+
 afterEach(() => {
-  localStorage.clear();
+  window.localStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function position(
@@ -135,7 +141,7 @@ it("persists exact Session identities and tool bookmarks, not content or live re
     },
   };
   saveWorkbarPositions([withPayload]);
-  const raw = localStorage.getItem(WORKBAR_POSITION_STORAGE_KEY)!;
+  const raw = window.localStorage.getItem(WORKBAR_POSITION_STORAGE_KEY)!;
   expect(raw).not.toContain("PRIVATE");
   const [restored] = loadWorkbarPositions();
   expect(restored?.sessionId).toBe(workspace.sessionId);
@@ -159,7 +165,7 @@ it("keeps copied same-ID Session paths distinct and uses the final exact-identit
   const original = position();
   const copied = position(original.sessionId, "/workspace/copied.jsonl");
   const newest = { ...original, requestRevision: 9 };
-  localStorage.setItem(
+  window.localStorage.setItem(
     WORKBAR_POSITION_STORAGE_KEY,
     JSON.stringify([original, copied, newest]),
   );
@@ -177,7 +183,7 @@ it("keeps copied same-ID Session paths distinct and uses the final exact-identit
 
 it("sanitizes malformed tabs, URLs, viewport values and revisions without restoring authority", () => {
   const workspace = position();
-  localStorage.setItem(
+  window.localStorage.setItem(
     WORKBAR_POSITION_STORAGE_KEY,
     JSON.stringify([
       {
@@ -291,7 +297,7 @@ it("bounds remembered workspaces and evicts old oversized metadata before saving
     "latest",
   ]);
   expect(
-    localStorage.getItem(WORKBAR_POSITION_STORAGE_KEY)!.length,
+    window.localStorage.getItem(WORKBAR_POSITION_STORAGE_KEY)!.length,
   ).toBeLessThanOrEqual(256_000);
 });
 
@@ -299,18 +305,29 @@ it.each(["malformed", "oversized", "unavailable"])(
   "does not block tool use when storage is %s",
   (kind) => {
     if (kind === "malformed")
-      localStorage.setItem(WORKBAR_POSITION_STORAGE_KEY, "{");
+      window.localStorage.setItem(WORKBAR_POSITION_STORAGE_KEY, "{");
     if (kind === "oversized")
-      localStorage.setItem(WORKBAR_POSITION_STORAGE_KEY, "x".repeat(256_001));
+      window.localStorage.setItem(
+        WORKBAR_POSITION_STORAGE_KEY,
+        "x".repeat(256_001),
+      );
     if (kind === "unavailable") {
-      vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-        throw new Error("Storage disabled");
-      });
-      vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-        throw new Error("Quota exceeded");
-      });
+      vi.spyOn(jsdom.window.Storage.prototype, "getItem").mockImplementation(
+        () => {
+          throw new Error("Storage disabled");
+        },
+      );
+      vi.spyOn(jsdom.window.Storage.prototype, "setItem").mockImplementation(
+        () => {
+          throw new Error("Quota exceeded");
+        },
+      );
     }
     expect(loadWorkbarPositions()).toEqual([]);
     expect(() => saveWorkbarPositions([position()])).not.toThrow();
+    if (kind === "unavailable") {
+      expect(jsdom.window.Storage.prototype.getItem).toHaveBeenCalledOnce();
+      expect(jsdom.window.Storage.prototype.setItem).toHaveBeenCalledOnce();
+    }
   },
 );

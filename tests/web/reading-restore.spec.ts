@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+/// <reference types="vitest/jsdom" />
 import {
   act,
   cleanup,
@@ -115,8 +116,9 @@ function show(strict = false) {
 }
 
 beforeEach(() => {
-  localStorage.clear();
-  localStorage.setItem(
+  vi.stubGlobal("localStorage", jsdom.window.localStorage);
+  window.localStorage.clear();
+  window.localStorage.setItem(
     READING_POSITION_STORAGE_KEY,
     JSON.stringify([[scope, position]]),
   );
@@ -151,7 +153,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   webStore.setState(originalState, true);
-  localStorage.clear();
+  window.localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 it("persists only four exact Session bookmarks, never native messages or history windows", () => {
@@ -167,7 +170,7 @@ it("persists only four exact Session bookmarks, never native messages or history
       position,
     });
   }
-  const stored = localStorage.getItem(READING_POSITION_STORAGE_KEY)!;
+  const stored = window.localStorage.getItem(READING_POSITION_STORAGE_KEY)!;
   expect(stored).not.toContain("Message");
   expect(stored).not.toContain("window");
   expect(JSON.parse(stored)).toHaveLength(4);
@@ -188,7 +191,7 @@ it("persists only four exact Session bookmarks, never native messages or history
 });
 
 it("isolates malformed storage records and rejects excessive or private position fields", () => {
-  localStorage.setItem(
+  window.localStorage.setItem(
     READING_POSITION_STORAGE_KEY,
     JSON.stringify([
       ["malformed scope", position],
@@ -210,10 +213,10 @@ it("isolates malformed storage records and rejects excessive or private position
   const cache = createSessionReadingCache();
   expect([...cache]).toEqual([[scope, { position }]]);
   cache.persist?.();
-  expect(localStorage.getItem(READING_POSITION_STORAGE_KEY)).not.toContain(
-    "private",
-  );
-  localStorage.setItem(READING_POSITION_STORAGE_KEY, " ".repeat(32_769));
+  expect(
+    window.localStorage.getItem(READING_POSITION_STORAGE_KEY),
+  ).not.toContain("private");
+  window.localStorage.setItem(READING_POSITION_STORAGE_KEY, " ".repeat(32_769));
   expect(createSessionReadingCache().size).toBe(0);
 });
 

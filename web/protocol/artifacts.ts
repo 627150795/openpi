@@ -72,5 +72,5 @@ export interface WorkspaceFileMutationResult {
 /** Keep the original reference; URL resolution belongs to the Host. */
 export function isLocalArtifactLink(value: string) {
   return Boolean(value.trim()) && !value.startsWith("#") && !value.startsWith("//") &&
-    (!/^[a-z][a-z\d+.-]*:/iu.test(value) || /^[a-z]:[\\/]/iu.test(value));
+    (!/^[a-z][a-z\d+.-]*:/iu.test(value) || /^[a-z]:(?:[\\/]|%5c)/iu.test(value));
 }

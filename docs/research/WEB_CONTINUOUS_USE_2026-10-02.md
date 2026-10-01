@@ -28,7 +28,7 @@
 
 前轮第六浏览器页签的输入边界已定位并用原始扩展重复验证；Chromium 内部原因仍未知。本轮不以完整 Chromium 套件的绿色结果扩张为 Safari、真实移动软键盘或跨浏览器兼容保证。
 
-最终本地门禁冻结于 `656df98c50b9d9896ebe4789bafacb876141b907`，隔离 `pi list` 唯一 OpenPI source 与该 checkout 匹配。Node 24.19.0 / Bun 1.3.14 / Pi 0.99.1 下，945 个 tracked inputs 在完整门禁前后 hash 一致：
+首次整套本地门禁冻结于 `656df98c50b9d9896ebe4789bafacb876141b907`，隔离 `pi list` 唯一 OpenPI source 与该 checkout 匹配。Node 24.19.0 / Bun 1.3.14 / Pi 0.99.1 下，945 个 tracked inputs 在完整门禁前后 hash 一致：
 
 | 层级 | 结果与证据 |
 | --- | --- |
@@ -36,9 +36,17 @@
 | `bun run test` / Node | 2136 passed，8 平台条件 skips，0 failed；`full-test-03.log`。 |
 | `bun run test` / Vitest | 82 files / 1154 passed，0 failed；同一日志。 |
 | Production Chrome | 104/104 passed，0 failed；`full-browser-02.log` 和独立 `full-browser-02-results`。包含真实 Host 文件/PTY、native history/fork 及明确分开的 mock admission 场景。 |
-| 真实模型 smoke | 下述同源码 runtime 的两次短 turn 完成；私有 `native-rerun-reading/real-provider/receipt.json`。其后的改动仅为 regression fixture 和本记录。 |
+| 真实模型 smoke | 下述原生 runtime checkpoint 的两次短 turn 完成；私有 `native-rerun-reading/real-provider/receipt.json`。后续 Windows 引用识别修正另由 native tests 与 CI 核验，未追加模型调用。 |
 
-最终结果补记仅修改文档，另跑 docs contract 与 diff whitespace 检查；不把补记后的 commit 伪称为之前已运行的模型 smoke revision。远端 CI 与发布链接由 Issue #641 关联的 PR 提供。
+首次结果补记 `5316a9a` 仅修改文档，另跑 docs contract 与 diff whitespace 检查；不把补记后的 commit 伪称为之前已运行的模型 smoke revision。远端 CI 与发布链接见 [PR #643](https://github.com/openpi-dev/openpi/pull/643)。
+
+### 远端发现与修正
+
+首轮远端 Node 22/24 完整通过；Node 26、Windows 和 Linux Chrome 揭示本地平台没有暴露的三处边界。保存首轮 CI run `36897127803` 与各 job 原始失败日志，不用本地绿色替代远端结果：
+
+- Node 26.10.0 内置 Web Storage 在未启用时为 undefined；Vitest 4 同时把 `window` / `document.defaultView` 映射到 Node global。三份 DOM tests 直接使用 global localStorage，因此 15 项失败。最小修正使用 Vitest 已有 `jsdom.window.localStorage` 绑定 fixture，保留正常、禁用、配额和内容排除断言；只换 window 或 defaultView 的消融仍失败。Node 26 专项 15/15 通过，不添加第二个 DOM/store。
+- Windows 原生重跑实测丢失自己 formatter 生成的 `C:%5C...` 链接，也绕过了保留引用后的请求长度限制。`isLocalArtifactLink` 仅增加 `%5c` 驱动器绝对路径例外；引用字符串不重写，Host 仍负责实际解码与访问边界。来源/native fork 专项 17/17 通过。整份 href 解码的中间设计被消融删除，避免改变 `%23notes.md` 等合法文件的分类。
+- Linux Chrome 103/104 通过；文件 case 在 reload 后立即检查 isVisible，误走重复打开工具的分支。测试改为真实 reload 后等待文件工具恢复并检查精确 Session 的保存状态；不合成 pagehide、不重试点击、不修改产品来迎合测试，专项 1/1 通过。
 
 ### 消融与失败证据
 

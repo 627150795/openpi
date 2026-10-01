@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+/// <reference types="vitest/jsdom" />
 
 import {
   act,
@@ -84,7 +85,8 @@ function snapshot(path = pathA): WebSnapshot {
 }
 
 beforeEach(() => {
-  localStorage.removeItem(WORKBAR_POSITION_STORAGE_KEY);
+  vi.stubGlobal("localStorage", jsdom.window.localStorage);
+  window.localStorage.removeItem(WORKBAR_POSITION_STORAGE_KEY);
   requests = [];
   vi.spyOn(original.actions, "start").mockImplementation(() => {});
   vi.spyOn(original.actions, "stop").mockImplementation(() => {});
@@ -113,7 +115,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  localStorage.removeItem(WORKBAR_POSITION_STORAGE_KEY);
+  window.localStorage.removeItem(WORKBAR_POSITION_STORAGE_KEY);
   webStore.setState(original, true);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

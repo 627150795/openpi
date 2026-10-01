@@ -580,7 +580,9 @@ test("serves workspaces through a runtime isolated from terminal sessions", asyn
     assert.match(appSource, /\/events\?cursor=/);
     assert.match(appSource, /workspaceDeleteConfirm/);
     assert.match(appSource, /activity-card/);
-    assert.doesNotMatch(appSource, /localStorage|openpi\.archived-sessions/);
+    assert.doesNotMatch(appSource, /openpi\.archived-sessions/);
+    assert.match(appSource, /openpi:reading-positions:v1/);
+    assert.match(appSource, /openpi:workbar-positions:v1/);
     assert.doesNotMatch(appSource, /language-picker|open-settings/u);
 
     const styles = await fetch(`${launched.origin}/styles.css`);

@@ -260,7 +260,7 @@ it("dismisses the full launcher with Escape and focuses the previously active to
   );
 });
 
-it.each(["hidden", "scope", "unmount"])(
+it.each(["hidden", "scope", "unmount", "outside focus"])(
   "cancels pending menu focus when the Workbar is %s",
   async (change) => {
     const view = render(panel());
@@ -278,7 +278,7 @@ it.each(["hidden", "scope", "unmount"])(
     fireEvent.click(row);
     expect(frames.size).toBeGreaterThan(0);
     if (change === "unmount") view.unmount();
-    else
+    else if (change !== "outside focus")
       view.rerender(
         panel("browser", 0, {
           visible: change !== "hidden",

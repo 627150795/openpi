@@ -205,7 +205,18 @@ test("refresh restores a persisted native reading anchor outside the latest page
       conversation.getByText("History question 20", { exact: true }),
     ).toHaveCount(1);
     await conversation.hover();
+    const scrollTopBeforeWheel = await conversation.evaluate(
+      (element) => element.scrollTop,
+    );
     await page.mouse.wheel(0, -360);
+    await expect
+      .poll(async () =>
+        Math.abs(
+          (await conversation.evaluate((element) => element.scrollTop)) -
+            Math.max(0, scrollTopBeforeWheel - 360),
+        ),
+      )
+      .toBeLessThanOrEqual(2);
     await expect.poll(async () => (await bookmark())?.pinned).toBe(false);
     await expect
       .poll(async () => {

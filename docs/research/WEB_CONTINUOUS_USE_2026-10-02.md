@@ -52,6 +52,15 @@
 
 该失败的 trace 确认 Enter 发送给正确的 sidebar separator，未发生焦点误投；296px 的保存回执与 Enter 重置交叠，随后再次提交了 296px。具体 React commit / passive effect 的微任务顺序仍未直接观测，不据此伪称确定完整内部原因。新增确定性回归模拟 ArrowRight 保存 296px、Enter 保存 280px，随后到达旧宽度 snapshot；旧实现再次显示 296px，说明保存后重新放开 hydration 会覆盖操作者选择。移除重复 ref 和 save-ack→hydrate 支路后，该页由最后一次用户调整持有宽度，刷新仍读 native settings；不需要新队列、重试或延迟。该回归与既有宽度/刷新专项 9/9 通过，原浏览器键盘、指针、折叠阈值断言保持不变。跨客户端改变 pane 宽度在本页已有调整后需刷新才生效；主题与字号的即时更新不受影响。
 
+进一步冻结对照分别使用 `509d88d` 与 `e5411db` 的 App 源字节，只替换私有 probe 的 import。让已注册的保存回调更新 296px snapshot 并发送一次真实 Enter，再执行原 ack：旧版显示 296px、新版显示并保存 280px。两次均验证 Enter 恰好送达一次；未插入 getter 或改写 handler，确认 ack 顺序能丢失新输入，但不代替原 CI 未记录的内部调度证据。
+
+`e5411db` 的完整 Node 26 check/test 通过（2137 原生、1155 UI、8 skips），Chrome 重跑 102/104 通过，原侧栏 Enter 案例已恢复；新失败另保留为 `full-browser-04-pane`：
+
+- 新工具页签的延迟 focus 只有关闭路径才尊重外部焦点，打开路径会抢走 separator 的 End 输入。原 End 断言未更改；新增确定性 rAF 回归在旧版将外部按钮焦点转移到 Files tab，删除 closing 条件与冗余标记后 18/18 菜单专项通过，正常选工具、关闭工具、Review 初始阅读和 Escape 聚焦仍覆盖。
+- 阅读刷新 fixture 的固定书签在 wheel 生效前便满足原匹配断言；trace 中书签读取后，原生 scrollTop 才从 2399 变为 2039，随后 pagehide 正确保存新锚点。测试先等待实际 -360px 滚动完成，再冻结书签，保留全部 entry/path/offset、失败重试和人工滚动取消断言；产品不改。
+
+这两项真实 Chrome 专项 2/2 通过，最新完整门禁与远端结果继续记录于 [PR #643](https://github.com/openpi-dev/openpi/pull/643)，不抹去此前失败。
+
 ### 消融与失败证据
 
 - 删除终端创建的第二份 key→id 映射和重复查找后，原生有界 records 与 pending receipt 仍通过幂等、容量和取消回归，因此保留更小的实现。
@@ -60,6 +69,7 @@
 - 移除 full 结果的外层 execution group 自动展开后，Bash/file 的完整结果验收失败，因此保留让既有显示配置实际可见的行为。
 - 触屏完全隐藏行操作时，关闭再打开侧栏会失去入口；最小修正仅保留当前选中行。菜单截图等待真实 opacity 并禁用截图动画，不用重试点击替代交互验收。
 - 移除 pane 保存后的确认 ref 与重新 hydration，仍满足初次设置读取、视口夹限不保存、键盘/拖动保存和刷新恢复；旧 snapshot 覆盖新选择的确定性回归由失败变为通过，因此保留删除后的更小实现。
+- 工具页签聚焦复用已有外部焦点守卫，移除仅区分关闭的条件和标记后，18 项既有与新增焦点验收通过，无需新的焦点调度器。
 
 真实 `audit-local/gpt-6-luna` 隔离 smoke 于 `fd5d597d447500c1af479374b6d65df16d9cf15c` 完成编辑与重新生成两次短 turn，同模型、原生 completed、排除旧未来回答，原 Session 与被重新生成的版本字节均不变，普通 read/bash/edit/write 工具保持开启。首次 preflight 因私有模型环境未继承而停在模型调用之前；仅复用已授权审计 profile 所需变量后成功，没有再试其他模型。凭据及 Session 原始文件不公开。
 

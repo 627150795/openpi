@@ -473,7 +473,6 @@ export function WorkbarPanel({
   const tabFocus = useRef<{
     tool: WorkbarTabId | null;
     scope: string;
-    closing?: boolean;
   } | null>(null);
   const client = useMemo(() => new WebClient(), []);
   const [terminalConnections, setTerminalConnections] = useState<
@@ -526,7 +525,6 @@ export function WorkbarPanel({
         : openToolsButton.current;
       if (!target?.isConnected || target.closest("[hidden], [inert]")) return;
       if (
-        requested.closing &&
         document.activeElement !== document.body &&
         !target.closest(".workbar-panel")?.contains(document.activeElement)
       )
@@ -649,7 +647,6 @@ export function WorkbarPanel({
         tabFocus.current = {
           tool: next.launcherOpen ? null : next.active,
           scope: browserScope,
-          closing: true,
         };
       return next;
     });

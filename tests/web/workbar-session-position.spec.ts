@@ -607,3 +607,57 @@ it("keeps a resized width when save completes with a stale refreshed snapshot", 
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
 });
+
+it("keeps the latest operator width when later snapshots contain an older saved choice", async () => {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1600,
+  });
+  const current = snapshot();
+  current.preferences = {
+    theme: "system",
+    sidebarWidth: 280,
+    auxiliaryWidth: 520,
+  };
+  webStore.setState({ snapshot: current });
+  const save = vi
+    .spyOn(original.actions, "savePreferences")
+    .mockImplementation(async (patch) => {
+      webStore.setState({
+        snapshot: {
+          ...current,
+          preferences: { ...current.preferences, ...patch },
+        },
+      });
+    });
+  const view = render(createElement(Providers, null, createElement(App)));
+  const shell = view.container.querySelector<HTMLElement>(".app-shell")!;
+  const handle = screen.getByRole("separator", {
+    name: i18n.t("resizeSidebar"),
+  });
+  fireEvent.keyDown(handle, { key: "ArrowRight" });
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledExactlyOnceWith({
+      sidebarWidth: 296,
+      auxiliaryWidth: 520,
+    }),
+  );
+  fireEvent.keyDown(handle, { key: "Enter" });
+  await waitFor(() =>
+    expect(save).toHaveBeenLastCalledWith({
+      sidebarWidth: 280,
+      auxiliaryWidth: 520,
+    }),
+  );
+  await act(async () => {
+    webStore.setState({
+      snapshot: {
+        ...current,
+        cursor: 3,
+        preferences: { ...current.preferences, sidebarWidth: 296 },
+      },
+    });
+  });
+  expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+  expect(save).toHaveBeenCalledTimes(2);
+});

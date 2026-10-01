@@ -142,8 +142,6 @@ export function App() {
     auxiliary: AUXILIARY_DEFAULT_WIDTH,
   });
   const [paneWidthsEdited, setPaneWidthsEdited] = useState(false);
-  const currentPaneWidths = useRef(paneWidths);
-  currentPaneWidths.current = paneWidths;
   const preferencesLoaded = Boolean(state.snapshot);
   const savedSidebarWidth = state.snapshot?.preferences.sidebarWidth;
   const savedAuxiliaryWidth = state.snapshot?.preferences.auxiliaryWidth;
@@ -162,29 +160,19 @@ export function App() {
   ]);
   useEffect(() => {
     if (!paneWidthsEdited || resizingPane) return;
-    const saved = paneWidths;
     const timer = window.setTimeout(() => {
       void actions
         .savePreferences({
-          sidebarWidth: saved.sidebar,
-          auxiliaryWidth: saved.auxiliary,
-        })
-        .then(() => {
-          const preferences = webStore.getState().snapshot?.preferences;
-          // A coalesced refresh can still contain the preceding save. Retain
-          // the operator's width until this exact saved choice is observed.
-          if (
-            currentPaneWidths.current === saved &&
-            preferences?.sidebarWidth === saved.sidebar &&
-            preferences.auxiliaryWidth === saved.auxiliary
-          )
-            setPaneWidthsEdited(false);
+          sidebarWidth: paneWidths.sidebar,
+          auxiliaryWidth: paneWidths.auxiliary,
         })
         .catch(() => undefined);
     }, 200);
     return () => window.clearTimeout(timer);
   }, [actions, paneWidths, paneWidthsEdited, resizingPane]);
   const resizePane = (side: "sidebar" | "auxiliary", value: number) => {
+    // Once adjusted here, this page owns its widths until reload. A save
+    // acknowledgement or later snapshot must not overwrite newer input.
     setPaneWidthsEdited(true);
     setPaneWidths((current) => ({ ...current, [side]: value }));
   };

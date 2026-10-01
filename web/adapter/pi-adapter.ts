@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readMessageRerun } from "../protocol/message-rerun.ts";
 import {
   lstat,
   open,
@@ -1368,6 +1369,7 @@ export class PiWebAdapter {
       path: summary.path,
       cwd: summary.cwd,
       ...projected,
+      rerun: readMessageRerun(branch, manager.getHeader()?.parentSession),
       history: {
         leafEntryId: manager.getLeafId(),
         beforeEntryId: projected.truncation.entriesOmitted > 0 ? projected.entries[0]?.id ?? null : null,
@@ -1503,6 +1505,7 @@ export class PiWebAdapter {
     if (!projected.entries.some((entry) => entry.id === entryId)) return { status: "changed" as const };
     const session: WebSessionProjection = {
       id: summary.id, path: summary.path, cwd: summary.cwd, ...projected,
+      rerun: readMessageRerun(branch, manager.getHeader()?.parentSession),
       history: { leafEntryId: manager.getLeafId(), anchorEntryId: entryId, anchorOnBranch: true,
         beforeEntryId: projected.truncation.entriesOmitted > 0 ? projected.entries[0]?.id ?? null : null },
     };

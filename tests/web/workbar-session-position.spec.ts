@@ -144,9 +144,18 @@ async function select(path: string, id = "session-a") {
 }
 
 async function open(tool: "files" | "browser" | "review") {
-  fireEvent.click(screen.getByRole("button", { name: i18n.t("openTools") }));
+  const workbar = document.querySelector<HTMLElement>(".workbar-panel");
   fireEvent.click(
-    within(document.querySelector<HTMLElement>(".workbar-panel")!).getByRole(
+    workbar && !workbar.hidden
+      ? within(workbar).getByRole("button", {
+          name: i18n.t("openTools"),
+        })
+      : screen.getAllByRole("button", {
+          name: i18n.t("openTools"),
+        })[0]!,
+  );
+  fireEvent.click(
+    within(screen.getByRole("region", { name: i18n.t("openTools") })).getByRole(
       "button",
       {
         name: new RegExp(

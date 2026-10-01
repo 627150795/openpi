@@ -991,19 +991,108 @@ test("workbar exposes five tools and completes a side conversation lifecycle", a
   ).toEqual([]);
 });
 
-test("terminal tool runs a real workspace shell", async ({ page }) => {
+test("terminal launcher creates independent real workspace shells and closes only the selected tab", async ({
+  page,
+}, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openWorkbench(page);
   await openWorkbarTool(page, "终端");
-  const terminal = page.locator(".interactive-terminal");
+  const workbar = page.locator(".workbar-panel");
+  const terminal = workbar.locator(
+    '[data-tab="terminal"] .interactive-terminal',
+  );
   await expect(terminal.locator(".terminal-status-dot.ready")).toBeVisible();
   const input = terminal.locator(".xterm-helper-textarea");
   await input.focus();
-  await page.keyboard.type("printf 'OPENPI_WEB_TERMINAL_OK\\n'");
+  await page.keyboard.type(
+    "export OPENPI_TERMINAL_INSTANCE=first; printf 'OPENPI_WEB_TERMINAL_OK\\n'",
+  );
   await page.keyboard.press("Enter");
   await expect
     .poll(() => terminal.locator(".xterm-rows").textContent())
     .toContain("OPENPI_WEB_TERMINAL_OK");
+  await workbar.locator(".workbar-add-tab").click();
+  const launcher = workbar.getByRole("region", { name: "打开工具" });
+  await expect(launcher).toBeVisible();
+  await expect(launcher.getByRole("button")).toHaveCount(5);
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath("multi-terminal-launcher.png"),
+  });
+  await launcher.getByRole("button", { name: /^终端/u }).click();
+  const second = workbar.locator(
+    '[data-tab^="terminal:"] .interactive-terminal',
+  );
+  await expect(second.locator(".terminal-status-dot.ready")).toBeVisible();
+  await expect(workbar.locator('[data-tool="terminal"]')).toHaveCount(2);
+  await second.locator(".xterm-helper-textarea").focus();
+  await page.keyboard.type(
+    "printf 'SECOND_SHELL_%s\\n' \"${OPENPI_TERMINAL_INSTANCE-unset}\"",
+  );
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => second.locator(".xterm-rows").textContent())
+    .toContain("SECOND_SHELL_unset");
+  const firstTab = workbar
+    .getByRole("toolbar")
+    .getByRole("button", { name: "终端", exact: true });
+  await firstTab.click();
+  await input.focus();
+  await page.keyboard.type(
+    "printf 'FIRST_SHELL_%s\\n' \"$OPENPI_TERMINAL_INSTANCE\"",
+  );
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => terminal.locator(".xterm-rows").textContent())
+    .toContain("FIRST_SHELL_first");
+  await firstTab.dblclick();
+  const rename = page.getByRole("dialog", { name: "重命名终端" });
+  await rename.getByRole("textbox", { name: "终端名称" }).fill("开发服务");
+  await rename.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(
+    workbar
+      .getByRole("toolbar")
+      .getByRole("button", { name: "开发服务", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(workbar.locator('[data-tool="terminal"]')).toHaveCount(2);
+  await expect(
+    workbar
+      .getByRole("toolbar")
+      .getByRole("button", { name: "开发服务", exact: true }),
+  ).toBeVisible();
+  await expect(terminal.locator(".terminal-status-dot.ready")).toBeVisible();
+  await input.focus();
+  await page.keyboard.type(
+    "printf 'RELOADED_FIRST_%s\\n' \"$OPENPI_TERMINAL_INSTANCE\"",
+  );
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => terminal.locator(".xterm-rows").textContent())
+    .toContain("RELOADED_FIRST_first");
+  await page.screenshot({
+    path: testInfo.outputPath("multi-terminal-refreshed.png"),
+  });
+  await workbar
+    .getByRole("toolbar")
+    .getByRole("button", { name: "关闭 开发服务", exact: true })
+    .click();
+  await expect(workbar.locator('[data-tool="terminal"]')).toHaveCount(1);
+  await expect(second).toBeVisible();
+  await expect(
+    workbar
+      .getByRole("toolbar")
+      .getByRole("button", { name: "终端 2", exact: true }),
+  ).toBeFocused();
+  await second.locator(".xterm-helper-textarea").focus();
+  await page.keyboard.type("printf 'SECOND_SURVIVED\\n'");
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => second.locator(".xterm-rows").textContent())
+    .toContain("SECOND_SURVIVED");
+  await page.screenshot({
+    path: testInfo.outputPath("multi-terminal-native.png"),
+  });
 });
 
 test("model configuration drafts survive switching settings tabs", async ({
@@ -1133,7 +1222,10 @@ test("native iframe browser supports input, selection, scrolling and independent
     await workbar
       .getByRole("button", { name: "打开工具", exact: true })
       .click();
-    await page.getByRole("menuitem", { name: /^文件/u }).click();
+    await workbar
+      .locator(".workbar-launcher")
+      .getByRole("button", { name: /^文件/u })
+      .click();
     await expect(workbar.locator('div[data-tool="browser"]')).toHaveAttribute(
       "inert",
       "",

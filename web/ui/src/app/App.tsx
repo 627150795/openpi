@@ -33,7 +33,9 @@ import { SessionOverview } from "../features/subagents/SessionOverview.tsx";
 import { SubagentPanel } from "../features/subagents/SubagentPanel.tsx";
 import { subagentOverview } from "../features/subagents/subagent-overview.ts";
 import { Trajectory } from "../features/trajectory/Trajectory.tsx";
-import type { SessionReadingCache } from "../features/transcript/session-reading-state.ts";
+import { createSessionReadingCache, type ReadingPosition, sessionReadingScope } from "../features/transcript/session-reading-state.ts";
+import type { WebHistoryAnchor, WebSessionProjection } from "../../../protocol/types.ts";
+import { WebClient } from "../protocol/client.ts";
 import {
   type CompletedResultExposure,
   Transcript,
@@ -41,7 +43,7 @@ import {
 import { SessionUsageBar } from "../features/workbar/SessionUsageBar.tsx";
 import type { WorkbarTool } from "../features/workbar/types.ts";
 import { WorkbarPanel } from "../features/workbar/WorkbarPanel.tsx";
-import type { WorkbarReadingState } from "../features/workbar/workbar-reading-state.ts";
+import { loadWorkbarPositions, saveWorkbarPositions, type WorkbarWorkspace } from "../features/workbar/workbar-position-storage.ts";
 import { sessionTitle, workspaceName } from "../lib/format.ts";
 import { isControlledSession } from "../lib/session-control.ts";
 import { webStore } from "../store/web-store.ts";
@@ -57,20 +59,6 @@ const AUXILIARY_COLLAPSE_THRESHOLD = 320;
 const CENTER_MIN_WIDTH = 440;
 const AUXILIARY_BREAKPOINT = 1_100;
 const MAX_WORKBAR_POSITIONS = 32;
-
-interface WorkbarWorkspace {
-  sessionId: string;
-  sessionPath: string;
-  tool: WorkbarTool;
-  requestRevision: number;
-  open: boolean;
-  reading: WorkbarReadingState;
-  reviewTurn?: {
-    promptEntryId: string;
-    filePath?: string;
-    revision: number;
-  };
-}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -113,7 +101,12 @@ export function App() {
   const providerSettingsTrigger = useRef<HTMLElement | null>(null);
   const workbarReturnFocus = useRef<HTMLElement | null>(null);
   const artifactProvider = useRef<ArtifactProviderHandle>(null);
-  const readingCache = useMemo<SessionReadingCache>(() => new Map(), []);
+  const readingCache = useMemo(createSessionReadingCache, []);
+  const readingRestored = useRef(new Set<string>());
+  const [, updateReadingRestore] = useState(0);
+  const [restoredNavigation, setRestoredNavigation] = useState<
+    (WebHistoryAnchor & { revision: number; session: WebSessionProjection; restorePosition: ReadingPosition }) | null
+  >(null);
   const questionWorkingCache = useMemo<QuestionWorkingCache>(
     () => new Map(),
     [],
@@ -209,7 +202,19 @@ export function App() {
   } | null>(null);
   const [workbarWorkspaces, setWorkbarWorkspaces] = useState<
     WorkbarWorkspace[]
-  >([]);
+  >(loadWorkbarPositions);
+  useEffect(() => {
+    const save = () => saveWorkbarPositions(workbarWorkspaces);
+    save();
+    window.addEventListener("pagehide", save);
+    const onVisibility = () => { if (document.visibilityState === "hidden") save(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", save);
+      document.removeEventListener("visibilitychange", onVisibility);
+      save();
+    };
+  }, [workbarWorkspaces]);
   const workbarSession = state.workspaceDraft
     ? undefined
     : state.snapshot?.selectedSession;
@@ -431,6 +436,53 @@ export function App() {
   const selected = state.workspaceDraft
     ? undefined
     : state.snapshot?.selectedSession;
+  const readingScope = sessionReadingScope(selected);
+  const readingRestorePending = Boolean(selected && !readingRestored.current.has(readingScope) && readingCache.get(readingScope)?.position?.key && readingCache.get(readingScope)?.position?.pinned === false);
+  useEffect(() => {
+    if (!selected || state.sessionSwitching || readingRestored.current.has(readingScope)) return;
+    const position = readingCache.get(readingScope)?.position;
+    const settled = () => {
+      readingRestored.current.add(readingScope);
+      updateReadingRestore((revision) => revision + 1);
+    };
+    if (!position?.key || position.pinned || readingCache.get(readingScope)?.window || (state.historyNavigation?.sessionId === selected.id && state.historyNavigation.sessionPath === selected.path)) { settled(); return; }
+    const anchor = { sessionId: selected.id, sessionPath: selected.path, entryId: position.entryId ?? position.key };
+    const controller = new AbortController();
+    let retry: number | undefined;
+    const interrupt = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest(".conversation, .turn-rail, .jump-latest")) return;
+      if (event instanceof KeyboardEvent && !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+      controller.abort();
+      settled();
+      setRestoredNavigation((current) => current?.sessionId === anchor.sessionId && current.sessionPath === anchor.sessionPath ? null : current);
+    };
+    for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) document.addEventListener(type, interrupt, true);
+    const apply = (session: WebSessionProjection) => {
+      const current = webStore.getState();
+      if (controller.signal.aborted || readingRestored.current.has(readingScope) || current.sessionSwitching || current.workspaceDraft || current.selectedPath !== anchor.sessionPath || current.snapshot?.selectedSession?.id !== anchor.sessionId || current.snapshot.selectedSession.path !== anchor.sessionPath || readingCache.get(readingScope)?.position !== position || session.id !== anchor.sessionId || session.path !== anchor.sessionPath || session.history?.anchorEntryId !== anchor.entryId || session.history.anchorOnBranch !== true || !session.entries.some((entry) => entry.id === anchor.entryId)) return;
+      setRestoredNavigation({ ...anchor, session, restorePosition: position, revision: -1 });
+      settled();
+    };
+    if (state.connection === "connected") {
+      if (selected.entries.some((entry) => entry.id === anchor.entryId)) apply({ ...selected, history: { leafEntryId: selected.history?.leafEntryId ?? null, beforeEntryId: selected.history?.beforeEntryId ?? null, anchorEntryId: anchor.entryId, anchorOnBranch: true } });
+      else {
+        const load = (attempt: number) => {
+          void new WebClient().sessionMessageWindow(anchor, controller.signal).then(apply, () => {
+            // Cancellation and temporary connectivity failures never consume
+            // or erase the bookmark. StrictMode can safely start a fresh read.
+            if (!controller.signal.aborted && attempt === 0) retry = window.setTimeout(() => load(1), 500);
+          });
+        };
+        load(0);
+      }
+    }
+    return () => {
+      controller.abort();
+      window.clearTimeout(retry);
+      for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) document.removeEventListener(type, interrupt, true);
+    };
+  }, [selected?.id, selected?.path, state.connection, state.sessionSwitching, state.historyNavigation, readingScope, readingCache]);
   const controlled = isControlledSession(state.snapshot, selected);
   const savedSubagents = useMemo(
     () =>
@@ -604,6 +656,7 @@ export function App() {
         ? t("newSession")
         : "OpenPI";
   const hasMessages =
+    Boolean(selected?.rerun) ||
     selected?.entries.some(
       (entry) =>
         (entry.type === "message" && entry.message) ||
@@ -834,6 +887,7 @@ export function App() {
                 }
                 key={`transcript:${JSON.stringify([selected?.id, selected?.path])}`}
                 readingCache={readingCache}
+                readingRestorePending={readingRestorePending}
                 snapshot={state.snapshot}
                 liveMessages={state.liveMessages}
                 liveRunning={state.liveRunning}
@@ -844,6 +898,9 @@ export function App() {
                 thinkingDurations={state.thinkingDurations}
                 scrollToBottom={state.scrollToBottom}
                 onResend={resend}
+                onEdit={actions.editMessage}
+                onRegenerate={actions.regenerateMessage}
+                onOpenOriginal={actions.navigateToMessage}
                 onFork={actions.forkMessage}
                 forkPending={state.sessionForkPending}
                 forkAvailable={
@@ -876,7 +933,7 @@ export function App() {
                   });
                 }}
                 onHistoryAnchorChange={actions.setHistoryAnchor}
-                historyNavigation={state.historyNavigation}
+                historyNavigation={state.historyNavigation ?? (restoredNavigation?.sessionId === selected?.id && restoredNavigation?.sessionPath === selected?.path ? restoredNavigation : null)}
                 onNavigateToMessage={actions.navigateToMessage}
                 onRefreshHistory={actions.refreshSnapshot}
                 onPromptProjection={actions.rememberPromptProjection}
@@ -967,6 +1024,7 @@ export function App() {
                 promptAdmissionPending={state.promptAdmissionPending}
                 promptAdmissionRecovery={state.promptAdmissionRecovery}
                 promptAdmissionResolution={state.promptAdmissionResolution}
+                restoredPromptDraft={state.restoredPromptDraft}
                 liveRunning={state.liveRunning}
                 landing={landing}
                 actions={actions}

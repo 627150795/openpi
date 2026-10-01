@@ -105,6 +105,11 @@ test("appearance writes preserve package config, reject extra authority, and nev
       { chatFontSize: 12.5 },
       { expandThinking: "true" },
       { pinnedSort: "unknown" },
+      { subagentResultDisplay: "unknown" },
+      { bashToolDisplay: true },
+      { fileMutationDisplay: null },
+      { customFooter: "false" },
+      { footerStyle: "compact" },
     ]) {
       assert.equal((await post(body)).status, 400);
     }
@@ -116,6 +121,11 @@ test("appearance writes preserve package config, reject extra authority, and nev
       chatFontSize: 16,
       expandThinking: true,
       pinnedSort: "updated",
+      subagentResultDisplay: "full",
+      bashToolDisplay: "full",
+      fileMutationDisplay: "full",
+      customFooter: false,
+      footerStyle: "powerline-mono",
     });
     assert.equal(saved.status, 200);
     assert.equal((await saved.json()).setup.ui.webChatWidth, 1040);
@@ -131,6 +141,11 @@ test("appearance writes preserve package config, reject extra authority, and nev
         webChatFontSize: 16,
         webExpandThinking: true,
         webPinnedSort: "updated",
+        subagentResultDisplay: "full",
+        bashToolDisplay: "full",
+        fileMutationDisplay: "full",
+        customFooter: false,
+        footerStyle: "powerline-mono",
       },
     });
     // Concurrent partial edits share the existing lock and preserve one another.
@@ -2542,7 +2557,13 @@ test("exposes an active-Session interactive terminal", async () => {
   };
   const interactiveTerminals: InteractiveTerminalService = {
     async create(options) {
-      assert.deepEqual(options, { sessionId, cwd, cols: 80, rows: 24 });
+      assert.deepEqual(options, {
+        sessionId,
+        cwd,
+        cols: 80,
+        rows: 24,
+        ...(options.createKey ? { createKey: "terminal:second:0" } : {}),
+      });
       return { ...terminal, reused: false };
     },
     get(owner, id) {
@@ -2598,6 +2619,25 @@ test("exposes an active-Session interactive terminal", async () => {
     });
     assert.equal(created.status, 201);
     assert.equal((await created.json()).id, terminal.id);
+    const independent = await fetch(`${launched.origin}/api/terminal`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        sessionId,
+        cols: 80,
+        rows: 24,
+        createKey: "terminal:second:0",
+      }),
+    });
+    assert.equal(independent.status, 201);
+    for (const createKey of ["x".repeat(161), "bad\nkey", 1, null]) {
+      const invalid = await fetch(`${launched.origin}/api/terminal`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ sessionId, cols: 80, rows: 24, createKey }),
+      });
+      assert.equal(invalid.status, 400);
+    }
     assert.equal(
       (
         await fetch(
@@ -3345,6 +3385,10 @@ test("fork endpoint authenticates an exact Web-owned source and rejects extra au
       { ...request, commandId: "" },
       { ...request, entryId: "x".repeat(129) },
       { ...request, sessionId: "control\u0000id" },
+      { ...request, rerun: { mode: "edit", content: "" } },
+      { ...request, rerun: { mode: "edit", content: "x".repeat(12_001) } },
+      { ...request, rerun: { mode: "edit", content: "Changed", images: [] } },
+      { ...request, rerun: { mode: "regenerate", content: "Injected" } },
     ])
       assert.equal((await post(invalid)).status, 400);
     assert.equal(
@@ -3361,6 +3405,20 @@ test("fork endpoint authenticates an exact Web-owned source and rejects extra au
     assert.equal(response.status, 200);
     assert.equal((await response.json()).state, "cancelled");
     assert.deepEqual(calls, [request]);
+    const edit = {
+      ...request,
+      commandId: "edit-command",
+      rerun: { mode: "edit", content: "Changed question" },
+    };
+    assert.equal((await post(edit)).status, 200);
+    assert.deepEqual(calls.at(-1), edit);
+    const regenerate = {
+      ...request,
+      commandId: "regenerate-command",
+      rerun: { mode: "regenerate" },
+    };
+    assert.equal((await post(regenerate)).status, 200);
+    assert.deepEqual(calls.at(-1), regenerate);
     delete runtime.forkSession;
     assert.equal((await post(request)).status, 501);
   } finally {

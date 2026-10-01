@@ -86,6 +86,8 @@ Capability discovery defaults to `explicit`, preserving the zero-resident OpenPI
 
 OpenPI Web appearance defaults to the `system` theme, 820px chat width, 14px chat font size, and collapsed thinking blocks. `light`, `dark`, `mist`, `rose`, and `pine` are explicit theme choices. The browser consumes every appearance value from each authoritative snapshot without writing a competing local preference.
 
+Web General settings directly save the existing `ui.subagentResultDisplay`, `ui.bashToolDisplay`, and `ui.fileMutationDisplay` choices (`compact` by default, or `full`) through the shared appearance writer. They also control the Web result disclosures and their enclosing execution groups. Footer controls save `ui.customFooter` / `ui.footerStyle` for the Pi terminal footer. Discovery, workflow limits, suggestions, and post-edit controls submit natural-language requests through the canonical `/openpi-setup` episode; only a native configuration receipt confirms a change.
+
 On Windows, OpenPI enables Pi's `clearOnShrink` compatibility behavior for
 the regular TUI so shrinking slash-command autocomplete lists do not leave
 stale rows on screen. Fullscreen TUI keeps its configured behavior. The

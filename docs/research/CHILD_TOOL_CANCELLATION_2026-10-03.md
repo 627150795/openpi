@@ -4,6 +4,7 @@
 - Created / verified: 2026-10-03
 - Source boundary: `c7862b852d866123e2b32c79d309bd49a3cf515f`
 - Issue: [#645](https://github.com/openpi-dev/openpi/issues/645)
+- Repair PR: [#646](https://github.com/openpi-dev/openpi/pull/646)
 - Supersedes: none
 
 ## Scope and verified facts

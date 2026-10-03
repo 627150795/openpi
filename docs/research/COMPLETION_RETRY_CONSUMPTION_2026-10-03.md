@@ -5,7 +5,8 @@ last-verified: 2026-10-03
 applies-to: OpenPI main c7862b852d866123e2b32c79d309bd49a3cf515f and the scoped fix for issue 647
 related-issues:
   - https://github.com/openpi-dev/openpi/issues/647
-related-prs: []
+related-prs:
+  - https://github.com/openpi-dev/openpi/pull/649
 supersedes: none
 ---
 

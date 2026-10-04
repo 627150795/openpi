@@ -256,6 +256,26 @@ export class AgentSessionPage implements Component, Focusable {
       1,
       this.availableRows?.(width) ?? (this.tui.terminal.rows || 30),
     );
+    if (height < 4) {
+      // A native editor can temporarily leave only one row after its widgets.
+      // Keep the exit binding visible without changing the transcript anchor;
+      // normal rendering will resume when the host gives us enough space.
+      const summary = state
+        ? `${state.status} · ${safeLine(state.title) || safeLine(state.id)}`
+        : "child is no longer tracked";
+      return [
+        this.theme.fg(
+          "dim",
+          `${configuredKeys(this.keybindings, "app.interrupt")} back · ${summary}`,
+        ),
+        this.theme.fg("dim", "Resize terminal to read transcript"),
+        state?.errorText
+          ? this.theme.fg("error", safeLine(state.errorText))
+          : "",
+      ]
+        .slice(0, height)
+        .map((line) => truncateToWidth(line, Math.max(1, width)));
+    }
     if (!state) {
       const border = this.theme.fg(
         "borderAccent",

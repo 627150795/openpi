@@ -593,3 +593,68 @@ test("a mounted child page measures only its supplied editor rows on each render
   const defaultPage = new AgentSessionPage(tui(30), theme, keybindings, source);
   assert.equal(defaultPage.render(80).length, 30);
 });
+
+test("tiny child viewport exposes back first, bounds chrome and preserves paused position", () => {
+  let available = 20;
+  const source = {
+    getState: () => ({
+      ...state(),
+      title: "中文标题\x1b[2J\x07",
+      document: {
+        items: [
+          {
+            kind: "assistant" as const,
+            parts: [
+              {
+                type: "text" as const,
+                text: Array.from({ length: 60 }, (_, i) => `tiny ${i}`).join(
+                  "\n\n",
+                ),
+              },
+            ],
+          },
+        ],
+      },
+    }),
+    close() {},
+  };
+  const page = new AgentSessionPage(
+    tui(30),
+    theme,
+    keybindings,
+    source,
+    undefined,
+    () => available,
+  );
+  page.render(80);
+  page.handleInput("up");
+  const paused = page.render(80);
+  for (available of [1, 2, 3]) {
+    const lines = page.render(80);
+    assert.equal(lines.length, available);
+    assert.match(stripVTControlCharacters(lines[0]!), /^interrupt back/);
+    assert.match(stripVTControlCharacters(lines[0]!), /running · 中文标题/);
+    assert.doesNotMatch(lines.join("\n"), /\x1b\[2J|\x07/);
+    const narrow = page.render(12);
+    assert.equal(narrow.length, available);
+    assert.ok(narrow.every((line) => visibleWidth(line) <= 12));
+    assert.match(stripVTControlCharacters(narrow[0]!), /^interrupt/);
+  }
+  available = 20;
+  assert.deepEqual(page.render(80), paused);
+});
+
+test("terminal-sized and unavailable child pages respect tiny row budgets", () => {
+  for (const rows of [1, 2, 3]) {
+    for (const getState of [state, () => undefined]) {
+      const page = new AgentSessionPage(tui(rows), theme, keybindings, {
+        getState,
+        close() {},
+      });
+      const lines = page.render(40);
+      assert.equal(lines.length, rows);
+      assert.match(stripVTControlCharacters(lines[0]!), /^interrupt back/);
+      assert.ok(lines.every((line) => visibleWidth(line) <= 40));
+    }
+  }
+});

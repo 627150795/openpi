@@ -12,6 +12,7 @@
  *   the child session_shutdown hook and disposes the session.
  */
 
+import { createHash } from "node:crypto";
 import type { AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import type {
   AgentSession,
@@ -268,6 +269,10 @@ const makePiSession = (
               task.tools,
               structuredOutputTool !== undefined,
             ),
+            // `task.tools` is projected from the parent's live surface, so a
+            // name the child cannot expose narrows the child instead of
+            // failing the spawn.
+            { tolerateInheritedMisses: task.inheritedTools === true },
           );
           checkCancelled();
           return session;
@@ -281,7 +286,10 @@ const makePiSession = (
       catch: (error) => new SpawnError({ message: boundedError(error) }),
     });
 
+    let generation = 0;
     interface ActivePrompt {
+      generation: number;
+      startEntryId: string | null;
       cancelled: boolean;
       lifecycleStarted: boolean;
       lifecycleSettled: boolean;
@@ -357,6 +365,39 @@ const makePiSession = (
       });
     };
 
+    const evidenceFor = (
+      prompt: ActivePrompt,
+      structured: {
+        status: "saved" | "failed" | "not-run";
+        path?: string;
+        digest?: string;
+      } = { status: "not-run" },
+    ) => {
+      const manager = session.sessionManager;
+      const branch = manager.getBranch?.() ?? [];
+      const final = [...branch]
+        .reverse()
+        .find(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message.role === "assistant" &&
+            entry.message === prompt.lastAssistant,
+        );
+      return {
+        generation: prompt.generation,
+        sessionId: manager.getSessionId?.() ?? "",
+        sessionPath: session.sessionFile,
+        sessionPersistence: "unknown" as const,
+        startEntryId: prompt.startEntryId,
+        endEntryId: manager.getLeafId?.() ?? null,
+        finalEntryId: final?.id,
+        parentSessionId: task.parent.sessionId,
+        parentOriginEntryId: task.parent.originEntryId,
+        sealed: prompt.promptSettled,
+        structured,
+      };
+    };
+
     const settle = (prompt = state.activePrompt) => {
       if (!prompt || state.activePrompt !== prompt || state.settled) return;
       state.settled = true;
@@ -370,6 +411,7 @@ const makePiSession = (
       if (errorText !== undefined) {
         emit({
           _tag: "RunSettled",
+          evidence: evidenceFor(prompt),
           outcome: {
             _tag: "Failed",
             errorText: boundedError(errorText),
@@ -381,6 +423,7 @@ const makePiSession = (
       if (last?.stopReason === "aborted") {
         emit({
           _tag: "RunSettled",
+          evidence: evidenceFor(prompt),
           outcome: { _tag: "Interrupted", partialText },
         });
         return;
@@ -388,6 +431,7 @@ const makePiSession = (
       if (task.outputSchema !== undefined && capturedStructured === undefined) {
         emit({
           _tag: "RunSettled",
+          evidence: evidenceFor(prompt),
           outcome: {
             _tag: "Failed",
             errorText:
@@ -398,6 +442,7 @@ const makePiSession = (
         return;
       }
       let structuredResult;
+      let structuredPersistence: "saved" | "failed" | "not-run" = "not-run";
       if (capturedStructured) {
         try {
           structuredResult = {
@@ -407,20 +452,26 @@ const makePiSession = (
               capturedStructured.json,
             ),
           };
-        } catch (error) {
-          emit({
-            _tag: "RunSettled",
-            outcome: {
-              _tag: "Failed",
-              errorText: `Structured result artifact could not be persisted: ${boundedError(error)}`,
-              partialText,
-            },
-          });
-          return;
+          structuredPersistence = "saved";
+        } catch {
+          // Execution succeeded; saving its evidence did not. Do not recast
+          // that storage failure as a failed model execution.
+          structuredPersistence = "failed";
         }
       }
       emit({
         _tag: "RunSettled",
+        evidence: evidenceFor(prompt, {
+          status: structuredPersistence,
+          ...(structuredResult
+            ? {
+                path: structuredResult.artifactPath,
+                digest: createHash("sha256")
+                  .update(structuredResult.json)
+                  .digest("hex"),
+              }
+            : {}),
+        }),
         outcome: {
           _tag: "Completed",
           finalText: prompt.finalText,
@@ -485,7 +536,7 @@ const makePiSession = (
           // Extensions may register tools between runs; guard new ones too.
           toolTimeout.apply(session);
           activePrompt.lifecycleStarted = true;
-          emit({ _tag: "RunStarted" });
+          // Retries may emit agent_start again inside this same prompt lease.
           break;
         case "message_update": {
           const streamEvent = event.assistantMessageEvent;
@@ -672,6 +723,8 @@ const makePiSession = (
         );
       }
       const activePrompt: ActivePrompt = {
+        generation: ++generation,
+        startEntryId: session.sessionManager.getLeafId?.() ?? null,
         cancelled: false,
         lifecycleStarted: false,
         lifecycleSettled: false,
@@ -683,7 +736,7 @@ const makePiSession = (
       state.activePrompt = activePrompt;
       capturedStructured = undefined;
       state.settled = false;
-      emit({ _tag: "RunStarted" });
+      emit({ _tag: "RunStarted", generation: activePrompt.generation });
       let prompt: Promise<void>;
       try {
         prompt = session.prompt(text, {
@@ -861,13 +914,18 @@ const makePiSession = (
             state.pendingRestart = undefined;
           }
           state.settled = true;
-          emit({ _tag: "RunSettled", outcome: { _tag: "Interrupted" } });
+          emit({
+            _tag: "RunSettled",
+            notStarted: true,
+            outcome: { _tag: "Interrupted" },
+          });
           return;
         }
         if (!state.closed && !state.settled) {
           state.settled = true;
           emit({
             _tag: "RunSettled",
+            ...(activePrompt ? { evidence: evidenceFor(activePrompt) } : {}),
             outcome: {
               _tag: "Interrupted",
               partialText: activePrompt?.partialTextAtCancel,

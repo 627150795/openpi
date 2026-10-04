@@ -601,6 +601,8 @@ test("provider failures remain visible after refresh without discarding partial 
   await expect(page.getByText("Partial answer")).toBeVisible();
   await expect(page.getByText("模型请求已停止")).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
+  // Drain snapshot handlers before the per-test request context is disposed.
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 async function openWorkbench(page: Page) {
@@ -3190,6 +3192,13 @@ test("same-named model selection sends the exact identity for an active Session"
     const snapshot = await response.json();
     selectedSessionPath = snapshot.selectedSession.path;
     snapshot.runtime.status = "idle";
+    // Model-selection fixtures must not inherit the Host's thinking capability.
+    snapshot.thinking = {
+      ...snapshot.thinking,
+      level: "off",
+      available: [],
+      supported: false,
+    };
     snapshot.models = [
       {
         provider: "provider-alpha",
@@ -3279,6 +3288,13 @@ test("finds and selects a model omitted from the bounded snapshot", async ({
     activeSessionId = snapshot.currentSessionId;
     activeSessionPath = snapshot.selectedSession.path;
     snapshot.runtime.status = "idle";
+    // Model-selection fixtures must not inherit the Host's thinking capability.
+    snapshot.thinking = {
+      ...snapshot.thinking,
+      level: "off",
+      available: [],
+      supported: false,
+    };
     snapshot.models =
       selectedIdentity === "provider-hidden/needle-251"
         ? [

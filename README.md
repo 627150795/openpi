@@ -308,6 +308,12 @@ Workflow 默认并发 8 个 Agent，单次最多 128 次调用；可配置到 64
 
 ---
 
+正常运行时，活动条只保留任务名称和管理入口；阶段、用量与耗时可在 `/workflows` 查看。完成卡按实际原因区分普通交接、保留现场、警告与执行失败，不把保留 worktree 一律标成错误。运行中的 child 详情默认追尾，主动上滚暂停，回到底部或 End/G 恢复；已结束的长历史从开头打开。
+
+Workflow child 的现有事件会产生有界计时摘要与诊断文件，区分 admission、生命周期、工具时间和未知区间；重放不冒充新执行，不采集工具参数、输出或私有 reasoning。摘要不依赖被裁剪的 transcript。文件按调用有界，但跨运行的磁盘文件没有自动总量回收；覆盖缺口、未完成与省略量明确记录。详见[执行计时边界](docs/architecture/WORKFLOW_EXECUTION_TIMING.md)。
+
+Regular 模式的 Workflow 管理页使用原生整页入口，避免聊天图片穿透；fullscreen 保留原生 overlay，宿主图片合成问题仍由 [#657](https://github.com/openpi-dev/openpi/issues/657) 跟踪。
+
 ## Workflow 不只是并行
 
 OpenPI 把一次调用拆成可以审计的生命周期，而不是把“进程退出 0”当成业务成功。
@@ -678,11 +684,14 @@ TUI 查询中按 Esc/Ctrl+C 取消等待；结果使用可滚动浮层，方向�
 
 Capability discovery 默认是 `explicit`：普通父 Session 不常驻任何 OpenPI 模型工具，首轮保持 Pi 原生 `read`、`bash`、`edit`、`write`。用户明确要求结构化搜索、Subagent、Workflow、后台进程或 Session Goal/Tasks 时，OpenPI 在 `before_agent_start` 直接加载对应能力组；明确询问 OpenPI capabilities/tools/features 时显示 `openpi_load_tools`。可通过 `/openpi-setup` 显式选择 `adaptive`：此时只让小型 `openpi_load_tools` 网关常驻，模型可在判断任务确实受益时自主加载一个能力组。该选择也授权模型启动该组内的昂贵工作，因此不作为默认值。句首「子代理了解下项目」这类带执行动作的表达会加载 Delegate；「子代理是什么」这类讨论、否定表达和条件句（例如 “If you delegate…”）不会被当成显式委派意图。能力组在当前 Session 内单调保持，避免反复增删工具破坏缓存。Delegate 一经加载便一次性开放完整、稳定的 Subagent 工具族；资源不存在时由工具执行层明确返回空状态或 fail-closed，而不再按实例生命周期改变模型接口。其他组内管理工具仍只在资源成功创建或状态确实存在后出现。Mode / Setup / Context 工具独立跟随实时状态显示和隐藏。Background、Subagent 与 Workflow 的 Skill 文件仍随包发布，但只在对应能力触发后提示读取，不常驻普通系统 Prompt。
 
+只读诊断可通过现有网关 `openpi_load_tools({groups:["runtime"]})` 按需加载 `runtime_snapshot({})`；不会因提示关键词自动加载，也不会常驻普通工具面。它仅对父 Session 开放，区分有效配置、Session 当前选择、磁盘 Git 状态和已注册扩展；无法证明的 loaded revision、版本或上游路由明确为 unknown/unavailable。模型标识、路径、账号、endpoint 与资源标题不输出；保留默认模型匹配结果、thinking、实时 Trust、允许公开的工具名与资源状态。整个工具结果上限 16 KiB，跨 owner 最多 32 项，非原子采样、不可用和省略量均显式标记；不启动资源、不消费模型、不写配置。详见 [运行时快照边界](docs/architecture/RUNTIME_SNAPSHOT.md)。
+
 普通产品采用 Pi-native execution：保留 Pi 原生完整历史、工具输出上限、Session compaction、显式 Bash timeout 与 provider loop，不额外做固定事务投影、成功 Bash 二次裁剪、测试 timeout 改写、重复失败硬拦或恢复/轨迹提示。OpenPI 只保留一层工作区清理护栏：源码中可识别的 `rm` 只有在整条命令是直接、可静态验证的 literal `rm`，且目标都是工作区内相对路径时，才会进入 provenance 与确认流程；可识别的复合、嵌套或动态 target `rm` 会 fail closed，并提示改用独立的 literal `rm` 重试。单条 standalone 普通命令中可静态识别的 bare、single-quoted 或 double-quoted 参数、Bash comment，以及独占输入的单个非展开 heredoc 中的 `rm` 文本不受影响；复合命令、已知 command forwarder 和带后续命令的 heredoc 会保守阻止 source-visible `rm`，可拆成独立命令重试。Guard 会从实际文件状态识别本轮通过原生写入、文字重定向或 literal `mkdir -p` 创建的 scratch，避免误拦其清理；它不是任意程序文件系统行为的 sandbox，也不承诺识别运行时生成的命令名或其他程序内部的文件系统行为。
 
 | 工具                                                                                                     | 用途                           | 可见时机                         |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------ | -------------------------------- |
 | `openpi_load_tools`                                                                                      | 列出或加载可选工具组           | 明确询问；或启用 `adaptive`      |
+| `runtime_snapshot`                                                                                       | 有界、脱敏的父 Session 只读快照 | 网关显式加载 runtime 后          |
 | `bg_start`, `bg_status`, `bg_list`, `bg_watch`, `bg_kill`                                                | 后台进程生命周期               | 明确意图或 adaptive；启动后展开  |
 | `subagent_spawn`, `subagent_check`, `subagent_list`, `subagent_wait`, `subagent_send`, `subagent_cancel` | 独立子 Agent                   | 明确意图或 adaptive；整组稳定加载 |
 | `workflow`, `workflow_status`, `workflow_stop`                                                           | 动态多阶段编排与运行管理       | 明确意图或 adaptive；能力组一次稳定展开 |
@@ -717,6 +726,10 @@ Capability discovery 默认是 `explicit`：普通父 Session 不常驻任何 Op
 `subagent_spawn` 立即返回，结束后自动回传并重新唤醒主 Agent。交互会话没有其他工作时，主 Agent 应结束当前轮、让用户继续交互；“下一步依赖结果”本身不是阻塞理由。只有用户明确要求当前回复等完，或非交互自动化必须在同一次调用中返回完整结果时，才应调用 `subagent_wait`。
 
 需要机器可验证的 review findings、research evidence 或 test matrix 时，可为 `subagent_spawn` 提供可选 `output_schema`。该次 Direct Subagent 只会额外获得 terminating `structured_output`，未提交匹配结果会明确失败；验证后的 JSON 会有界回传并写入私有 content-addressed artifact。省略 schema 的普通文本路径不会加载该 child tool 或 structured instruction。
+
+Direct 的 check/wait/自动回传，以及 Workflow 的 status/等待结果/自动回传，共享有界 `completion` 投影（[#652](https://github.com/openpi-dev/openpi/issues/652)）：运行事实、模型声明引用、持久化状态与工作目录归因分开。Direct 的执行身份包含 Session 内递增的 run generation；Workflow 沿用 callId 与现有制品引用，Replay 不启动新执行，并保留原始执行引用（旧 journal 为 unknown）。投影不改变 Workflow `agent()` 的 IPC 结果形状或执行/交付判定。Direct generation 在 backend 实际 `startRun` 时分配（retry 的 `agent_start` 不新增 generation），prompt Promise 结算后才封存。`subagent_check({id})` 保持原有非阻塞查询；可选 `generation` 查询活动父 Session 分支上的完成收据，`evidence: "transcript" | "final" | "structured"` 读取原始证据，`offset`/`limit` 按 Unicode code point 分页（默认 2048、最多 4096，JSON 页上限 16 KiB）。`direct:<Pi child UUID>:run:<generation>` 绑定既有 `subagent-finished` 私有 entry 内的 Session UUID、起止 entry anchors、final entry identity 和 structured artifact；不是独立注册表，也不保证永久保留。读取校验父分支 origin、UUID 和 child anchor 祖先链，legacy/unsealed/missing/pruned/denied/oversized/failed-persistence 明确 unavailable。每次源读取受 Pi read 的 50 KiB/行数上限约束，超限不截断成可信证据。磁盘读取只通过 `ExtensionToolContext.executeTool("read", ...)`，沿用原生权限/hooks；显式证据查询的 native nestedCalls/events 会记录 read 参数，可能包含完整路径，不能将收据的 path-free 合同扩张成宿主元数据隐私保证。Workflow transcript 仅作为观察证据；只有确实产生且成功保存的文本/结构化输出才提供模型声明引用，旧记录无法确认时为 unknown。
+
+这不是验收收据：工具返回成功不等于进程 exit 0，模型说“测试通过”不等于运行了测试。单个 completion JSON 总预算为 16 KiB，超限时确定性省略工具项和可选引用，不截断原始引用或修改 owner；不投影 cwd 路径或可猜测的路径哈希；无法提供真实 owner 标识时省略。规范化 transcript 的工具观察最多展示 16 项、coverage 始终为 partial；命令/退出码与测试验证为 unknown，投影自身的自动验证为 not-run。共享 cwd 的变更 attribution 为 unknown；Worktree 证据最多归因到 checkout，不证明每次写入的独占作者。详细记录仍由原有 Child Session / Workflow artifacts 持有；模型文本每个 Workflow 最多列出 16 个 child 投影，省略项通过原有制品定位。不会自动测试、追加模型调用、要求提交问卷或扩大权限。
 
 </details>
 

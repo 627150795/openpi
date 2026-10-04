@@ -3,7 +3,8 @@ import {
   type OpenPiCapability,
 } from "./tool-surface.ts";
 
-const CAPABILITY_INTENT = {
+// Runtime inspection is gateway-only; it has no prompt keyword activation.
+const CAPABILITY_INTENT: Partial<Record<OpenPiCapability, RegExp>> = {
   search:
     /\b(?:use|run)\s+(?:fd|rg)\b|\buse\s+(?:structured\s+)?(?:(?:file|code|content)\s+)?search\b|\b(?:structured|fast)\s+(?:file|code|content)\s+search\b|(?:使用|用|运行).{0,8}(?:fd|rg|git\s+(?:show|diff|log))|结构化(?:文件|代码|内容)搜索/iu,
   delegate:
@@ -14,7 +15,7 @@ const CAPABILITY_INTENT = {
     /\b(?:run|start|keep)\b.{0,40}\b(?:in the background|background\s+(?:process|terminal|job))\b|后台.{0,8}(?:运行|启动|进程|终端|任务)/iu,
   session:
     /\b(?:create|set|update|track)\s+(?:an?\s+)?(?:session\s+)?(?:goal|task list|tasks)\b|(?:设置|创建|更新|跟踪|追踪).{0,8}(?:目标|任务)/iu,
-} as const satisfies Record<OpenPiCapability, RegExp>;
+};
 
 const CAPABILITY_GATEWAY_INTENT =
   /\bopenpi\s+(?:capabilit(?:y|ies)|tools?|features?)\b|openpi.{0,8}(?:能力|工具|功能)/iu;
@@ -50,7 +51,7 @@ export function capabilitiesRequestedByPrompt(prompt: string) {
       promptClauses.some(
         (clause) =>
           isExplicitClause(clause) &&
-          CAPABILITY_INTENT[capability].test(clause),
+          CAPABILITY_INTENT[capability]?.test(clause),
       ),
   );
 }

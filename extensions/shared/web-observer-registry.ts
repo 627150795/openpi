@@ -785,11 +785,14 @@ export function subscribeWebCapabilities(listener: CapabilityListener) {
 
 export function webCapabilitySnapshot(
   scope: WebCapabilityScope,
+  kind?: WebCapabilityKind,
 ): WebCapabilitySnapshot {
   const scopedProviders = providers.get(scope);
   if (!scopedProviders) return {};
   return Object.fromEntries(
-    [...scopedProviders].map(([kind, provider]) => [kind, provider.snapshot()]),
+    [...scopedProviders]
+      .filter(([providerKind]) => kind === undefined || providerKind === kind)
+      .map(([providerKind, provider]) => [providerKind, provider.snapshot()]),
   );
 }
 

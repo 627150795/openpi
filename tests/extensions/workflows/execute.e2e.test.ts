@@ -72,6 +72,10 @@ writeFileSync(
   join(agentDir, "agents", "bounded-reviewer.md"),
   "---\nname: bounded-reviewer\ndescription: Replay fixture\ntools: [read]\n---\nInspect the repository without modifications.\n",
 );
+writeFileSync(
+  join(agentDir, "agents", "explicit-parent-fixture.md"),
+  "---\nname: explicit-parent-fixture\ndescription: Requires a parent fixture\ntools: [read, parent_fixture]\n---\nUse parent_fixture to verify the result.\n",
+);
 
 const {
   default: workflows,
@@ -994,20 +998,59 @@ test("agent calls run through the injected session factory and resume replays th
       ctx,
     )) as {
       content: Array<{ type: string; text: string }>;
-      details: { runId?: unknown };
+      details: WorkflowDetails;
     };
     const firstText = first.content[0]!.text;
     assert.match(firstText, /"agent-run" completed/);
     assert.match(firstText, /injected agent output/);
     assert.equal(sessionCreations, 1);
+    assert.equal(
+      first.details.agents[0]?.completion?.observed.outcome,
+      "success",
+    );
+    assert.equal(
+      first.details.agents[0]?.completion?.verification.status,
+      "unknown",
+    );
 
     const firstRunId = first.details.runId;
+    const queried = (await status.execute("e2e-completion-query", {
+      runId: firstRunId,
+    })) as { details: { completions: unknown[] } };
+    assert.deepEqual(
+      queried.details.completions[0],
+      first.details.agents[0]?.completion,
+    );
     const firstDir = runDirFor(firstRunId);
+    const textRef = first.details.agents[0]?.completion?.modelClaimed.textRef;
+    assert.equal(textRef, `${firstRunId}/agent-results/agent-0001.json`);
+    // Resolve through the existing workflow run owner, not a new registry.
+    const savedResult = JSON.parse(
+      readFileSync(
+        join(firstDir, textRef.slice(firstRunId.length + 1)),
+        "utf8",
+      ),
+    );
+    assert.equal(savedResult.output, "injected agent output");
+    assert.equal(
+      JSON.stringify(first.details.agents[0]?.completion).includes(firstDir),
+      false,
+    );
     // A replay-safe read-only agent call is journaled on success.
     const journal = JSON.parse(
       readFileSync(join(firstDir, "journal.json"), "utf8"),
-    ) as { entries: unknown[] };
+    ) as {
+      entries: Array<{ origin?: { executionId: string; evidenceRef: string } }>;
+    };
     assert.equal(journal.entries.length, 1);
+    assert.equal(
+      journal.entries[0]?.origin?.executionId,
+      `${firstRunId}:call:1`,
+    );
+    assert.equal(
+      journal.entries[0]?.origin?.evidenceRef,
+      `${firstRunId}/agent-results/agent-0001.json`,
+    );
 
     // Resume with identical script and call content: the journal hit means no
     // new child session is created.
@@ -1023,12 +1066,24 @@ test("agent calls run through the injected session factory and resume replays th
       ctx,
     )) as {
       content: Array<{ type: string; text: string }>;
-      details: { runId?: unknown };
+      details: WorkflowDetails;
     };
     const resumedText = resumed.content[0]!.text;
     assert.match(resumedText, /injected agent output/);
     assert.match(resumedText, /Resumed from .*replayed 1\/1 agent call/);
+    assert.match(resumedText, /replay=no-new-execution/);
+    assert.deepEqual(resumed.details.agents[0]?.completion?.replay, {
+      newExecution: false,
+      origin: journal.entries[0]?.origin,
+    });
     assert.equal(sessionCreations, 1);
+    const replayQuery = (await status.execute("e2e-replay-query", {
+      runId: resumed.details.runId,
+    })) as { details: { completions: unknown[] } };
+    assert.deepEqual(
+      replayQuery.details.completions[0],
+      resumed.details.agents[0]?.completion,
+    );
 
     const persisted = readWorkflowJson(resumed.details.runId);
     const agents = persisted.agents as Array<{
@@ -1815,6 +1870,66 @@ test("built-in Workflow children inherit active shell/network tools in the selec
       );
     }
     assert.equal(calls.length, 2, "invalid cwd must not create child sessions");
+  } finally {
+    activeTools = previousTools;
+    __setWorkflowTestAgentSessionFactory(undefined);
+  }
+});
+
+test("Workflow entry tolerates inherited misses but rejects a missing explicit role tool before prompting", async () => {
+  const previousTools = [...activeTools];
+  activeTools = [...activeTools, "parent_fixture"];
+  let prompts = 0;
+  __setWorkflowTestAgentSessionFactory(async (options) => {
+    assert.deepEqual(options?.tools, ["read", "parent_fixture"]);
+    const session = fakeAgentSession(
+      "inherited surface narrowed",
+      undefined,
+      () => {
+        prompts++;
+      },
+    );
+    session.getActiveToolNames = () => ["read"];
+    session.getAllTools = () =>
+      [{ name: "read" }] as ReturnType<AgentSession["getAllTools"]>;
+    return { session };
+  });
+  try {
+    const inherited = (await workflow.execute(
+      "inherited-miss",
+      { script: 'return await agent("inspect");', wait: true },
+      undefined,
+      undefined,
+      ctx,
+    )) as { details: { runId: string } };
+    const inheritedRun = readWorkflowJson(inherited.details.runId);
+    assert.equal(
+      (inheritedRun.agents as { state: string }[])[0]?.state,
+      "done",
+    );
+    assert.equal(prompts, 1);
+
+    const explicit = (await workflow.execute(
+      "explicit-miss",
+      {
+        script:
+          'return await agent("inspect", { agent_type: "explicit-parent-fixture" });',
+        wait: true,
+      },
+      undefined,
+      undefined,
+      ctx,
+    )) as { details: { runId: string } };
+    const explicitRun = readWorkflowJson(explicit.details.runId);
+    const agent = (
+      explicitRun.agents as { state: string; error?: string }[]
+    )[0];
+    assert.equal(agent?.state, "error");
+    assert.match(
+      agent?.error ?? "",
+      /Child tool preflight failed: requested tool "parent_fixture" is unavailable/,
+    );
+    assert.equal(prompts, 1, "an explicit miss must fail before prompting");
   } finally {
     activeTools = previousTools;
     __setWorkflowTestAgentSessionFactory(undefined);

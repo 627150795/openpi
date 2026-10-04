@@ -60,6 +60,16 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["web/ui/src/**/*.ts", "web/ui/src/**/*.tsx"],
+      "linter": {
+        "domains": {
+          "react": "recommended"
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",

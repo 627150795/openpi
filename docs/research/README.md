@@ -14,6 +14,12 @@ Research records preserve sourced investigation and distinguish observations, in
 
 ## Validated investigations
 
+- [`WORKFLOW_TUI_PROJECTIONS_2026-10-04.md`](WORKFLOW_TUI_PROJECTIONS_2026-10-04.md) — operator projections, native regular dashboard image ownership, and the remaining fullscreen owner boundary (#656/#657/#658/#660).
+
+- [`WORKTREE_VALIDATION_663.md`](WORKTREE_VALIDATION_663.md) — source-controlled inside/outside Git validation, React-domain activation and test-only Vite ancestor-path denial ([#663](https://github.com/openpi-dev/openpi/issues/663)); local evidence and parent review boundary recorded.
+
+- [`CHILD_TOOL_PREFLIGHT_2026-10-04.md`](CHILD_TOOL_PREFLIGHT_2026-10-04.md) — inherited versus explicit child tool requirements, native SDK factories, and fail-closed replay identities ([#637](https://github.com/openpi-dev/openpi/issues/637), [PR #638](https://github.com/openpi-dev/openpi/pull/638)).
+
 - [`PI_0_99_COMPATIBILITY_2026-09-30.md`](PI_0_99_COMPATIBILITY_2026-09-30.md) — native transcript and prompt admission migration, nested child authority regressions, and local Pi CLI verification ([#635](https://github.com/openpi-dev/openpi/issues/635)).
 
 - [`WEB_DSH_COMPOSER_2026-09-29.md`](WEB_DSH_COMPOSER_2026-09-29.md) — DSH 输入区参考、原生目标入口和压缩消息保留/投递边界（[#597](https://github.com/openpi-dev/openpi/issues/597)、[PR #598](https://github.com/openpi-dev/openpi/pull/598)）。
@@ -78,6 +84,8 @@ Research records preserve sourced investigation and distinguish observations, in
 
 - [`CACHE_USAGE_CONTRACT_2026-09-11.md`](CACHE_USAGE_CONTRACT_2026-09-11.md) — source-scoped Pi usage field matrix and synthetic cache-diagnostic replay boundaries; real comparative Session evidence remains open ([#156](https://github.com/openpi-dev/openpi/issues/156)).
 
+- [`COMPLETION_RETRY_CONSUMPTION_2026-10-03.md`](COMPLETION_RETRY_CONSUMPTION_2026-10-03.md) — invalidated completion claims, late transport retries, and producer-adapter regression evidence ([#647](https://github.com/openpi-dev/openpi/issues/647)).
+
 - [`CURSOR_NATIVE_RECOVERY_2026-09-08.md`](CURSOR_NATIVE_RECOVERY_2026-09-08.md) — bounded in-band native execution rejection, Pi-owned tools, cancellation identity, and actual child acceptance ([#234](https://github.com/openpi-dev/openpi/issues/234)).
 
 - [`WEB_STARTUP_2026-09-07.md`](WEB_STARTUP_2026-09-07.md) — terminal startup feedback, browser-launch waiting, and exploratory timing limits ([#450](https://github.com/openpi-dev/openpi/issues/450)).
@@ -90,9 +98,13 @@ Research records preserve sourced investigation and distinguish observations, in
 
 - [`CHILD_ACQUISITION_AND_PROGRESS_2026-09-07.md`](CHILD_ACQUISITION_AND_PROGRESS_2026-09-07.md) — cancelled child/worktree acquisitions and stale progress evidence under output pressure ([#428](https://github.com/openpi-dev/openpi/issues/428)).
 
+- [`CHILD_TOOL_CANCELLATION_2026-10-03.md`](CHILD_TOOL_CANCELLATION_2026-10-03.md) — already-aborted child tool dispatch, false success and the shared execution-boundary repair ([#645](https://github.com/openpi-dev/openpi/issues/645)).
+
 - [`WORKFLOW_CHILD_FAILURES_2026-09-07.md`](WORKFLOW_CHILD_FAILURES_2026-09-07.md) — child tool transport, cwd and timeout failure mechanisms, intended capability inheritance, and acceptance limits ([#424](https://github.com/openpi-dev/openpi/issues/424)).
 
 - [`WORKFLOW_DASHBOARD_REFRESH_2026-09-07.md`](WORKFLOW_DASHBOARD_REFRESH_2026-09-07.md) — repeated synchronous history loading on dashboard animation ticks, its regression boundary, and measurement limits ([#420](https://github.com/openpi-dev/openpi/issues/420)).
+
+- [`TEXT_PROJECTION_UTF8_2026-10-03.md`](TEXT_PROJECTION_UTF8_2026-10-03.md) — preservation of literal replacement characters in bounded Workflow context and handoffs ([#648](https://github.com/openpi-dev/openpi/issues/648)).
 
 ## Legacy records
 

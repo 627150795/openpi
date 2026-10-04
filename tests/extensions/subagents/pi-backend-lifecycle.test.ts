@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { toolExecutionContext } from "../../support/extension-tool-context.ts";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -312,6 +312,37 @@ test("a direct subagent validates, persists, and delivers structured output", as
     const artifactPath = settled.outcome.structuredResult?.artifactPath;
     assert.ok(artifactPath);
     assert.equal(await readFile(artifactPath, "utf8"), '{"verdict":"pass"}');
+    assert.equal(settled.evidence?.structured.status, "saved");
+    // A content-address collision is a real persistence failure, not an
+    // execution failure. No additional model call is involved in this fixture.
+    await writeFile(artifactPath, "collision");
+    const failedSave = await spawnDirect(
+      backend,
+      task("return a verdict", { outputSchema: { type: "object" } }),
+      async () => {
+        const next = fixtures.harnesses[1];
+        await fixtures.creations[1]?.customTools?.[0]?.execute(
+          "structured",
+          { verdict: "pass" },
+          undefined,
+          undefined,
+          toolExecutionContext({} as ExtensionContext),
+        );
+        next.emit({ type: "agent_start" });
+        next.emitAssistant("done");
+        next.emit({ type: "agent_settled" });
+        next.resolvePrompt();
+      },
+    );
+    const storageFailure = failedSave.find(
+      (event) => event._tag === "RunSettled",
+    );
+    assert.equal(storageFailure?._tag, "RunSettled");
+    if (storageFailure?._tag === "RunSettled") {
+      assert.equal(storageFailure.outcome._tag, "Completed");
+      assert.equal(storageFailure.evidence?.structured.status, "failed");
+      assert.equal(storageFailure.evidence?.structured.path, undefined);
+    }
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -507,6 +538,7 @@ test("streaming send steers while idle send starts a distinct run", async () => 
     harness.setStreaming(true);
     harness.emit({ type: "agent_start" });
     harness.emitTextDelta("first response");
+    harness.emit({ type: "agent_start" }); // provider retry, not another run
 
     await runtime.runPromise(manager.send(first.id, "steer the active run"));
     assert.deepEqual(harness.calls.steers, ["steer the active run"]);
@@ -518,6 +550,9 @@ test("streaming send steers while idle send starts a distinct run", async () => 
     harness.resolvePrompt();
     await runtime.runPromise(manager.waitFor([first.id]));
     assert.equal(manager.view.get(first.id)?.finalText, "first result");
+    assert.equal(manager.view.get(first.id)?.runGeneration, 1);
+    assert.equal(manager.view.get(first.id)?.evidence?.generation, 1);
+    assert.equal(manager.view.get(first.id)?.evidence?.sealed, true);
 
     await runtime.runPromise(manager.send(first.id, "second turn"));
     assert.deepEqual(harness.calls.prompts, ["first turn", "second turn"]);
@@ -533,6 +568,9 @@ test("streaming send steers while idle send starts a distinct run", async () => 
     const afterRestart = manager.view.get(first.id);
     assert.equal(afterRestart?.status, "done");
     assert.equal(afterRestart?.finalText, "second result");
+    assert.equal(afterRestart?.runGeneration, 2);
+    assert.equal(afterRestart?.evidence?.generation, 2);
+    assert.equal(afterRestart?.evidence?.sealed, true);
     assert.equal(settlements.length, 2);
     assert.deepEqual(
       settlements.map((entry) => entry.split(":", 1)[0]),

@@ -182,7 +182,7 @@ export function createCapabilitiesExtension(
       name: "openpi_load_tools",
       label: "Load OpenPI Tools",
       description:
-        "Load optional OpenPI groups only when useful: search, delegate, workflow, background, or session. Ordinary file and shell work needs none. Loaded groups stay available.",
+        "Load optional OpenPI groups only when useful: search, delegate, workflow, background, session, or runtime. Ordinary file and shell work needs none. Loaded groups stay available.",
       parameters: OpenPiLoadToolsParameters,
       async execute(_toolCallId, params: OpenPiLoadToolsInput) {
         const result = params.groups

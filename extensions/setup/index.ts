@@ -1,6 +1,8 @@
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import { restorePlanModeState } from "../plan-mode/persisted-state.ts";
 import { applySetupConfiguration } from "../shared/setup-apply.ts";
+import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -223,6 +225,34 @@ function hideConfigureTool(pi: ExtensionAPI) {
 }
 
 export default function openPiSetup(pi: ExtensionAPI) {
+  // Pi invokes message renderers only from its interactive TUI. RPC/JSON
+  // serialize raw messages, and HTML export renders stored content separately.
+  pi.registerMessageRenderer(
+    SETUP_REQUEST_CUSTOM_TYPE,
+    (message, { expanded }, theme) => {
+      // Pi owns expansion. Native rendering retains the full execution content
+      // when expanded, and is the safe fallback for legacy/invalid metadata.
+      if (expanded) return undefined;
+      const details = message.details;
+      if (
+        typeof details !== "object" ||
+        details === null ||
+        Array.isArray(details) ||
+        !("command" in details) ||
+        !("request" in details) ||
+        (details.command !== "openpi-setup" &&
+          details.command !== "my-pi-setup") ||
+        typeof details.request !== "string"
+      )
+        return undefined;
+      return new Text(
+        `${theme.fg("customMessageLabel", `[OpenPi] ${details.command}`)} ${theme.fg("dim", "▸ expand")}\n${sanitizeTerminalText(details.request)}`,
+        0,
+        0,
+      );
+    },
+  );
+
   let episode: SetupEpisode = "idle";
   let claimedToolCallId: string | undefined;
   let blockedMatchingClaimCount = 0;

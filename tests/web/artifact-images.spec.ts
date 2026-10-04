@@ -56,6 +56,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -189,6 +190,7 @@ it("reports raster decode errors without leaving a broken image", async () => {
 });
 
 it("keeps a decoded image when a metadata refresh returns the same authorized content", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const first: ArtifactPreview = {
     artifact: {
       sessionId: "s",
@@ -217,13 +219,14 @@ it("keeps a decoded image when a metadata refresh returns the same authorized co
     .spyOn(WebClient.prototype, "downloadArtifact")
     .mockResolvedValue(png());
   render(node());
-  fireEvent.click(screen.getByRole("button", { name: "First" }));
-  const image = await screen.findByAltText<HTMLImageElement>("first.png");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "First" }));
+  });
+  const image = screen.getByAltText<HTMLImageElement>("first.png");
   fireEvent.load(image);
   expect(image.hidden).toBe(false);
-  await waitFor(() => expect(previews).toHaveBeenCalledTimes(2), {
-    timeout: 3500,
-  });
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  expect(previews).toHaveBeenCalledTimes(2);
   expect(download).toHaveBeenCalledOnce();
   expect(download.mock.calls[0]![1].aborted).toBe(false);
   expect(revokeUrl).not.toHaveBeenCalled();
@@ -234,6 +237,7 @@ it("keeps a decoded image when a metadata refresh returns the same authorized co
 it.each(["revision", "handle", "path"] as const)(
   "replaces the image when its %s changes and cancels a late replacement",
   async (field) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const first: ArtifactPreview = {
       artifact: {
         sessionId: "s",
@@ -273,12 +277,13 @@ it.each(["revision", "handle", "path"] as const)(
           }),
       );
     const view = render(node());
-    fireEvent.click(screen.getByRole("button", { name: "First" }));
-    const image = await screen.findByAltText<HTMLImageElement>("first.png");
-    fireEvent.load(image);
-    await waitFor(() => expect(download).toHaveBeenCalledTimes(2), {
-      timeout: 3500,
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "First" }));
     });
+    const image = screen.getByAltText<HTMLImageElement>("first.png");
+    fireEvent.load(image);
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(download).toHaveBeenCalledTimes(2);
     expect(download.mock.calls[0]![1].aborted).toBe(true);
     expect(image.isConnected).toBe(false);
     expect(revokeUrl).toHaveBeenCalledWith("blob:artifact-image");
@@ -292,6 +297,7 @@ it.each(["revision", "handle", "path"] as const)(
 it.each([401, 403, 410])(
   "cancels an in-flight image when metadata returns revoked access (%s)",
   async (status) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.mocked(WebClient.prototype.artifactMetadata).mockRejectedValue(
       new WebApiError(
         "File access revoked",
@@ -309,9 +315,12 @@ it.each([401, 403, 410])(
           }),
       );
     const view = render(node());
-    fireEvent.click(screen.getByRole("button", { name: "First" }));
-    await waitFor(() => expect(download).toHaveBeenCalledOnce());
-    await screen.findByText("File access revoked", {}, { timeout: 3500 });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "First" }));
+    });
+    expect(download).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.getByText("File access revoked")).toBeTruthy();
     expect(view.container.querySelector(".artifact-image-preview")).toBeNull();
     expect(
       screen.getByRole<HTMLButtonElement>("button", {
@@ -320,7 +329,7 @@ it.each([401, 403, 410])(
     ).toBe(true);
     // Revoked content is removed in the commit; React runs the child's
     // passive-effect cleanup (which aborts the fetch) after that commit.
-    await waitFor(() => expect(download.mock.calls[0]![1].aborted).toBe(true));
+    expect(download.mock.calls[0]![1].aborted).toBe(true);
     await act(async () => finish(png()));
     expect(createUrl).not.toHaveBeenCalled();
     expect(screen.queryByAltText("first.png")).toBeNull();

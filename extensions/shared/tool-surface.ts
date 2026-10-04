@@ -13,6 +13,10 @@ export const OPENPI_TOOL_SURFACE = {
     entry: ["openpi_load_tools"],
     deferred: [],
   },
+  runtime: {
+    entry: ["runtime_snapshot"],
+    deferred: [],
+  },
   fileSearch: {
     entry: ["fd", "rg"],
     deferred: [],
@@ -91,6 +95,10 @@ export const OPENPI_CAPABILITY_GROUPS = {
     summary:
       "Track explicit session tasks and persistent user-requested goals.",
   },
+  runtime: {
+    owners: ["runtime"],
+    summary: "Inspect a bounded, redacted, read-only parent runtime snapshot.",
+  },
 } as const satisfies Record<
   string,
   { owners: readonly OpenPiToolOwner[]; summary: string }
@@ -138,6 +146,9 @@ interface ToolSurfaceState {
 export const OPENPI_OWNER_SOURCE_PATHS = {
   capabilities: fileURLToPath(
     new URL("../capabilities/index.ts", import.meta.url),
+  ),
+  runtime: fileURLToPath(
+    new URL("../runtime-snapshot/index.ts", import.meta.url),
   ),
   fileSearch: fileURLToPath(
     new URL("../file-search/index.ts", import.meta.url),
@@ -410,6 +421,9 @@ export function loadOpenPiCapabilities(
   const before = pi.getActiveTools();
   const newlyLoaded: OpenPiCapability[] = [];
   for (const capability of capabilities) {
+    for (const owner of OPENPI_CAPABILITY_GROUPS[capability].owners) {
+      state.managedOwners.add(owner);
+    }
     if (!state.loaded.has(capability)) {
       state.loaded.add(capability);
       newlyLoaded.push(capability);

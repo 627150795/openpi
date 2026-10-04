@@ -1,8 +1,8 @@
 # Bounded workflow execution timing
 
-- Status: draft (candidate implementation; independent review pending)
+- Status: validated at source and synthetic-test boundaries; installed runtime acceptance pending
 - Created / verified: 2026-10-04
-- Source boundary: #662 candidate based on `b0096cce99f721c1c2bcfb6bea617e3d3d63ff3d`
+- Source boundary: `71d12eed69827dfea9b5d85236d1cbb5b94a6a11`; #662 implementation based on main `b0096cce99f721c1c2bcfb6bea617e3d3d63ff3d`
 - Issue: [#662](https://github.com/openpi-dev/openpi/issues/662)
 - Pi seam: existing workflow invocation ledger, child `AgentSession` event listener, child tool timeout guard, and run-directory artifact writer
 - Supersedes: none

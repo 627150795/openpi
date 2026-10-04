@@ -29,3 +29,5 @@ These records predate [`Decision 0001`](../decisions/0001-documentation-and-evid
 - [`SESSION_CHILD_EXECUTION_ADMISSION.md`](SESSION_CHILD_EXECUTION_ADMISSION.md) — #159 session-local admission for active Workflow, Direct Subagent, and BTW executions
 
 开发与热更新流程见 [`docs/development/OPENPI_WEB_DEVELOPMENT.md`](../development/OPENPI_WEB_DEVELOPMENT.md)。
+
+- [`CHILD_SESSION_EXPERIENCE.md`](CHILD_SESSION_EXPERIENCE.md) — source/component-validated running-child follow, native rendering seams, bounded legacy expansion and remaining live TUI acceptance (#658).

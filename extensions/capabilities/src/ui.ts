@@ -1,15 +1,18 @@
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import {
-  stripTerminalSequences,
+  CURSOR_MARKER,
   type EditorComponent,
+  stripTerminalSequences,
+  visibleWidth,
 } from "@earendil-works/pi-tui";
+import { wordWrapLine } from "@earendil-works/pi-tui/dist/components/editor.js";
 import {
   BelowEditorNavigationEditor,
   BelowEditorStripState,
 } from "../../shared/below-editor-navigation.ts";
 import {
-  capabilityNameMentions,
   capabilitiesRequestedByPrompt,
+  capabilityNameMentions,
 } from "../../shared/capability-intent.ts";
 
 const FOREGROUND_RESET = "\u001b[39m";
@@ -89,10 +92,21 @@ export function highlightCapabilityNames(
   capabilities: readonly string[],
   highlight: (text: string) => string,
 ) {
-  const plain = stripTerminalSequences(line);
-  const mentions = capabilityNameMentions(plain).filter((mention) =>
-    capabilities.includes(mention.capability),
+  return highlightNameRanges(
+    line,
+    capabilityNameMentions(stripTerminalSequences(line)).filter((mention) =>
+      capabilities.includes(mention.capability),
+    ),
+    highlight,
   );
+}
+
+function highlightNameRanges(
+  line: string,
+  mentions: readonly { start: number; end: number }[],
+  highlight: (text: string) => string,
+) {
+  const plain = stripTerminalSequences(line);
   if (!mentions.length) return line;
   // Native editor SGR and cursor markers may sit inside a name. Preserve them
   // verbatim and color only the visible text pieces, never terminal bytes.
@@ -116,6 +130,131 @@ export function highlightCapabilityNames(
       return result + part.slice(cursor);
     })
     .join("");
+}
+
+/** Data-only projection through the published typed component wrap helper.
+ * Pi does not root-export this helper; exact render/cursor checks fail closed
+ * if its geometry, a custom editor, or a future SDK no longer agrees. */
+function highlightDraft(
+  rows: string[],
+  text: string,
+  width: number,
+  padding: number | undefined,
+  cursor: { line: number; col: number } | undefined,
+  highlight: (text: string) => string,
+) {
+  const mentions = capabilityNameMentions(text);
+  if (!mentions.length) return rows;
+  const plainRows = rows.map(stripTerminalSequences);
+  // Plain source-only editors have an exact whole-input projection.
+  if (plainRows.join("\n") === text) {
+    let offset = 0;
+    return rows.map((row, index) => {
+      const start = offset;
+      offset += plainRows[index]!.length + 1;
+      return highlightNameRanges(
+        row,
+        mentions
+          .map((mention) => ({
+            start: Math.max(mention.start - start, 0),
+            end: Math.min(mention.end - start, plainRows[index]!.length),
+          }))
+          .filter((mention) => mention.start < mention.end),
+        highlight,
+      );
+    });
+  }
+  if (
+    !cursor ||
+    padding === undefined ||
+    !Number.isFinite(padding) ||
+    padding < 0 ||
+    !Number.isInteger(cursor.line) ||
+    !Number.isInteger(cursor.col)
+  )
+    return rows;
+  const lines = text.split("\n");
+  if (
+    lines[cursor.line] === undefined ||
+    cursor.col < 0 ||
+    cursor.col > lines[cursor.line]!.length ||
+    stripTerminalSequences(text) !== text
+  )
+    return rows;
+  const pad = Math.min(
+    Math.floor(padding),
+    Math.max(0, Math.floor((width - 1) / 2)),
+  );
+  const contentWidth = Math.max(1, width - pad * 2);
+  const layoutWidth = Math.max(1, contentWidth - (pad ? 0 : 1));
+  let offset = 0;
+  const chunks = lines.flatMap((line, lineIndex) => {
+    const start = offset;
+    offset += line.length + 1;
+    const wrapped = wordWrapLine(line, layoutWidth);
+    return wrapped.map((chunk, index) => ({
+      ...chunk,
+      sourceStart: start + chunk.startIndex,
+      logicalLine: lineIndex,
+      last: index === wrapped.length - 1,
+    }));
+  });
+  const sourceCursor = chunks.findIndex(
+    (chunk) =>
+      chunk.logicalLine === cursor.line &&
+      cursor.col >= chunk.startIndex &&
+      (chunk.last || cursor.col < chunk.endIndex),
+  );
+  if (sourceCursor < 0) return rows;
+  const markers = rows.flatMap((row, index) => {
+    const marker = row.indexOf(CURSOR_MARKER);
+    const reverseCursor = row.indexOf("\u001b[7m");
+    const position = marker >= 0 ? marker : reverseCursor;
+    return position < 0
+      ? []
+      : [{ index, prefix: stripTerminalSequences(row.slice(0, position)) }];
+  });
+  if (markers.length !== 1) return rows;
+  const anchor = markers[0]!;
+  const current = chunks[sourceCursor]!;
+  const cursorOffset = Math.min(
+    cursor.col - current.startIndex,
+    current.text.length,
+  );
+  if (anchor.prefix !== " ".repeat(pad) + current.text.slice(0, cursorOffset))
+    return rows;
+  const result = [...rows];
+  const project = (rowIndex: number) => {
+    const chunkIndex = sourceCursor + rowIndex - anchor.index;
+    const chunk = chunks[chunkIndex];
+    if (!chunk || rowIndex < 0 || rowIndex >= rows.length) return false;
+    const extraCursor =
+      chunkIndex === sourceCursor && cursorOffset === chunk.text.length ? 1 : 0;
+    const occupied = visibleWidth(chunk.text) + extraCursor;
+    const expected =
+      " ".repeat(pad) +
+      chunk.text +
+      " ".repeat(
+        extraCursor +
+          Math.max(0, contentWidth - occupied) +
+          Math.max(0, pad - (occupied > contentWidth ? 1 : 0)),
+      );
+    if (plainRows[rowIndex] !== expected) return false;
+    const ranges = mentions
+      .map((mention) => ({
+        start: pad + Math.max(mention.start - chunk.sourceStart, 0),
+        end: pad + Math.min(mention.end - chunk.sourceStart, chunk.text.length),
+      }))
+      .filter((mention) => mention.start < mention.end);
+    result[rowIndex] = highlightNameRanges(rows[rowIndex]!, ranges, highlight);
+    return true;
+  };
+  if (!project(anchor.index)) return rows;
+  // Only this contiguous, cursor-anchored source projection can be colored.
+  // Stop at the first mismatch; never scan border, autocomplete or strip text.
+  for (let row = anchor.index - 1; project(row); row--) {}
+  for (let row = anchor.index + 1; project(row); row++) {}
+  return result;
 }
 
 /**
@@ -153,10 +292,13 @@ export class CapabilityIntentHighlightEditor extends BelowEditorNavigationEditor
     if (!active) {
       return super.render(width);
     }
-    return super
-      .render(width)
-      .map((line) =>
-        highlightCapabilityNames(line, capabilities, this.highlight),
-      );
+    return highlightDraft(
+      super.render(width),
+      this.getText(),
+      width,
+      this.getPaddingX(),
+      this.getCursor(),
+      this.highlight,
+    );
   }
 }

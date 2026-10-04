@@ -6,21 +6,21 @@ import {
   CURSOR_MARKER,
   Editor,
   ProcessTerminal,
-  TuiMainScreen,
   stripTerminalSequences,
+  TuiMainScreen,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { capabilitiesRequestedByPrompt } from "../../../extensions/shared/capability-intent.ts";
-import {
-  NextActionSuggestionEditor,
-  NextActionSuggestionState,
-} from "../../../extensions/suggestions/src/ui.ts";
 import {
   CapabilityIntentHighlightEditor,
   colorCapabilityKeyword,
   highlightCapabilityNames,
   isLightNamedTheme,
 } from "../../../extensions/capabilities/src/ui.ts";
+import { capabilitiesRequestedByPrompt } from "../../../extensions/shared/capability-intent.ts";
+import {
+  NextActionSuggestionEditor,
+  NextActionSuggestionState,
+} from "../../../extensions/suggestions/src/ui.ts";
 
 function baseEditor(initial: string): EditorComponent {
   let text = initial;
@@ -290,4 +290,108 @@ test("locked native editor preserves cursor, text and widths when a name is deco
     after.join("\n").includes("\u001b[7m"),
     before.join("\n").includes("\u001b[7m"),
   );
+});
+
+function nativeProjection(text: string, width: number, padding = 0) {
+  const identity = (value: string) => value;
+  const base = new Editor(
+    new TuiMainScreen(new ProcessTerminal()),
+    {
+      borderColor: identity,
+      selectList: {
+        selectedPrefix: identity,
+        selectedText: identity,
+        description: identity,
+        scrollInfo: identity,
+        noMatch: identity,
+      },
+    },
+    { paddingX: padding },
+  );
+  base.focused = true;
+  base.setText(text);
+  const highlight = (value: string) =>
+    colorCapabilityKeyword(value, { colorMode: "truecolor", light: false });
+  const wrapped = new CapabilityIntentHighlightEditor(
+    base,
+    {} as KeybindingsManager,
+    highlight,
+  );
+  const before = base.render(width);
+  const after = wrapped.render(width);
+  assert.equal(base.getText(), text);
+  assert.deepEqual(
+    after.map(stripTerminalSequences),
+    before.map(stripTerminalSequences),
+  );
+  assert.deepEqual(after.map(visibleWidth), before.map(visibleWidth));
+  assert.equal(
+    after.join("\n").split(CURSOR_MARKER).length,
+    before.join("\n").split(CURSOR_MARKER).length,
+  );
+  return { base, wrapped, before, after };
+}
+
+const accent = "\u001b[38;2;210;168;255m";
+
+test("native narrow wrapping uses original mention offsets, not filename or identifier row text", () => {
+  for (const suffix of ["workflow.ts", "workflow_status", "my_workflow"]) {
+    const { after } = nativeProjection(`workflow\n${suffix}`, 9);
+    assert.equal(after.filter((row) => row.includes(accent)).length, 1, suffix);
+    assert.match(after[1]!, /\u001b\[38;2;210;168;255mworkflow/u);
+  }
+});
+
+test("native name fragments across soft wraps keep their original range, cursor and padding", () => {
+  for (const text of ["subagent", "workflow", "子代理"]) {
+    const { after } = nativeProjection(text, 5, 1);
+    const content = after.slice(1, -1);
+    assert.ok(content.length > 1, text);
+    assert.ok(
+      content.every((row) => row.includes(accent)),
+      text,
+    );
+  }
+  const { base, wrapped } = nativeProjection("subagent", 5);
+  base.handleInput("\u001b[D");
+  base.handleInput("\u001b[D");
+  const before = base.render(5);
+  const after = wrapped.render(5);
+  assert.deepEqual(
+    after.map(stripTerminalSequences),
+    before.map(stripTerminalSequences),
+  );
+  assert.deepEqual(after.map(visibleWidth), before.map(visibleWidth));
+  assert.equal(
+    after.slice(1, -1).filter((row) => row.includes(accent)).length,
+    2,
+  );
+});
+
+test("native viewport anchors repeated rows to their source and leaves appended chrome untouched", () => {
+  const text = `${"workflow.ts\n".repeat(12)}workflow`;
+  const { base, wrapped } = nativeProjection(text, 9);
+  const render = base.render.bind(base);
+  base.render = (width) => [...render(width), "workflow"];
+  const after = wrapped.render(9);
+  assert.equal(after.filter((row) => row.includes(accent)).length, 1);
+  assert.equal(after.at(-1), "workflow");
+  // An empty cursor line is still a source anchor for preceding mentions.
+  assert.equal(
+    nativeProjection("workflow\n", 9).after.filter((row) =>
+      row.includes(accent),
+    ).length,
+    1,
+  );
+});
+
+test("unknown custom editor geometry preserves output without guessing hint ownership", () => {
+  const base = baseEditor("workflow");
+  base.render = () => ["workflow", "workflow hint"];
+  const wrapped = new CapabilityIntentHighlightEditor(
+    base,
+    {} as KeybindingsManager,
+    (name) => `[${name}]`,
+  );
+  assert.deepEqual(wrapped.render(9), ["workflow", "workflow hint"]);
 });

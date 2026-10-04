@@ -128,6 +128,9 @@ test("snapshot separates configured/selected/disk/loaded and never serializes pr
   assert.equal(snapshot.sessionSelected.availability, "available");
   assert.equal(snapshot.disk.package.availability, "available");
   assert.equal(snapshot.trust.availability, "available");
+  assert.equal(snapshot.configured.model.present, true);
+  assert.equal(snapshot.configured.model.providerPresent, true);
+  assert.equal(snapshot.sessionSelected.model.present, true);
   assert.equal(snapshot.sessionSelected.matchesConfiguredDefault, false);
   assert.equal(snapshot.sessionSelected.thinking, "high");
   assert.equal(snapshot.disk.package.head, "a".repeat(40));
@@ -163,7 +166,7 @@ test("snapshot separates configured/selected/disk/loaded and never serializes pr
   assert.equal(next.loaded.registrationEpoch, 456);
 });
 
-test("model matching is unknown unless both selected and configured identities are complete", async () => {
+test("model presence requires a valid pair and matching is unknown for incomplete identities", async () => {
   const f = fixture();
   for (const [provider, id] of [
     [undefined, "configured-model"],
@@ -186,13 +189,14 @@ test("model matching is unknown unless both selected and configured identities a
       f.dependencies,
     );
     assert.equal(snapshot.sessionSelected.availability, "available");
-    assert.equal(snapshot.sessionSelected.model.present, true);
+    assert.equal(snapshot.sessionSelected.model.present, false);
     assert.equal(snapshot.sessionSelected.matchesConfiguredDefault, "unknown");
   }
 
   f.select("configured-provider", "configured-model");
   const settings = f.pi.getSettings();
   for (const [defaultProvider, defaultModel] of [
+    [undefined, undefined],
     [undefined, "configured-model"],
     ["configured-provider", undefined],
     ["", "configured-model"],
@@ -216,8 +220,53 @@ test("model matching is unknown unless both selected and configured identities a
       f.dependencies,
     );
     assert.equal(snapshot.configured.availability, "available");
+    assert.equal(snapshot.configured.model.present, false);
+    assert.equal(
+      snapshot.configured.model.providerPresent,
+      typeof defaultProvider === "string" && defaultProvider.trim().length > 0,
+    );
     assert.equal(snapshot.sessionSelected.availability, "available");
+    assert.equal(snapshot.sessionSelected.model.present, true);
     assert.equal(snapshot.sessionSelected.matchesConfiguredDefault, "unknown");
+  }
+});
+
+test("package model presence uses valid pairs, not truthy overrides", async () => {
+  const f = fixture();
+  const pairs = [
+    undefined,
+    {},
+    { provider: "private-provider" },
+    { model: "private-model" },
+    { provider: "", model: "private-model" },
+    { provider: "private-provider", model: "" },
+    { provider: " \t", model: "private-model" },
+    { provider: "private-provider", model: "\n" },
+    { provider: 123, model: "private-model" },
+    { provider: "private-provider", model: {} },
+    { provider: true, model: [] },
+    { provider: "private-provider", model: "private-model" },
+  ];
+  for (const pair of pairs) {
+    const valid = pair === pairs.at(-1);
+    const snapshot = await collectRuntimeSnapshot(f.pi, f.ctx, 123, {
+      ...f.dependencies,
+      inspectConfig: () => ({
+        ...f.dependencies.inspectConfig(),
+        config: {
+          ...DEFAULT_SETUP_CONFIG,
+          suggestions: { enabled: false, model: pair },
+          subagents: { roleModels: { implementer: pair } },
+        } as typeof DEFAULT_SETUP_CONFIG,
+      }),
+    });
+    assert.equal(snapshot.configured.package.availability, "available");
+    assert.equal(snapshot.configured.package.suggestionModelConfigured, valid);
+    assert.deepEqual(
+      snapshot.configured.package.roleModelOverrides,
+      valid ? ["implementer"] : [],
+    );
+    assert.equal(JSON.stringify(snapshot).includes("private-"), false);
   }
 });
 
@@ -292,6 +341,62 @@ test("existing owner samples are bounded and redacted; absent is not empty", asy
     assert.equal(next.resources.subagents.availability, "unavailable");
   } finally {
     unregister();
+  }
+});
+
+test("resource omissions distinguish upstream uncertainty from exact local omissions", async (t) => {
+  for (const [count, omitted, truncated] of [
+    [0, 0, true],
+    [40, 0, true],
+    [40, 3, true],
+    [0, 0, false],
+    [40, 0, false],
+    [40, 3, false],
+  ] as const) {
+    await t.test(
+      `${count} items, ${omitted} omitted, upstream truncated=${truncated}`,
+      async () => {
+        const f = fixture();
+        const unregister = registerWebCapability(f.scope, {
+          kind: "subagents",
+          snapshot: () => ({
+            items: Array.from({ length: count }, () => ({
+              id: "private-id",
+              title: "private-title",
+              status: "running" as const,
+              createdAt: 1,
+            })),
+            omitted,
+            truncated,
+          }),
+        });
+        try {
+          const snapshot = await collectRuntimeSnapshot(
+            f.pi,
+            f.ctx,
+            123,
+            f.dependencies,
+          );
+          const owner = snapshot.resources.subagents;
+          assert.equal(owner.availability, "available");
+          assert.equal(owner.items.length, Math.min(count, 32));
+          assert.equal(owner.omitted, omitted + Math.max(0, count - 32));
+          assert.equal(
+            owner.omittedCountKind,
+            truncated ? "lower-bound" : "exact",
+          );
+          assert.equal(owner.truncated, truncated || count > 32);
+          const result = snapshotToolResult(snapshot);
+          assert.deepEqual(JSON.parse(result.content[0].text), snapshot);
+          assert.ok(
+            Buffer.byteLength(JSON.stringify(result)) <= MAX_SNAPSHOT_BYTES,
+          );
+          assert.equal(JSON.stringify(result).includes("private-"), false);
+        } finally {
+          unregister();
+        }
+      },
+    );
   }
 });
 

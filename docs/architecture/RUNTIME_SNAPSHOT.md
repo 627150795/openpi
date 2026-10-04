@@ -19,7 +19,7 @@ The tool is parent-only, classified in `CHILD_EXCLUDED_TOOL_NAMES` and covered b
 | Section | Evidence and limitations |
 | --- | --- |
 | `configured` | Fresh Pi effective settings and the existing package configuration inspector, projected separately. Configuration provenance is effective-settings versus package-defaults/package-config-disk; individual Pi override layers are unavailable. Owner error diagnostics make invalid/unreadable package configuration unavailable, not silently described as valid defaults. Warning-only/valid inspections remain available regardless of write eligibility; the snapshot does not attest that configuration can be written. |
-| `sessionSelected` | Fresh `ctx.model` and Pi thinking level. Model presence and equality with the configured provider/model pair are reported; an incomplete or empty selected/configured identity pair yields unknown. Selection never proves upstream route. |
+| `sessionSelected` | Fresh `ctx.model` and Pi thinking level. Model presence requires a complete provider/model pair of nonempty strings (whitespace-only is invalid), including package suggestion/role overrides. An incomplete or invalid selected/configured pair reports presence false and equality unknown. Selection never proves upstream route. |
 | `trust` | Live `ctx.isProjectTrusted()` decision only. Persisted Trust and role restrictions are unavailable. Trust/tool availability is not an OS/filesystem sandbox. |
 | `toolBoundary` | Pi's active tool names, limited to public native/OpenPI names; omitted counts cover only truncated allowlisted names, never filtered private inventory. This does not attest ownership of every active definition or the callable/deferred tool universe. |
 | `packageProvenance` | Pi Tool SourceInfo scope/origin for this exact runtime tool definition, when available. It does not infer a single OpenPI package source from one matching tool. |
@@ -33,7 +33,7 @@ Each section has an availability marker and sampling time. The response includes
 
 ## Bounds and side effects
 
-- At most **32 status entries total** across owners, in subagent/workflow/background order; omitted counts include both owner and snapshot omissions.
+- At most **32 status entries total** across owners, in subagent/workflow/background order; omitted counts include both owner and snapshot omissions. `omittedCountKind` is `exact` unless the upstream owner reports truncation, when it is a conservative `lower-bound` (including zero): upstream truncation may reflect shortened metadata or an incomplete inventory, not a proven exact count.
 - At most **64 allowlisted active tool names**; omitted counts include only allowlisted names beyond that limit.
 - At most **16 KiB UTF-8 for the entire serialized tool result**, including both content and details. An oversized result becomes a small explicit unavailable/output-bound result, never a silently cut JSON document.
 - Disk queries use fixed, shell-free Git arguments, no optional locks, disabled fsmonitor/untracked-cache, an 8 KiB subprocess output limit, and a 1-second timeout per command. They do not refresh an index, run an owner command, install/reload, or start background work.

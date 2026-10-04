@@ -168,8 +168,10 @@ export async function collectRuntimeSnapshot(
     return {
       source: "pi-effective-settings" as const,
       model: {
-        present: !!settings.defaultModel,
-        providerPresent: !!settings.defaultProvider,
+        present:
+          validIdentifier(settings.defaultProvider) &&
+          validIdentifier(settings.defaultModel),
+        providerPresent: validIdentifier(settings.defaultProvider),
         identifiers: "redacted" as const,
       },
       thinking: thinkingLevel(settings.defaultThinkingLevel),
@@ -190,10 +192,15 @@ export async function collectRuntimeSnapshot(
         inspection.source === "missing"
           ? ("package-defaults" as const)
           : ("package-config-disk" as const),
-      suggestionModelConfigured: !!config.suggestions.model,
-      roleModelOverrides: SUBAGENT_ROLE_NAMES.filter(
-        (role) => !!config.subagents.roleModels[role],
-      ),
+      suggestionModelConfigured:
+        validIdentifier(config.suggestions.model?.provider) &&
+        validIdentifier(config.suggestions.model?.model),
+      roleModelOverrides: SUBAGENT_ROLE_NAMES.filter((role) => {
+        const model = config.subagents.roleModels[role];
+        return (
+          validIdentifier(model?.provider) && validIdentifier(model?.model)
+        );
+      }),
       identifiers: "redacted" as const,
     };
   });
@@ -201,7 +208,10 @@ export async function collectRuntimeSnapshot(
     const model = ctx.model;
     return {
       source: "pi-context" as const,
-      model: { present: !!model, identifiers: "redacted" as const },
+      model: {
+        present: validIdentifier(model?.provider) && validIdentifier(model?.id),
+        identifiers: "redacted" as const,
+      },
       thinking: thinkingLevel(pi.getThinkingLevel()),
       matchesConfiguredDefault:
         configured.availability === "available" &&
@@ -271,7 +281,12 @@ export async function collectRuntimeSnapshot(
       const truncated =
         projection.truncated || projection.items.length > items.length;
       remaining -= items.length;
-      return { items, omitted, truncated };
+      // Upstream truncation can also mean shortened metadata or an incomplete
+      // inventory. Preserve the known count without claiming an exact total.
+      const omittedCountKind = projection.truncated
+        ? ("lower-bound" as const)
+        : ("exact" as const);
+      return { items, omitted, omittedCountKind, truncated };
     });
     return {
       ...ownerSample,

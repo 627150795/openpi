@@ -19,6 +19,10 @@ const backgroundUnitTest = resolve(
   "background-terminals",
   "output.test.ts",
 );
+const setupIntegrationTest = resolve(
+  "tests/extensions/setup/integration.test.ts",
+);
+const setupUnitTest = resolve("tests/extensions/setup/index.test.ts");
 const unrelatedTest = resolve("tests", "test-discovery.test.ts");
 
 test("Windows isolates background-terminal tests from other Node files", () => {
@@ -34,14 +38,32 @@ test("Windows isolates background-terminal tests from other Node files", () => {
   );
 });
 
+test("Windows isolates the real Pi subprocess but keeps setup unit tests parallel", () => {
+  assert.deepEqual(
+    partitionNodeTestsByPlatform(
+      [setupUnitTest, setupIntegrationTest, unrelatedTest],
+      "win32",
+    ),
+    {
+      parallel: [setupUnitTest, unrelatedTest],
+      serial: [setupIntegrationTest],
+    },
+  );
+});
+
 test("non-Windows keeps all Node files in the parallel group", () => {
   assert.deepEqual(
     partitionNodeTestsByPlatform(
-      [backgroundTest, unrelatedTest, backgroundUnitTest],
+      [backgroundTest, unrelatedTest, backgroundUnitTest, setupIntegrationTest],
       "linux",
     ),
     {
-      parallel: [backgroundTest, unrelatedTest, backgroundUnitTest],
+      parallel: [
+        backgroundTest,
+        unrelatedTest,
+        backgroundUnitTest,
+        setupIntegrationTest,
+      ],
       serial: [],
     },
   );

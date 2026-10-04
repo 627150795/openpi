@@ -6,6 +6,16 @@ const backgroundTerminalsRoot = resolve(
   "background-terminals",
 );
 
+// This fixture starts a real Pi host in a subprocess with an 8-second bound.
+// Under the Windows parallel suite, cold extension loading can consume that
+// bound. Reuse the isolated-process group without extending test deadlines.
+const setupIntegrationTest = resolve(
+  "tests",
+  "extensions",
+  "setup",
+  "integration.test.ts",
+);
+
 function isBackgroundTerminalsTest(file) {
   const relativePath = relative(backgroundTerminalsRoot, file);
   return (
@@ -27,7 +37,10 @@ export function partitionNodeTestsByPlatform(
   const parallel = [];
   const serial = [];
   for (const file of files) {
-    (isBackgroundTerminalsTest(file) ? serial : parallel).push(file);
+    (isBackgroundTerminalsTest(file) || file === setupIntegrationTest
+      ? serial
+      : parallel
+    ).push(file);
   }
   return { parallel, serial };
 }

@@ -115,9 +115,15 @@ function framed(
       if (edges.top) rows.unshift("");
       if (edges.bottom()) rows.push("");
       const bg = tone();
-      return rows.map((row) =>
-        theme.bg(bg, row + " ".repeat(Math.max(0, width - visibleWidth(row)))),
-      );
+      return rows.map((row) => {
+        const padded = row + " ".repeat(Math.max(0, width - visibleWidth(row)));
+        // Pi's truncation/wrapping resets all SGR styles. Reapply the owning
+        // card background after each reset, including ellipsis and padding.
+        return padded
+          .split("\x1b[0m")
+          .map((segment) => theme.bg(bg, segment))
+          .join("\x1b[0m");
+      });
     },
     invalidate() {},
   };

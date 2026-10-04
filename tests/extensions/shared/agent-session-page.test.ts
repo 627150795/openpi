@@ -69,6 +69,8 @@ test("regular child page captures wheel scrolling only while focused", () => {
     page.focused = true;
     page.focused = true;
     assert.deepEqual(writes, ["\x1b[?1000h\x1b[?1006h"]);
+    assert.match(render(), /mouse row 59\b/);
+    page.handleInput("g");
     assert.match(render(), /mouse row 0\b/);
     page.handleInput("\x1b[<65;10;10M");
     assert.doesNotMatch(render(), /mouse row 0\b/);
@@ -125,6 +127,8 @@ test("fullscreen child page uses host mouse dispatch without changing terminal m
     close() {},
   });
   page.focused = true;
+  assert.match(page.render(80).join("\n"), /wheel 59\b/);
+  page.handleInput("g");
   assert.match(page.render(80).join("\n"), /wheel 0\b/);
   const result = page.handleMouse({
     type: "wheel",
@@ -220,6 +224,7 @@ test("Direct and Workflow children use one read-only full-terminal page", () => 
 
   const directLines = direct.render(60);
   const workflowLines = workflow.render(60);
+  assert.deepEqual(directLines, workflowLines);
   for (const lines of [directLines, workflowLines]) {
     assert.equal(lines.length, 18);
     assert.ok(lines.every((line) => visibleWidth(line) <= 60));
@@ -400,7 +405,7 @@ test("a live child still follows output that arrives while it is watched", () =>
   );
 });
 
-test("a busy child opens at the start and resumes following on demand", () => {
+test("a busy child opens at the latest output, pauses and resumes following", () => {
   const rows = Array.from({ length: 60 }, (_, index) => `existing ${index}`);
   const page = new AgentSessionPage(tui(20), theme, keybindings, {
     getState: () => ({
@@ -417,11 +422,26 @@ test("a busy child opens at the start and resumes following on demand", () => {
     close() {},
   });
 
-  assert.match(
-    stripVTControlCharacters(page.render(80).join("\n")),
-    /existing 0/,
-  );
+  const render = () => stripVTControlCharacters(page.render(80).join("\n"));
+  assert.match(render(), /existing 59/);
+  assert.match(render(), /following/);
+  rows.push("immediate tail");
+  assert.match(render(), /immediate tail/);
 
+  page.handleInput("up");
+  const paused = render();
+  assert.match(paused, /paused/);
+  rows.push("hidden while paused");
+  assert.equal(
+    render().split("\n").slice(1, 17).join("\n"),
+    paused.split("\n").slice(1, 17).join("\n"),
+  );
+  assert.doesNotMatch(render(), /hidden while paused/);
+  page.handleInput("\x1b[F");
+  assert.match(render(), /hidden while paused/);
+  assert.match(render(), /following/);
+
+  page.handleInput("up");
   page.handleInput("G");
   rows.push("arrived while following");
   assert.match(
@@ -439,4 +459,89 @@ test("a child page whose transcript fits shows no overflow markers", () => {
   const text = stripVTControlCharacters(page.render(60).join("\n"));
   assert.doesNotMatch(text, /↑ \d+/);
   assert.doesNotMatch(text, /↓ \d+/);
+});
+
+for (const status of ["done", "error", "uncertain"] as const) {
+  test(`${status} history opens at its question; settlement does not reset a running page`, () => {
+    let current: AgentSessionPageState = {
+      ...state(),
+      status,
+      ...(status === "error" ? { errorText: "cancelled or failed" } : {}),
+      document: {
+        items: [
+          { kind: "user", text: "original question" },
+          {
+            kind: "assistant",
+            parts: [
+              {
+                type: "text",
+                text: Array.from({ length: 60 }, (_, i) => `history ${i}`).join(
+                  "\n\n",
+                ),
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const source = { getState: () => current, close() {} };
+    const history = new AgentSessionPage(tui(20), theme, keybindings, source);
+    const text = stripVTControlCharacters(history.render(80).join("\n"));
+    assert.match(text, /original question/);
+    assert.doesNotMatch(text, /history 59/);
+    current = { ...current, status: "running" };
+    const watching = new AgentSessionPage(tui(20), theme, keybindings, source);
+    assert.match(
+      stripVTControlCharacters(watching.render(80).join("\n")),
+      /history 59/,
+    );
+    current = { ...current, status };
+    assert.match(
+      stripVTControlCharacters(watching.render(80).join("\n")),
+      /history 59/,
+    );
+  });
+}
+
+test("both child pages expand historical evidence through the configured host binding", () => {
+  const legacy: AgentSessionPageState = {
+    ...state(),
+    status: "done",
+    document: {
+      items: [
+        {
+          kind: "toolResult",
+          toolId: "old",
+          name: "bash",
+          isError: false,
+          outputPreview: "retained preview",
+        },
+      ],
+    },
+  };
+  const direct = new AgentSessionPage(tui(24), theme, keybindings, {
+    getState: () => legacy,
+    close() {},
+  });
+  const workflow = new AgentSessionPage(tui(24), theme, keybindings, {
+    getState: () => legacy,
+    close() {},
+  });
+  for (const page of [direct, workflow]) {
+    assert.doesNotMatch(
+      page.render(80).join("\n"),
+      /native details unavailable/,
+    );
+    page.handleInput("app.tools.expand");
+    const text = stripVTControlCharacters(page.render(80).join("\n"));
+    assert.match(text, /native details unavailable/);
+    assert.match(text, /Arguments preview unavailable/);
+    assert.match(text, /retained preview/);
+    page.handleInput("app.tools.expand");
+    assert.doesNotMatch(
+      page.render(80).join("\n"),
+      /native details unavailable/,
+    );
+  }
+  assert.deepEqual(direct.render(80), workflow.render(80));
 });

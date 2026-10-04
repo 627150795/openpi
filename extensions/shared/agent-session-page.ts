@@ -293,14 +293,16 @@ export class AgentSessionPage implements Component, Focusable {
     });
     this.rowCount = transcript.length;
     this.viewportSize = transcriptCapacity;
-    // A child page opens on work that already happened. Following the end would
-    // start a long answer partway through, hiding its beginning, so the first
-    // render anchors at the start of anything that already overflows. A page
-    // that opens on a short or empty transcript keeps following, so streaming
-    // output still scrolls into view as it arrives.
+    // Running children open at their latest output and keep following. Settled,
+    // failed, and uncertain history opens at the beginning so the question and
+    // first answer remain readable. Decide once: settlement must not move a
+    // reader who is already following or has deliberately paused.
     if (!this.anchored) {
       this.anchored = true;
-      if (transcript.length > transcriptCapacity) {
+      if (
+        state.status !== "running" &&
+        transcript.length > transcriptCapacity
+      ) {
         this.viewport.scrollToTop(transcript.length, transcriptCapacity);
       }
     }
@@ -348,6 +350,11 @@ export class AgentSessionPage implements Component, Focusable {
     // Both directions are reported so hidden output is discoverable whether
     // the reader is at the opening, following new output, or paused between.
     const overflowNote = [
+      state.status === "running"
+        ? this.viewport.followingEnd
+          ? "following"
+          : "paused · End/G to follow"
+        : "",
       linesAbove > 0 ? `↑ ${linesAbove}` : "",
       linesBelow > 0 ? `↓ ${linesBelow}` : "",
     ]

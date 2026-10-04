@@ -7,7 +7,7 @@ import {
   UserMessageComponent,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { TruncatedText } from "@earendil-works/pi-tui";
+import { Text, TruncatedText } from "@earendil-works/pi-tui";
 import type { AgentToolRenderer } from "./agent-tool-renderer.ts";
 import { sanitizeTerminalText } from "./terminal-text.ts";
 import {
@@ -67,6 +67,22 @@ export interface AgentTranscriptDocument {
 }
 
 const MAX_CACHED_WIDTHS_PER_ITEM = 2;
+const MAX_EXPANDED_PREVIEW_CHARACTERS = 4096;
+const MAX_EXPANDED_PREVIEW_LINES = 24;
+
+/** Presentation-only bound; the source preview never becomes full evidence. */
+function boundedToolPreview(value: string) {
+  const points = Array.from(sanitizeText(value));
+  const text = points.slice(0, MAX_EXPANDED_PREVIEW_CHARACTERS).join("");
+  const lines = text.split("\n");
+  const truncated =
+    points.length > MAX_EXPANDED_PREVIEW_CHARACTERS ||
+    lines.length > MAX_EXPANDED_PREVIEW_LINES;
+  return (
+    lines.slice(0, MAX_EXPANDED_PREVIEW_LINES).join("\n") +
+    (truncated ? "\n[preview truncated]" : "")
+  );
+}
 
 /**
  * Strip raw ANSI codes, expand tabs, and drop control chars. Terminal-expanded
@@ -172,7 +188,7 @@ function renderToolBlock(
   );
   if (native) return native;
   const { args, fallback } = parseToolArgsPreview(argsPreview);
-  return [
+  const lines = [
     "",
     renderPaddedToolActivityLine(
       {
@@ -188,6 +204,21 @@ function renderToolBlock(
       now,
     ),
   ];
+  if (expanded) {
+    // Historical adapters retain previews, not the original definition/result.
+    // Do not reconstruct a native tool (or a diff/exit code) from that text.
+    const details = [
+      "Bounded tool preview · native details unavailable",
+      argsPreview === undefined
+        ? "Arguments preview unavailable"
+        : `Arguments preview:\n${boundedToolPreview(argsPreview)}`,
+      outputPreview === undefined
+        ? "Output preview unavailable"
+        : `Output preview:\n${boundedToolPreview(outputPreview)}`,
+    ].join("\n");
+    lines.push(...new Text(theme.fg("dim", details), 1, 0).render(width));
+  }
+  return lines;
 }
 
 function renderAssistantItem(
@@ -386,7 +417,13 @@ function itemContext(
   return {
     tools,
     paired: false,
-    token: [...tools].map(([id, state]) => `${id}:${state.phase}`).join(","),
+    token: JSON.stringify(
+      [...tools].map(([id, state]) => [
+        id,
+        state.phase,
+        state.result?.outputPreview,
+      ]),
+    ),
   };
 }
 
@@ -443,7 +480,12 @@ export class AgentTranscriptRenderer {
       const item = document.items[index];
       const context = itemContext(document.items, index, liveIds, pairing);
       // Fallback tool rows relativize paths against the document's cwd.
-      const key = JSON.stringify([width, context.token, document.cwd]);
+      const key = JSON.stringify([
+        width,
+        context.token,
+        document.cwd,
+        itemHasTool(item) && expanded,
+      ]);
       const cacheable = !document.toolRenderer || !itemHasTool(item);
       const cached = cacheable ? this.itemCache.get(item)?.get(key) : undefined;
       const lines =

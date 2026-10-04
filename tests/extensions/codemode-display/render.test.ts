@@ -152,6 +152,8 @@ test("partial updates, outer errors and unknown historical evidence do not claim
     details: undefined,
   }).join("\n");
   assert.match(unknown, /finished · wall time unknown/u);
+  assert.match(unknown, /Calls unknown \(no recorded ledger\)/u);
+  assert.doesNotMatch(unknown, /0 calls/u);
   assert.doesNotMatch(unknown, /completed|success/u);
   const fake = rendered({
     content: [

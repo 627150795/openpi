@@ -136,9 +136,8 @@ function resultComponent(
   theme: Theme,
 ): Component {
   const details = record(result.details);
-  const calls = Array.isArray(details?.calls)
-    ? details.calls.map((call) => record(call) ?? {})
-    : [];
+  const ledger = Array.isArray(details?.calls) ? details.calls : undefined;
+  const calls = ledger ? ledger.map((call) => record(call) ?? {}) : [];
   const counts = { running: 0, ok: 0, error: 0, cancelled: 0, unknown: 0 };
   for (const call of calls) counts[callStatus(call)]++;
   const first = result.content[0];
@@ -159,7 +158,9 @@ function resultComponent(
         ? "completed"
         : "finished";
   const time = knownHeader ? `${knownHeader[2]}s wall` : "wall time unknown";
-  const summary = `${calls.length} calls · ${counts.error} error · ${counts.cancelled} cancelled · ${counts.running} running · ${counts.ok} ok${counts.unknown ? ` · ${counts.unknown} unknown` : ""}`;
+  const summary = ledger
+    ? `${calls.length} calls · ${counts.error} error · ${counts.cancelled} cancelled · ${counts.running} running · ${counts.ok} ok${counts.unknown ? ` · ${counts.unknown} unknown` : ""}`
+    : "Calls unknown (no recorded ledger)";
   return {
     render(width) {
       if (!Number.isInteger(width) || width < 1) return [];

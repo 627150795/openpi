@@ -75,6 +75,7 @@ import { usePromptNavigation } from "./use-prompt-navigation.ts";
 import {
   setupDisplayMessage,
   isSetupPromptEcho,
+  setupPromptParent,
 } from "../../../../protocol/prompt-navigation.ts";
 import "./provider-outcomes.css";
 import "./conversation-navigation.css";
@@ -1082,10 +1083,8 @@ function buildEntries(
       ];
     if (entry.type !== "message" || !entry.message) return [];
     const message = setupDisplayMessage(entry.message);
-    const parent = entry.parentId
-      ? nativeById.get(entry.parentId)?.message
-      : undefined;
-    // The exact native parent identifies this command episode. Do not collapse
+    const parent = setupPromptParent(entry, (id) => nativeById.get(id));
+    // The exact command ancestry identifies this episode. Do not collapse
     // separate setup requests merely because their text is the same.
     if (isSetupPromptEcho(entry.message, parent)) return [];
     return [

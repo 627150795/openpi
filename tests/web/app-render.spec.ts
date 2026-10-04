@@ -1171,9 +1171,10 @@ it.each([false, true])(
   },
 );
 
-it.each([true, false])(
-  "only folds a setup echo linked to its exact native command parent (%s)",
-  (linked) => {
+it.each([0, 1, 2, -1])(
+  "only folds a setup echo linked through exact native system ancestry (%s)",
+  (systems) => {
+    const linked = systems >= 0;
     const snapshot = activeSnapshot();
     snapshot.runtime.status = "idle";
     const content = "/openpi-setup set theme to dark";
@@ -1186,9 +1187,26 @@ it.each([true, false])(
         customType: "openpi-web-command-input",
         data: { text: content, commandId: "command-one" },
       }),
+      ...Array.from({ length: Math.max(0, systems) }, (_, index) =>
+        projectEntry({
+          id: `system-${index}`,
+          parentId: index === 0 ? "command-entry" : `system-${index - 1}`,
+          type: "message",
+          timestamp: "2026-09-22T00:00:00Z",
+          message: {
+            role: "system",
+            content: "Native tool context",
+            timestamp: 0,
+          },
+        }),
+      ),
       projectEntry({
         id: "setup-entry",
-        parentId: linked ? "command-entry" : "other-entry",
+        parentId: linked
+          ? systems
+            ? `system-${systems - 1}`
+            : "command-entry"
+          : "other-entry",
         timestamp: "2026-09-22T00:00:01Z",
         type: "custom_message",
         customType: "openpi-setup-request",

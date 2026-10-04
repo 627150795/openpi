@@ -1432,13 +1432,14 @@ export class PiWebAdapter {
       (this.isCurrentSession(summary) ? this.runtime.sessionManager : SessionManager.open(path));
     if (summary.id !== sessionId || manager.getSessionId() !== sessionId) return { status: "changed" as const };
     const branch = manager.getBranch();
+    const branchById = new Map(branch.map((entry) => [entry.id, entry]));
     const anchor = branch.findIndex((entry) => entry.id === anchorEntryId);
     const before = beforeEntryId === null ? anchor + 1 : branch.findIndex((entry) => entry.id === beforeEntryId);
     if (anchor < 0 || before < 0 || (beforeEntryId !== null &&
-      (before > anchor || !isSessionPrompt(branch[before]!, branch[before - 1])))) return { status: "changed" as const };
+      (before > anchor || !isSessionPrompt(branch[before]!, branch[before - 1], branchById)))) return { status: "changed" as const };
     const entryIds: string[] = [];
     for (let index = before - 1; index >= 0 && entryIds.length <= WEB_MAX_PROMPT_HISTORY_PAGE; index--) {
-      if (isSessionPrompt(branch[index]!, branch[index - 1])) entryIds.push(branch[index]!.id);
+      if (isSessionPrompt(branch[index]!, branch[index - 1], branchById)) entryIds.push(branch[index]!.id);
     }
     const more = entryIds.length > WEB_MAX_PROMPT_HISTORY_PAGE;
     if (more) entryIds.pop();
@@ -1458,8 +1459,9 @@ export class PiWebAdapter {
       (this.isCurrentSession(summary) ? this.runtime.sessionManager : SessionManager.open(path));
     if (summary.id !== sessionId || manager.getSessionId() !== sessionId) return { status: "changed" as const };
     const branch = manager.getBranch();
+    const branchById = new Map(branch.map((entry) => [entry.id, entry]));
     const anchor = branch.findIndex((entry) => entry.id === anchorEntryId);
-    const prompt = branch.findIndex((entry, index) => entry.id === entryId && isSessionPrompt(entry, branch[index - 1]));
+    const prompt = branch.findIndex((entry, index) => entry.id === entryId && isSessionPrompt(entry, branch[index - 1], branchById));
     if (anchor < 0 || prompt < 0 || prompt > anchor) return { status: "changed" as const };
     const entry = branch[prompt]!;
     const promptText = entry.type === "message" && entry.message.role === "user" ? entry.message.content :
@@ -1468,7 +1470,7 @@ export class PiWebAdapter {
     let response = "";
     for (let index = prompt + 1; index <= anchor; index++) {
       const item = branch[index]!;
-      if (isSessionPrompt(item, branch[index - 1])) break;
+      if (isSessionPrompt(item, branch[index - 1], branchById)) break;
       if (item.type === "message" && item.message.role === "assistant") {
         const text = promptPreviewText(item.message.content);
         if (text.length > 0) response = text;
@@ -1488,7 +1490,8 @@ export class PiWebAdapter {
       (this.isCurrentSession(summary) ? this.runtime.sessionManager : SessionManager.open(path));
     if (summary.id !== sessionId || manager.getSessionId() !== sessionId) return { status: "changed" as const };
     const branch = manager.getBranch();
-    const target = branch.findIndex((entry, index) => entry.id === entryId && (entry.type === "message" || isSessionPrompt(entry, branch[index - 1])));
+    const branchById = new Map(branch.map((entry) => [entry.id, entry]));
+    const target = branch.findIndex((entry, index) => entry.id === entryId && (entry.type === "message" || isSessionPrompt(entry, branch[index - 1], branchById)));
     if (target < 0) return { status: "changed" as const };
     // Keep bounded following context so an old reading anchor can occupy its
     // original viewport offset. A prefix ending at the anchor clamps it to the
@@ -1496,7 +1499,7 @@ export class PiWebAdapter {
     let end = target + 1;
     let followingPrompts = 0;
     while (end < branch.length && end <= target + Math.floor(WEB_MAX_ENTRIES / 2)) {
-      if (isSessionPrompt(branch[end]!, branch[end - 1]) && followingPrompts++ >= Math.floor(HISTORY_PAGE_TURNS / 2)) break;
+      if (isSessionPrompt(branch[end]!, branch[end - 1], branchById) && followingPrompts++ >= Math.floor(HISTORY_PAGE_TURNS / 2)) break;
       end++;
     }
     let prefix = branch.slice(0, end);

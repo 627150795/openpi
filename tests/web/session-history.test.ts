@@ -444,6 +444,11 @@ test("native command prompts remain navigable and only their exact setup echo is
     text: "/openpi-setup same request",
     commandId: "episode-1",
   });
+  manager.appendMessage({
+    role: "system",
+    content: "Native tool/context update",
+    timestamp: 1,
+  });
   const echo = manager.appendCustomMessageEntry(
     "openpi-setup-request",
     "Model-facing setup episode",

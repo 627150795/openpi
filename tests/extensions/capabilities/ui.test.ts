@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
-import { CURSOR_MARKER } from "@earendil-works/pi-tui";
+import {
+  CURSOR_MARKER,
+  Editor,
+  ProcessTerminal,
+  TuiMainScreen,
+  stripTerminalSequences,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
+import { capabilitiesRequestedByPrompt } from "../../../extensions/shared/capability-intent.ts";
 import {
   NextActionSuggestionEditor,
   NextActionSuggestionState,
@@ -102,7 +110,7 @@ test("shimmer phase changes only the keyword colors", () => {
   );
 });
 
-test("highlights capability names only when shared intent authorizes them", () => {
+test("highlights shared name mentions without deciding execution intent", () => {
   for (const name of ["subagent", "Subagents", "workflow", "Workflows"]) {
     const selected = editor(name);
     assert.deepEqual(selected.highlighted.render(120), [
@@ -112,7 +120,9 @@ test("highlights capability names only when shared intent authorizes them", () =
   }
 
   const reserved = editor("subagent, workflow");
-  assert.deepEqual(reserved.highlighted.render(120), ["subagent, workflow"]);
+  assert.deepEqual(reserved.highlighted.render(120), [
+    "<accent>subagent</accent>, <accent>workflow</accent>",
+  ]);
 
   const explicit = editor("用 Subagent 检查，再用 Workflow 汇总");
   assert.deepEqual(explicit.highlighted.render(120), [
@@ -126,16 +136,18 @@ test("highlights capability names only when shared intent authorizes them", () =
 
   const named = editor("Subagent 和 Workflow 有什么区别？");
   assert.deepEqual(named.highlighted.render(120), [
-    "Subagent 和 Workflow 有什么区别？",
+    "<accent>Subagent</accent> 和 <accent>Workflow</accent> 有什么区别？",
   ]);
 
   const negated = editor("不要用 Subagent，也不要用 Workflow");
   assert.deepEqual(negated.highlighted.render(120), [
-    "不要用 Subagent，也不要用 Workflow",
+    "不要用 <accent>Subagent</accent>，也不要用 <accent>Workflow</accent>",
   ]);
 
   const discussion = editor("子代理是什么？");
-  assert.deepEqual(discussion.highlighted.render(120), ["子代理是什么？"]);
+  assert.deepEqual(discussion.highlighted.render(120), [
+    "<accent>子代理</accent>是什么？",
+  ]);
 });
 
 test("supports English plurals and Chinese capability names", () => {
@@ -195,8 +207,87 @@ test("ghost suggestions stay dim until the user accepts them into the editor", (
   state.offer(state.begin(), "用 Subagent 检查", true);
 
   assert.doesNotMatch(suggestion.render(80).join("\n"), /<accent>/u);
+  assert.deepEqual(capabilitiesRequestedByPrompt(base.getText()), []);
 
   suggestion.handleInput("\u001b[C");
   assert.equal(base.getText(), "用 Subagent 检查");
+  assert.deepEqual(capabilitiesRequestedByPrompt(base.getText()), ["delegate"]);
   assert.match(suggestion.render(80).join("\n"), /<accent>Subagent<\/accent>/u);
+});
+
+test("render name boundaries match discovery and preserve native ANSI/cursor bytes", () => {
+  const plain = "subagent.ts Subagents workflow_status 工作流";
+  assert.equal(
+    highlightCapabilityNames(
+      plain,
+      ["delegate", "workflow"],
+      (name) => `[${name}]`,
+    ),
+    "subagent.ts [Subagents] workflow_status [工作流]",
+  );
+  const rendered = `sub${CURSOR_MARKER}\u001b[7ma\u001b[27mgent and \u001b[32mworkflow\u001b[39m`;
+  assert.equal(
+    highlightCapabilityNames(
+      rendered,
+      ["delegate", "workflow"],
+      (name) => `[${name}]`,
+    ),
+    `[sub]${CURSOR_MARKER}\u001b[7m[a]\u001b[27m[gent] and \u001b[32m[workflow]\u001b[39m`,
+  );
+});
+
+test("multiple committed input lines highlight names without changing text", () => {
+  const text = "讨论 subagent\n不要用工作流";
+  const base = baseEditor(text);
+  base.render = () => text.split("\n");
+  const highlighted = new CapabilityIntentHighlightEditor(
+    base,
+    {} as KeybindingsManager,
+    (name) => `[${name}]`,
+  );
+  assert.deepEqual(highlighted.render(80), [
+    "讨论 [subagent]",
+    "不要用[工作流]",
+  ]);
+  assert.equal(highlighted.getText(), text);
+});
+
+test("locked native editor preserves cursor, text and widths when a name is decorated", () => {
+  const identity = (text: string) => text;
+  const base = new Editor(new TuiMainScreen(new ProcessTerminal()), {
+    borderColor: identity,
+    selectList: {
+      selectedPrefix: identity,
+      selectedText: identity,
+      description: identity,
+      scrollInfo: identity,
+      noMatch: identity,
+    },
+  });
+  base.focused = true;
+  base.setText("讨论 subagent\n不要用 workflow");
+  // Move the native reverse-video cursor inside the second capability name.
+  base.handleInput("\u001b[D");
+  base.handleInput("\u001b[D");
+  const before = base.render(80);
+  const highlighted = new CapabilityIntentHighlightEditor(
+    base,
+    {} as KeybindingsManager,
+    (text) =>
+      colorCapabilityKeyword(text, { colorMode: "truecolor", light: false }),
+  );
+  const after = highlighted.render(80);
+  assert.equal(base.getText(), "讨论 subagent\n不要用 workflow");
+  assert.deepEqual(
+    after.map(stripTerminalSequences),
+    before.map(stripTerminalSequences),
+  );
+  assert.deepEqual(after.map(visibleWidth), before.map(visibleWidth));
+  assert.equal(after.join("\n").split(CURSOR_MARKER).length, 2);
+  assert.equal(before.join("\n").split(CURSOR_MARKER).length, 2);
+  assert.match(after.join("\n"), /\u001b\[38;2;210;168;255m/u);
+  assert.equal(
+    after.join("\n").includes("\u001b[7m"),
+    before.join("\n").includes("\u001b[7m"),
+  );
 });

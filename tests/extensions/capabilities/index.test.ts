@@ -302,14 +302,16 @@ test("standalone capability selections expose only the selected group", () => {
   }
 });
 
-test("a list of capability references leaves their groups unloaded", () => {
+test("a list of capability names loads both groups without executing them", () => {
   const h = harness();
   h.start();
 
   h.before("subagent, workflow");
 
-  assert.equal(h.active().includes("subagent_spawn"), false);
-  assert.equal(h.active().includes("workflow"), false);
+  assert.equal(h.active().includes("subagent_spawn"), true);
+  assert.equal(h.active().includes("workflow"), true);
+  assert.equal(h.active().includes("bg_start"), false);
+  assert.equal(h.active().includes("openpi_load_tools"), false);
 });
 
 test("common Chinese and multi-agent delegation requests are explicit intent", () => {
@@ -374,22 +376,33 @@ test("the gateway returns progressive skill guidance for a loaded group", async 
   assert.match(result.content[0]!.text, SUBAGENT_SKILL_PATH_PATTERN);
 });
 
-test("conditional or negated capability boilerplate does not widen the tool surface", () => {
+test("named capability discovery leaves execution judgment to the model", () => {
   for (const prompt of [
-    "Work autonomously. If you delegate any work, every child must inherit the parent model.",
-    "If you delegate this task, make sure every child reports back.",
-    "If needed, delegate this task only after checking the repository.",
     "Do not use subagents.",
     "I prefer not to use subagents.",
     "You cannot use subagents.",
-    "No parallel agents.",
-    "Never delegate this task.",
-    "Delegate this task if needed.",
     "如果需要，请使用子代理。",
     "不要使用子代理。",
-    "不能使用子代理。",
     "子代理是什么？",
     "子代理的设计有哪些取舍？",
+  ]) {
+    const h = harness();
+    h.start();
+    const guidance = h.before(prompt);
+    assert.ok(h.active().includes("subagent_spawn"), prompt);
+    assert.equal(h.active().includes("workflow"), false, prompt);
+    assert.equal(h.active().includes("openpi_load_tools"), false, prompt);
+    assert.match(JSON.stringify(guidance), /discovery only/);
+    assert.match(JSON.stringify(guidance), SUBAGENT_SKILL_PATH_PATTERN);
+  }
+});
+
+test("non-name conditional rules and the gateway retain their prior policy", () => {
+  for (const prompt of [
+    "If you delegate this task, make sure every child reports back.",
+    "Never delegate this task.",
+    "Delegate this task if needed.",
+    "No parallel agents.",
     "Do not use OpenPI tools.",
   ]) {
     const h = harness();

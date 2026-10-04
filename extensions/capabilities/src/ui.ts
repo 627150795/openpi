@@ -1,13 +1,17 @@
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
-import type { EditorComponent } from "@earendil-works/pi-tui";
+import {
+  stripTerminalSequences,
+  type EditorComponent,
+} from "@earendil-works/pi-tui";
 import {
   BelowEditorNavigationEditor,
   BelowEditorStripState,
 } from "../../shared/below-editor-navigation.ts";
-import { capabilitiesRequestedByPrompt } from "../../shared/capability-intent.ts";
+import {
+  capabilityNameMentions,
+  capabilitiesRequestedByPrompt,
+} from "../../shared/capability-intent.ts";
 
-const DELEGATE_NAMES = /\bsubagents?\b|子代理/giu;
-const WORKFLOW_NAMES = /\bworkflows?\b|工作流/giu;
 const FOREGROUND_RESET = "\u001b[39m";
 
 interface CapabilityKeywordColorOptions {
@@ -85,18 +89,37 @@ export function highlightCapabilityNames(
   capabilities: readonly string[],
   highlight: (text: string) => string,
 ) {
-  let result = line;
-  if (capabilities.includes("delegate")) {
-    result = result.replace(DELEGATE_NAMES, (match) => highlight(match));
-  }
-  if (capabilities.includes("workflow")) {
-    result = result.replace(WORKFLOW_NAMES, (match) => highlight(match));
-  }
-  return result;
+  const plain = stripTerminalSequences(line);
+  const mentions = capabilityNameMentions(plain).filter((mention) =>
+    capabilities.includes(mention.capability),
+  );
+  if (!mentions.length) return line;
+  // Native editor SGR and cursor markers may sit inside a name. Preserve them
+  // verbatim and color only the visible text pieces, never terminal bytes.
+  const parts = line.split(/(\u001b\[[0-9;]*m|\u001b_pi:c\u0007)/u);
+  if (parts.filter((_, index) => index % 2 === 0).join("") !== plain)
+    return line;
+  let offset = 0;
+  return parts
+    .map((part, index) => {
+      if (index % 2 === 1) return part;
+      let result = "";
+      let cursor = 0;
+      for (const mention of mentions) {
+        const start = Math.max(mention.start - offset, 0);
+        const end = Math.min(mention.end - offset, part.length);
+        if (start >= end) continue;
+        result += part.slice(cursor, start) + highlight(part.slice(start, end));
+        cursor = end;
+      }
+      offset += part.length;
+      return result + part.slice(cursor);
+    })
+    .join("");
 }
 
 /**
- * Transparent, pre-submit feedback for capability intent. It colours only
+ * Transparent, pre-submit feedback for capability discovery. It colours only
  * names whose capability the shared classifier would load after submission;
  * it never changes editor text, Session history, or model context.
  */

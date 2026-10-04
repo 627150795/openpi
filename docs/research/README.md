@@ -14,6 +14,8 @@ Research records preserve sourced investigation and distinguish observations, in
 
 ## Validated investigations
 
+- [`WEB_SETUP_PROMPT_ECHO_2026-10-04.md`](WEB_SETUP_PROMPT_ECHO_2026-10-04.md) — exact native system ancestry for Web setup request identity, bounded fail-closed projection and separate remaining TUI acceptance ([#654](https://github.com/openpi-dev/openpi/issues/654)).
+
 - [`WORKFLOW_TUI_PROJECTIONS_2026-10-04.md`](WORKFLOW_TUI_PROJECTIONS_2026-10-04.md) — operator projections, native regular dashboard image ownership, and the remaining fullscreen owner boundary (#656/#657/#658/#660).
 
 - [`WORKTREE_VALIDATION_663.md`](WORKTREE_VALIDATION_663.md) — source-controlled inside/outside Git validation, React-domain activation and test-only Vite ancestor-path denial ([#663](https://github.com/openpi-dev/openpi/issues/663)); local evidence and parent review boundary recorded.

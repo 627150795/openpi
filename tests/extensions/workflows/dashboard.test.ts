@@ -1411,11 +1411,11 @@ test("Workflow transcript follows, pauses on its top row, and resumes", () => {
     dashboard.focused = true;
     dashboard.handleInput("right");
     dashboard.handleInput("right");
-    // A transcript page opens on the start of work that already happened.
+    // A running transcript opens at the latest output and follows by default.
     assert.equal(mouseModes.at(-1), "\x1b[?1000h\x1b[?1006h");
     const opened = dashboard.render(80).join("\n");
-    assert.match(opened, /line 0\b/);
-    assert.doesNotMatch(opened, /line 39/);
+    assert.match(opened, /line 39/);
+    assert.doesNotMatch(opened, /line 0\b/);
 
     dashboard.handleInput("G");
     const pinned = dashboard.render(80).join("\n");

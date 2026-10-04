@@ -1,5 +1,5 @@
 /**
- * /workflows dashboard: a full-screen overlay with a run list and a per-run
+ * /workflows dashboard: a native custom-editor page with a run list and a per-run
  * detail view (phases sidebar + agents panel), modeled after:
  *
  *   name                                             5/5 agents · 31m18s · done
@@ -71,6 +71,7 @@ import {
 import { measureWorkflowDetailsBytes } from "./retention.ts";
 import { writeFileAtomic } from "./serialization.ts";
 import { WorkflowTranscriptAdapter } from "./transcript.ts";
+import { dashboardPageRows } from "./dashboard-page.ts";
 
 const NOTICE_TTL_MS = 4000;
 const MIN_HEIGHT = 10;
@@ -997,6 +998,7 @@ export class WorkflowDashboard {
   private onAbort?: (runId: string) => boolean;
   private initialToolsExpanded: boolean;
   private initialRunId?: string;
+  private readonly pageRows?: (width: number) => number;
 
   constructor(
     tui: TUI,
@@ -1011,7 +1013,9 @@ export class WorkflowDashboard {
     onAbort?: (runId: string) => boolean,
     getRetained: () => ReadonlyMap<string, WorkflowDetails> = () => new Map(),
     initialToolsExpanded = false,
+    pageRows?: (width: number) => number,
   ) {
+    this.pageRows = pageRows;
     this.tui = tui;
     this.theme = theme;
     this.keybindings = keybindings;
@@ -1399,7 +1403,9 @@ export class WorkflowDashboard {
     if (this.view === "transcript" && this.transcriptPage) {
       return this.transcriptPage.render(width);
     }
-    const height = Math.max(MIN_HEIGHT, this.tui.terminal.rows - 1);
+    const height = this.pageRows
+      ? this.pageRows(width)
+      : Math.max(MIN_HEIGHT, this.tui.terminal.rows - 1);
     let lines: string[];
     if (this.view === "detail" && this.current) {
       lines = this.renderDetail(this.current.details, width, height);
@@ -1455,6 +1461,7 @@ export class WorkflowDashboard {
         },
       },
       { toolsExpanded: this.initialToolsExpanded },
+      this.pageRows,
     );
     this.transcriptPage.focused = this.focused;
     this.tui.requestRender();
@@ -1837,7 +1844,7 @@ function groupGlyph(group: PhaseGroup, theme: Theme) {
   return theme.fg("success", "✓");
 }
 
-/** Open the dashboard as a full-screen overlay. */
+/** Use Pi's editor replacement so its renderer owns chat image visibility. */
 export async function showWorkflowDashboard(
   ctx: ExtensionContext,
   getActive: () => Map<string, WorkflowDetails>,
@@ -1864,12 +1871,12 @@ export async function showWorkflowDashboard(
         onAbort,
         getRetained,
         ctx.ui.getToolsExpanded(),
+        (width) => dashboardPageRows(tui, dashboard, width),
       );
       return dashboard;
     },
     {
-      overlay: true,
-      overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+      overlay: false,
     },
   );
 }

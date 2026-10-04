@@ -16,6 +16,8 @@ Research records preserve sourced investigation and distinguish observations, in
 
 ## Validated investigations
 
+- [`CODEMODE_TUI_PRESENTATION_2026-10-04.md`](CODEMODE_TUI_PRESENTATION_2026-10-04.md) — OpenPI presentation through Pi public tool renderer resolvers, compact summaries and raw-evidence boundaries ([#673](https://github.com/openpi-dev/openpi/issues/673)).
+
 - [`INSTALLED_RUNTIME_ACCEPTANCE_2026-10-04.md`](INSTALLED_RUNTIME_ACCEPTANCE_2026-10-04.md) — installed-source snapshot, Direct/Workflow receipts and native setup rendering in an isolated SDK Session; live TUI, multi-client and model-error-rate boundaries remain open (#651/#652/#654).
 
 - [`WEB_SETUP_PROMPT_ECHO_2026-10-04.md`](WEB_SETUP_PROMPT_ECHO_2026-10-04.md) — exact native system ancestry for Web setup request identity, bounded fail-closed projection and separate remaining TUI acceptance ([#654](https://github.com/openpi-dev/openpi/issues/654)).

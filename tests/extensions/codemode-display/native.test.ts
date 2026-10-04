@@ -170,10 +170,8 @@ test("native loader selects the public renderer seam while retaining native Code
     const compact = component.render(80).map(stripTerminalSequences).join("\n");
     assert.match(compact, /codemode · 2 script lines/u);
     assert.doesNotMatch(compact, /very long shell command/u);
-    assert.match(compact, /⊘ 1 cancelled nested/u);
-    assert.match(compact, /✗ 1 error nested/u);
-    assert.match(compact, /earlier-read error · file missing/u);
-    assert.match(compact, /earlier-bash cancelled/u);
+    assert.match(compact, /✗ earlier-read · error: file missing/u);
+    assert.match(compact, /⊘ earlier-bash · cancelled/u);
     assert.doesNotMatch(compact, /\\n/u);
     const artifacts = process.env.OPENPI_CODEMODE_RENDER_ARTIFACT_DIR;
     if (artifacts) await mkdir(artifacts, { recursive: true });
@@ -216,7 +214,7 @@ test("native loader selects the public renderer seam while retaining native Code
     );
     assert.match(
       component.render(80).map(stripTerminalSequences).join("\n"),
-      /failed · wall time unknown/u,
+      /failed · time unknown/u,
     );
     setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
     component.setShowImages(true);

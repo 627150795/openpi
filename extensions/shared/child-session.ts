@@ -501,6 +501,8 @@ async function createChildSettingsManager(options: {
 export const CHILD_EXCLUDED_TOOL_NAMES = [
   // capability discovery mutates the parent model-facing tool surface
   "openpi_load_tools",
+  // runtime inspection includes parent configuration and resource summaries
+  "runtime_snapshot",
   // subagents — children cannot spawn/observe more agents
   "subagent_spawn",
   "subagent_wait",

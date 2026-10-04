@@ -81,6 +81,7 @@ const OPENPI_EXTENSION_PATHS = [
   "../../../extensions/git-read/index.ts",
   "../../../extensions/goal/index.ts",
   PLAN_EXTENSION,
+  "../../../extensions/runtime-snapshot/index.ts",
   "../../../extensions/setup/index.ts",
   SUBAGENTS_EXTENSION,
   "../../../extensions/tasks/index.ts",
@@ -331,6 +332,37 @@ test("real Pi session exposes one stable subagent family when delegate loads", a
       assert.equal(session.systemPrompt, loadedPrompt);
     },
     [SUBAGENTS_EXTENSION],
+  );
+});
+
+test("real Pi activates runtime inspection only through the capability gateway", async () => {
+  await withSession(
+    [EXPLICIT_CAPABILITIES_EXTENSION],
+    async (session) => {
+      const ordinary = ["read", "bash", "edit", "write"];
+      assert.deepEqual(session.getActiveToolNames(), ordinary);
+      assert.equal(
+        session.getToolDefinition("runtime_snapshot")?.defaultActive,
+        false,
+      );
+      const gateway = session.getToolDefinition("openpi_load_tools");
+      assert.ok(gateway);
+      const ctx = toolExecutionContext(session.createReplacedSessionContext());
+      await gateway.execute("list", {}, undefined, undefined, ctx);
+      assert.deepEqual(session.getActiveToolNames(), ordinary);
+      await gateway.execute(
+        "load-runtime",
+        { groups: ["runtime"] },
+        undefined,
+        undefined,
+        ctx,
+      );
+      assert.deepEqual(session.getActiveToolNames(), [
+        ...ordinary,
+        "runtime_snapshot",
+      ]);
+    },
+    [extensionPath("../../../extensions/runtime-snapshot/index.ts")],
   );
 });
 

@@ -77,6 +77,12 @@ test("effective child allowlists never advertise parent-only tools", () => {
   });
 });
 
+/** Built-in and inline extensions carry synthetic paths that `realpath` rejects. */
+const realpathExtension = (extensionPath: string) =>
+  extensionPath.startsWith("builtin:") || extensionPath.startsWith("<")
+    ? Promise.resolve(extensionPath)
+    : realpath(extensionPath);
+
 test("explicit child tools are checked against the final bound registry", async () => {
   await withTempDir(async (directory) => {
     const settingsManager = SettingsManager.inMemory(undefined, {
@@ -144,6 +150,107 @@ test("explicit child tools are checked against the final bound registry", async 
     await bindChildSessionExtensions(excluded, ["read", "subagent_spawn"]);
     assert.deepEqual(excluded.getActiveToolNames(), ["read"]);
     await shutdownAndDisposeChildSession(excluded);
+  });
+});
+
+test("SDK children register inherited Pi built-ins without admitting unrelated tools", async () => {
+  await withTempDir(async (cwd) => {
+    const agentDir = path.join(cwd, "agent");
+    const requested = ["read", "codemode", "tool_search"];
+    const resources = await createChildResources({
+      cwd,
+      agentDir,
+      projectTrusted: false,
+    });
+    assert.deepEqual(resources.loader.getExtensions().errors, []);
+    const { session } = await createAgentSession({
+      cwd,
+      agentDir,
+      resourceLoader: resources.loader,
+      settingsManager: resources.settingsManager,
+      sessionManager: SessionManager.inMemory(cwd),
+      ...childToolPolicy(requested),
+    });
+    try {
+      await bindChildSessionExtensions(session, requested);
+      assert.deepEqual(
+        session.getActiveToolNames().sort(),
+        [...requested].sort(),
+      );
+      assert.deepEqual(
+        session
+          .getAllTools()
+          .map(({ name }) => name)
+          .sort(),
+        [...requested].sort(),
+      );
+    } finally {
+      await shutdownAndDisposeChildSession(session);
+    }
+  });
+});
+
+test("child preflight reads Pi's actual active surface after a rejected activation", async () => {
+  await withTempDir(async (cwd) => {
+    const agentDir = path.join(cwd, "agent");
+    const settingsManager = SettingsManager.inMemory();
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager,
+      extensionFactories: [
+        {
+          name: "hidden-fixture",
+          factory(pi) {
+            pi.registerTool({
+              name: "hidden_fixture_tool",
+              label: "Hidden fixture",
+              description: "Pi cannot activate this tool",
+              exposure: "hidden",
+              parameters: Type.Object({}),
+              async execute() {
+                return {
+                  content: [{ type: "text", text: "fixture" }],
+                  details: {},
+                };
+              },
+            });
+          },
+        },
+      ],
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    const requested = ["hidden_fixture_tool"];
+    const { session } = await createAgentSession({
+      cwd,
+      agentDir,
+      settingsManager,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(cwd),
+      ...childToolPolicy(requested),
+    });
+    try {
+      assert.equal(session.getAllTools()[0]?.name, requested[0]);
+      await assert.rejects(
+        bindChildSessionExtensions(session, requested),
+        /Child tool preflight failed: requested tool "hidden_fixture_tool" is unavailable/,
+      );
+      assert.deepEqual(session.getActiveToolNames(), []);
+      assert.deepEqual(session.getCallableToolNames(), []);
+      assert.equal(
+        session.messages.length,
+        0,
+        "reject before the first prompt",
+      );
+      await bindChildSessionExtensions(session, requested, {
+        tolerateInheritedMisses: true,
+      });
+      assert.deepEqual(session.getActiveToolNames(), []);
+      assert.deepEqual(session.getCallableToolNames(), []);
+    } finally {
+      await shutdownAndDisposeChildSession(session);
+    }
   });
 });
 
@@ -1145,7 +1252,9 @@ test("headless child resources exclude OpenPI git polling at 1/8/64 retained ses
     const topLevelPaths = await Promise.all(
       topLevelLoader
         .getExtensions()
-        .extensions.map((extension) => realpath(extension.resolvedPath)),
+        .extensions.map((extension) =>
+          realpathExtension(extension.resolvedPath),
+        ),
     );
     const topLevelPollers = topLevelPaths.filter(
       (extensionPath) => extensionPath === gitInfoPath,
@@ -1160,7 +1269,9 @@ test("headless child resources exclude OpenPI git polling at 1/8/64 retained ses
     const childPaths = await Promise.all(
       child.loader
         .getExtensions()
-        .extensions.map((extension) => realpath(extension.resolvedPath)),
+        .extensions.map((extension) =>
+          realpathExtension(extension.resolvedPath),
+        ),
     );
     const childPollers = childPaths.filter(
       (extensionPath) => extensionPath === gitInfoPath,
@@ -1176,7 +1287,7 @@ test("headless child resources exclude OpenPI git polling at 1/8/64 retained ses
     const childGitInfoResource = await Promise.all(
       childPackagePaths.extensions.map(async (resource) => ({
         ...resource,
-        canonicalPath: await realpath(resource.path),
+        canonicalPath: await realpathExtension(resource.path),
       })),
     ).then((resources) =>
       resources.find((resource) => resource.canonicalPath === gitInfoPath),
@@ -1223,7 +1334,9 @@ test("headless child resources exclude OpenPI git polling at 1/8/64 retained ses
       const parentDirectPaths = await Promise.all(
         directLoader
           .getExtensions()
-          .extensions.map((extension) => realpath(extension.resolvedPath)),
+          .extensions.map((extension) =>
+            realpathExtension(extension.resolvedPath),
+          ),
       );
       assert.equal(
         parentDirectPaths.includes(gitInfoPath),
@@ -1238,7 +1351,9 @@ test("headless child resources exclude OpenPI git polling at 1/8/64 retained ses
       const directPaths = await Promise.all(
         directChild.loader
           .getExtensions()
-          .extensions.map((extension) => realpath(extension.resolvedPath)),
+          .extensions.map((extension) =>
+            realpathExtension(extension.resolvedPath),
+          ),
       );
       assert.equal(
         directPaths.includes(gitInfoPath),
@@ -1257,9 +1372,13 @@ test("headless child resources exclude OpenPI git polling at 1/8/64 retained ses
       projectTrusted: true,
     });
     assert.deepEqual(
-      disabledExtensionsChild.loader.getExtensions().extensions,
+      disabledExtensionsChild.loader
+        .getExtensions()
+        .extensions.filter(
+          (extension) => !extension.resolvedPath.startsWith("builtin:"),
+        ),
       [],
-      "an empty package extension filter must remain fully disabled",
+      "an empty package extension filter must remain fully disabled (built-ins excepted)",
     );
   });
 });
@@ -1302,7 +1421,9 @@ test("nested manifestless packages are not mistaken for OpenPI", async () => {
     const childPaths = await Promise.all(
       child.loader
         .getExtensions()
-        .extensions.map((extension) => realpath(extension.resolvedPath)),
+        .extensions.map((extension) =>
+          realpathExtension(extension.resolvedPath),
+        ),
     );
     assert.equal(childPaths.includes(await realpath(ordinaryGitInfo)), true);
   });

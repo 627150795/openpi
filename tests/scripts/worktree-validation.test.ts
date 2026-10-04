@@ -16,11 +16,17 @@ import { createServer } from "vite";
 
 const source = resolve(".");
 const dependencies = realpathSync(resolve("node_modules"));
+// Vite intentionally rejects Windows 8.3 aliases (e.g. RUNNER~1). Windows
+// TEMP can contain one even after realpathSync.native; use the checkout
+// parent for disposable fixtures rather than weakening Vite's access policy.
+const fixtureParent = process.platform === "win32" ? source : tmpdir();
 
 test("HTTP denies sensitive symlink targets but serves ordinary files and modules", {
   timeout: 30_000,
 }, async (context) => {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "openpi-http-")));
+  const directory = realpathSync(
+    mkdtempSync(join(fixtureParent, "openpi-http-")),
+  );
   const root = join(directory, ".git/pi-worktrees/inside");
   const modules = join(directory, "modules");
   const metadata = join(directory, "private/.git");
@@ -99,7 +105,7 @@ test("validation works inside and outside Git metadata without exposing private 
   timeout: 90_000,
 }, () => {
   const directory = realpathSync(
-    mkdtempSync(join(tmpdir(), "openpi-validation-")),
+    mkdtempSync(join(fixtureParent, "openpi-validation-")),
   );
   const repository = join(directory, "repository");
   const run = (cwd: string, command: string, args: string[]) => {

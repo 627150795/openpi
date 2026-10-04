@@ -552,3 +552,51 @@ test("a shared row puts the status in the call header and hides output", () => {
   assert.doesNotMatch(body.join("\n"), /completed/u);
   assert.doesNotMatch(body.join("\n"), /first|second|│/u);
 });
+
+test("truncated previews keep the card background through ellipsis and right padding", () => {
+  const colorTheme = {
+    fg: (_color: string, text: string) => `\x1b[38;5;145m${text}\x1b[39m`,
+    bg: (_color: string, text: string) => `\x1b[48;5;237m${text}\x1b[49m`,
+    bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
+  } as Theme;
+  const value = result("done", [
+    {
+      id: "1",
+      name: "bash",
+      status: "running",
+      args: JSON.stringify({
+        command: `bunx biome format --write ${"extensions/中文.ts ".repeat(20)}`,
+      }),
+    },
+  ]);
+  for (const width of [40, 120, 240]) {
+    for (const expanded of [false, true]) {
+      const rows = codemodeRenderers.renderResult!(
+        value,
+        { expanded, isPartial: true },
+        colorTheme,
+        context(expanded),
+      ).render(width);
+      if (!expanded)
+        assert.ok(
+          rows.some((row) => row.includes("\x1b[0m")),
+          "exercise native truncation/wrapping resets",
+        );
+      for (const row of rows) {
+        assert.equal(visibleWidth(row), width);
+        let background = false;
+        for (const token of row.matchAll(/\x1b\[([\d;]*)m|([^\x1b])/gu)) {
+          if (token[1] !== undefined) {
+            if (token[1] === "0" || token[1] === "49") background = false;
+            if (token[1] === "48;5;237") background = true;
+          } else {
+            assert.ok(
+              background,
+              `unpainted cell at width=${width}, expanded=${expanded}: ${JSON.stringify(row)}`,
+            );
+          }
+        }
+      }
+    }
+  }
+});

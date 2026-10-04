@@ -7,9 +7,16 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createEventBus } from "@earendil-works/pi-coding-agent";
+import {
+  createEventBus,
+  CustomMessageComponent,
+  initTheme,
+  type MessageRenderer,
+} from "@earendil-works/pi-coding-agent";
 import { onSetupApply } from "../../../extensions/shared/setup-apply.ts";
 import { tmpdir } from "node:os";
+import { stripVTControlCharacters } from "node:util";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import type {
@@ -121,6 +128,7 @@ function visibilityHarness(
     { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }
   >();
   const tools = new Map<string, CapturedSetupTool>();
+  const messageRenderers = new Map<string, MessageRenderer>();
   const handlers = new Map<string, Handler[]>();
   let activeTools = [
     ...(options.initialActive ?? ["read", "bash", "edit", "write"]),
@@ -147,6 +155,9 @@ function visibilityHarness(
       },
     ) {
       commands.set(name, command);
+    },
+    registerMessageRenderer(customType: string, renderer: MessageRenderer) {
+      messageRenderers.set(customType, renderer);
     },
     registerTool(tool: CapturedSetupTool) {
       tools.set(tool.name, tool);
@@ -210,6 +221,7 @@ function visibilityHarness(
   return {
     events,
     tools,
+    messageRenderers,
     commands,
     userMessages,
     customMessages,
@@ -448,6 +460,150 @@ test("setup metadata retains the original argument text independently of the exp
   assert.equal(message.details.request, "  set theme to dark\n");
   assert.equal(message.details.command, "my-pi-setup");
   assert.match(message.content, /this request:\nset theme to dark\n/u);
+});
+
+test("setup requests default to the actual command and original request, not internal instructions", async () => {
+  initTheme("dark", false);
+  const h = visibilityHarness();
+  await h.emit("session_start");
+  await h.runCommand("my-pi-setup", "  set theme to dark\n保持其他配置");
+  const renderer = h.messageRenderers.get("openpi-setup-request");
+  assert.ok(renderer, "setup request must register a custom message renderer");
+  const message = h.setupRequests()[0]
+    ?.message as Parameters<MessageRenderer>[0];
+  const component = new CustomMessageComponent(message, renderer);
+  const text = component
+    .render(120)
+    .map((line) => stripVTControlCharacters(line).trimEnd())
+    .join("\n");
+  assert.match(text, /\[OpenPi\] my-pi-setup/);
+  assert.match(text, / {2}set theme to dark\n保持其他配置/);
+  assert.doesNotMatch(
+    text,
+    /Current configuration|configure_my_pi_setup|new OpenPI setup episode/,
+  );
+});
+
+test("Pi expansion reveals the unchanged full setup prompt and can collapse it again", async () => {
+  initTheme("dark", false);
+  const h = visibilityHarness();
+  await h.emit("session_start");
+  await h.runCommand("openpi-setup", "保持配置");
+  const renderer = h.messageRenderers.get("openpi-setup-request");
+  assert.ok(renderer);
+  const message = h.setupRequests()[0]
+    ?.message as Parameters<MessageRenderer>[0];
+  const before = JSON.stringify(h.customMessages);
+  const component = new CustomMessageComponent(message, renderer);
+  const collapsed = component.render(100);
+  component.setExpanded(true);
+  // Expanded rendering is exactly Pi's native full-content projection.
+  assert.deepEqual(
+    component.render(100),
+    new CustomMessageComponent(message).render(100),
+  );
+  assert.match(component.render(100).join("\n"), /Current configuration/);
+  component.setExpanded(false);
+  assert.deepEqual(component.render(100), collapsed);
+  assert.equal(JSON.stringify(h.customMessages), before);
+  assert.deepEqual(h.setupRequests()[0]?.options, { triggerTurn: true });
+  assert.equal(message.display, true);
+  const reloaded = visibilityHarness().messageRenderers.get(
+    "openpi-setup-request",
+  );
+  assert.ok(reloaded);
+  const restored: Parameters<MessageRenderer>[0] = JSON.parse(
+    JSON.stringify(message),
+  );
+  assert.deepEqual(
+    new CustomMessageComponent(restored, reloaded).render(100),
+    collapsed,
+  );
+  assert.equal(
+    h.isActive(),
+    true,
+    "rendering must not close the writer episode",
+  );
+  await h.emit("agent_settled");
+  assert.equal(h.isActive(), false);
+  assert.equal(h.closures().length, 1);
+  assert.equal(h.messageRenderers.has("openpi-setup-closed"), false);
+});
+
+test("legacy and invalid setup metadata keep Pi's native full-content fallback", () => {
+  initTheme("dark", false);
+  const h = visibilityHarness();
+  const renderer = h.messageRenderers.get("openpi-setup-request");
+  assert.ok(renderer);
+  for (const details of [
+    undefined,
+    null,
+    [],
+    "request",
+    {},
+    { request: "text" },
+    { command: "openpi-setup" },
+    { command: "unknown", request: "text" },
+    { command: "openpi-setup", request: 42 },
+  ]) {
+    const message = {
+      role: "custom" as const,
+      customType: "openpi-setup-request",
+      timestamp: 0,
+      display: true,
+      content: "Legacy full prompt with current configuration and constraints.",
+      details,
+    };
+    for (const expanded of [false, true]) {
+      const component = new CustomMessageComponent(message, renderer);
+      component.setExpanded(expanded);
+      assert.deepEqual(
+        component.render(80),
+        new CustomMessageComponent(message).render(80),
+      );
+    }
+  }
+});
+
+test("setup summaries preserve empty and multiline requests, wrap CJK, and sanitize only the display", async () => {
+  initTheme("dark", false);
+  for (const request of [
+    "",
+    "  ",
+    "**保留原话**\n下一行",
+    "中文👩‍💻".repeat(50),
+    "safe\u001b[31mred\u001b[0m\u001b]52;c;secret\u0007",
+  ]) {
+    const h = visibilityHarness();
+    await h.emit("session_start");
+    await h.runCommand("openpi-setup", request);
+    const renderer = h.messageRenderers.get("openpi-setup-request");
+    assert.ok(renderer);
+    const message = h.setupRequests()[0]
+      ?.message as Parameters<MessageRenderer>[0];
+    const before = JSON.stringify(message);
+    const component = new CustomMessageComponent(message, renderer);
+    const lines = component
+      .render(120)
+      .map((line) => stripVTControlCharacters(line).trimEnd());
+    assert.match(lines[1]!, /\[OpenPi\] openpi-setup/);
+    if (!request.trim())
+      assert.equal(lines[2], "", "no fabricated request for no-argument setup");
+    if (request.startsWith("**"))
+      assert.deepEqual(lines.slice(2), ["**保留原话**", "下一行"]);
+    if (request.startsWith("safe"))
+      assert.deepEqual(lines.slice(2), ["safered"]);
+    for (const width of [12, 30, 80]) {
+      assert.ok(
+        component.render(width).every((line) => visibleWidth(line) <= width),
+      );
+    }
+    assert.equal(
+      JSON.stringify(message),
+      before,
+      "raw user text must remain in message metadata",
+    );
+  }
 });
 
 test("setup activation fails closed for a foreign same-name writer", async () => {
@@ -816,6 +972,7 @@ test("session_start after host re-includes tools hides configure tool", async ()
   const tools = new Map<string, { name: string }>();
   const pi = {
     events: { emit() {} },
+    registerMessageRenderer() {},
     registerCommand() {},
     registerTool(tool: { name: string; parameters: unknown }) {
       tools.set(tool.name, tool);

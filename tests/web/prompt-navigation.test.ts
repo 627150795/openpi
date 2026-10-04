@@ -55,6 +55,32 @@ test("setup prompt display preserves the existing aliases and rejects malformed 
   );
 });
 
+test("Web setup display does not replace the canonical full prompt or original metadata", () => {
+  const manager = SessionManager.inMemory("/synthetic/setup-renderer");
+  const id = manager.appendCustomMessageEntry(
+    "openpi-setup-request",
+    "Full original prompt\nCurrent configuration:\nInternal execution constraints",
+    true,
+    { command: "my-pi-setup", request: "  保持原话\n和换行  " },
+  );
+  const entry = manager.getEntry(id)!;
+  const before = JSON.stringify(entry);
+  const message = projectEntry(entry).message!;
+  assert.equal(
+    setupDisplayMessage(message).content,
+    "/my-pi-setup   保持原话\n和换行  ",
+  );
+  assert.equal(
+    message.content,
+    "Full original prompt\nCurrent configuration:\nInternal execution constraints",
+  );
+  assert.equal(JSON.stringify(entry), before);
+  assert.deepEqual(message.details, {
+    command: "my-pi-setup",
+    request: "  保持原话\n和换行  ",
+  });
+});
+
 test("same-text setup episodes collapse only when the supplied native parent is exact", () => {
   const manager = SessionManager.inMemory("/synthetic/prompt-navigation");
   const commandId = manager.appendCustomEntry(WEB_COMMAND_INPUT, {

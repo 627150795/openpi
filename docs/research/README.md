@@ -12,8 +12,6 @@ Research records preserve sourced investigation and distinguish observations, in
 
 ## Validated investigations
 
-- [`CHILD_TOOL_CANCELLATION_2026-10-03.md`](CHILD_TOOL_CANCELLATION_2026-10-03.md) — already-aborted child tool dispatch, false success and the shared execution-boundary repair ([#645](https://github.com/openpi-dev/openpi/issues/645)).
-
 - [`PI_0_99_COMPATIBILITY_2026-09-30.md`](PI_0_99_COMPATIBILITY_2026-09-30.md) — native transcript and prompt admission migration, nested child authority regressions, and local Pi CLI verification ([#635](https://github.com/openpi-dev/openpi/issues/635)).
 
 - [`WEB_DSH_COMPOSER_2026-09-29.md`](WEB_DSH_COMPOSER_2026-09-29.md) — DSH 输入区参考、原生目标入口和压缩消息保留/投递边界（[#597](https://github.com/openpi-dev/openpi/issues/597)、[PR #598](https://github.com/openpi-dev/openpi/pull/598)）。
@@ -89,6 +87,8 @@ Research records preserve sourced investigation and distinguish observations, in
 - [`CURSOR_CONTEXT_AND_TRANSPORT_2026-09-07.md`](CURSOR_CONTEXT_AND_TRANSPORT_2026-09-07.md) — Cursor protocol context boundaries, linear frame accumulation and cwd-sensitive transcript caching ([#431](https://github.com/openpi-dev/openpi/issues/431)).
 
 - [`CHILD_ACQUISITION_AND_PROGRESS_2026-09-07.md`](CHILD_ACQUISITION_AND_PROGRESS_2026-09-07.md) — cancelled child/worktree acquisitions and stale progress evidence under output pressure ([#428](https://github.com/openpi-dev/openpi/issues/428)).
+
+- [`CHILD_TOOL_CANCELLATION_2026-10-03.md`](CHILD_TOOL_CANCELLATION_2026-10-03.md) — already-aborted child tool dispatch, false success and the shared execution-boundary repair ([#645](https://github.com/openpi-dev/openpi/issues/645)).
 
 - [`WORKFLOW_CHILD_FAILURES_2026-09-07.md`](WORKFLOW_CHILD_FAILURES_2026-09-07.md) — child tool transport, cwd and timeout failure mechanisms, intended capability inheritance, and acceptance limits ([#424](https://github.com/openpi-dev/openpi/issues/424)).
 

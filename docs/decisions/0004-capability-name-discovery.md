@@ -32,7 +32,7 @@ The implementation at `a95f280f95a480ee7fde8ea01519335b394e7612` uses the existi
 
 These tests prove source/projection contracts, not model compliance with negative instructions or terminal pixel readability. Real TUI pixels, live installation and actual model strategy remain unverified here. The user's installed source was independently identified by `pi list` as the single local `~/work/openpi-main-runtime` checkout at `d36b58b67f87d24b4926521b965bdccfff7719e4`, distinct from the implementation checkout; this work does not modify or reload it. Final combined checks/tests and independent review belong to the integrating task.
 
-An independent review found that re-matching rendered rows loses original filename boundaries after soft wrapping. The correction projects original mention offsets using Pi's published, typed `components/editor.js` `wordWrapLine` helper and public cursor/padding getters. This helper is not re-exported by the root SDK API. It is a limited component-subpath dependency, not a private-state override. Locked SDK 0.99.1 and installed 1.0.2 wrapping outputs and native Editor projections were checked across six synthetic cases. Unknown or mismatched custom-editor geometry skips coloring rather than guessing. Future SDK changes at this subpath require compatibility review; runtime discovery remains independent of this presentation dependency.
+An independent review found that re-matching rendered rows loses original filename boundaries after soft wrapping. An initial correction used Pi's published typed `components/editor.js` helper; direct 0.99.1/1.0.2 Editor compatibility cases passed, but native extension-loader CI failed because the SDK root alias was applied to the component subpath. That candidate is superseded. The correction removes the subpath import and projects original mention offsets from public cursor/padding anchors through bounded exact matching of actual rendered content. Unknown or mismatched geometry skips coloring rather than guessing. It does not patch the loader or inspect private layout state. A native DefaultResourceLoader regression and isolated Web startup cover the previously missed loader boundary; runtime discovery remains independent of this rendering projection.
 
 ## Alternatives considered
 
@@ -46,4 +46,4 @@ Names reliably reveal a small capability mechanism. Discussing or negating a nam
 
 ## Amendments
 
-None. The accepted discovery choice does not certify implementation, release or runtime acceptance.
+2026-10-04: the component-subpath implementation was superseded after native-loader CI rejected it. The accepted discovery choice is unchanged and does not certify release, model compliance or real terminal acceptance.

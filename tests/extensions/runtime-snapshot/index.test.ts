@@ -664,5 +664,5 @@ test("registration is inert and the tool has no setup or model side effects", ()
   runtimeSnapshot(pi);
   assert.equal(tools[0]?.name, "runtime_snapshot");
   assert.equal(tools[0]?.defaultActive, false);
-  assert.deepEqual([...events.keys()], ["session_start"]);
+  assert.deepEqual([...events.keys()], []);
 });

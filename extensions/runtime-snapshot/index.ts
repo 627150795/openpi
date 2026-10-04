@@ -13,7 +13,6 @@ import { SUBAGENT_ROLE_NAMES } from "../shared/subagent-roles.ts";
 import {
   OPENPI_TOOL_SURFACE_NAMES,
   OPENPI_OWNER_SOURCE_PATHS,
-  patchOwnedTools,
 } from "../shared/tool-surface.ts";
 import {
   webCapabilitySnapshot,
@@ -344,9 +343,6 @@ export function snapshotToolResult(
 
 export default function runtimeSnapshot(pi: ExtensionAPI) {
   const registrationEpoch = Date.now();
-  pi.on("session_start", () => {
-    patchOwnedTools(pi, "runtime", { enable: ["runtime_snapshot"] });
-  });
   pi.registerTool({
     name: "runtime_snapshot",
     label: "Runtime Snapshot",

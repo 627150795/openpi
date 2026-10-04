@@ -10,6 +10,7 @@ import {
   patchOwnedTools,
 } from "../../../extensions/shared/tool-surface.ts";
 import { createCapabilitiesExtension } from "../../../extensions/capabilities/index.ts";
+import runtimeSnapshot from "../../../extensions/runtime-snapshot/index.ts";
 
 const SUBAGENT_SKILL_PATH_PATTERN =
   /skills(?:\\\\|[\\/])subagents(?:\\\\|[\\/])SKILL\.md/;
@@ -18,6 +19,7 @@ interface CapturedTool {
   name: string;
   description: string;
   parameters: unknown;
+  defaultActive?: boolean;
   promptGuidelines?: string[];
   execute(
     toolCallId: string,
@@ -32,7 +34,9 @@ interface CapturedTool {
   }>;
 }
 
-function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
+function harness(
+  options: { discovery?: "explicit" | "adaptive"; runtimeFirst?: boolean } = {},
+) {
   let discovery = options.discovery ?? "explicit";
   const available = [
     "read",
@@ -91,6 +95,9 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
     },
     registerTool(tool: CapturedTool) {
       tools.set(tool.name, tool);
+      if (tool.defaultActive === false) {
+        active = active.filter((name) => name !== tool.name);
+      }
     },
     getActiveTools: () => [...active],
     getAllTools: () => available.map((name) => ({ name })),
@@ -101,16 +108,15 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
   const extension = createCapabilitiesExtension({
     loadConfig: () => ({ capabilities: { discovery } }),
   });
+  if (options.runtimeFirst) runtimeSnapshot(pi as unknown as ExtensionAPI);
   extension(pi as unknown as ExtensionAPI);
+  if (!options.runtimeFirst) runtimeSnapshot(pi as unknown as ExtensionAPI);
   starts.push(() => {
     patchOwnedTools(pi, "fileSearch", {
       enable: OPENPI_TOOL_SURFACE.fileSearch.entry,
     });
     patchOwnedTools(pi, "gitRead", {
       enable: OPENPI_TOOL_SURFACE.gitRead.entry,
-    });
-    patchOwnedTools(pi, "runtime", {
-      enable: ["runtime_snapshot"],
     });
     patchOwnedTools(pi, "subagents", {
       enable: OPENPI_TOOL_SURFACE.subagents.entry,
@@ -148,20 +154,28 @@ test("ordinary sessions add no resident OpenPI model tool", () => {
   assert.deepEqual(h.active(), ["read", "bash", "edit", "write"]);
 });
 
-test("runtime inspection is discoverable but not resident", async () => {
-  const h = harness();
-  h.start();
-  assert.equal(h.active().includes("runtime_snapshot"), false);
-  const listing = await h.tool().execute("list", {});
-  assert.match(JSON.stringify(listing), /runtime/);
-  await h.tool().execute("load-runtime", { groups: ["runtime"] });
-  assert.deepEqual(h.active(), [
-    "read",
-    "bash",
-    "edit",
-    "write",
-    "runtime_snapshot",
-  ]);
+test("session_start leaves the real runtime tool inactive until a gateway request", async () => {
+  for (const discovery of ["explicit", "adaptive"] as const) {
+    for (const runtimeFirst of [false, true]) {
+      const h = harness({ discovery, runtimeFirst });
+      const ordinaryTools = ["read", "bash", "edit", "write"];
+      if (discovery === "adaptive") ordinaryTools.push("openpi_load_tools");
+      h.start();
+      assert.deepEqual(h.active(), ordinaryTools);
+      const listing = await h.tool().execute("list", {});
+      assert.match(JSON.stringify(listing), /runtime/);
+      assert.deepEqual(h.active(), ordinaryTools);
+      const result = await h.tool().execute("load-runtime", {
+        groups: ["runtime"],
+      });
+      assert.deepEqual(result.details.activatedTools, ["runtime_snapshot"]);
+      assert.deepEqual(h.active(), [...ordinaryTools, "runtime_snapshot"]);
+      await h.tool().execute("load-runtime-again", { groups: ["runtime"] });
+      assert.deepEqual(h.active(), [...ordinaryTools, "runtime_snapshot"]);
+      h.start();
+      assert.deepEqual(h.active(), ordinaryTools);
+    }
+  }
 });
 
 test("adaptive discovery keeps only the capability gateway resident", () => {

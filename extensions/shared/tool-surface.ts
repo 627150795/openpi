@@ -421,6 +421,9 @@ export function loadOpenPiCapabilities(
   const before = pi.getActiveTools();
   const newlyLoaded: OpenPiCapability[] = [];
   for (const capability of capabilities) {
+    for (const owner of OPENPI_CAPABILITY_GROUPS[capability].owners) {
+      state.managedOwners.add(owner);
+    }
     if (!state.loaded.has(capability)) {
       state.loaded.add(capability);
       newlyLoaded.push(capability);

@@ -95,7 +95,7 @@
   padding: 4px 0;
   border: 0;
   background: transparent;
-  color: var(--subtle);
+  color: var(--muted);
   font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.05em;
@@ -262,7 +262,7 @@
 .session-sidebar .session-time {
   min-width: 27px;
   text-align: right;
-  color: var(--subtle);
+  color: var(--muted);
 }
 
 .session-sidebar .session-title {

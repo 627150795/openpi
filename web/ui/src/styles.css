@@ -616,7 +616,7 @@ svg { display: block; width: 1em; height: 1em; fill: none; stroke: currentColor;
 .prompt-recovery-actions button:disabled { opacity: .55; }
 .landing .composer-dock { @apply absolute inset-x-0 z-10 w-full items-stretch; top: calc(50% - 81px); bottom: 12px; padding: 0 24px; }
 .workspace-picker-row { @apply relative mx-auto flex w-full min-w-0 items-center justify-center; max-width: 840px; }
-.workspace-picker { max-width: 260px !important; height: 36px !important; border-radius: 18px !important; background: transparent !important; color: var(--muted) !important; box-shadow: none !important; }
+.workspace-picker { max-width: 260px !important; height: 36px !important; border-radius: 18px !important; background: transparent !important; color: var(--text) !important; box-shadow: none !important; }
 .workspace-picker:hover, .workspace-picker[aria-expanded="true"] { background: var(--sidebar-active) !important; color: var(--text) !important; }
 .workspace-picker svg { width: 15px; height: 15px; }
 .composer { @apply relative mx-auto flex w-full flex-col; max-width: 840px; min-height: 118px; padding: 13px 13px 10px; border: 1px solid var(--border-strong); border-radius: 18px; background: var(--page); box-shadow: 0 8px 26px oklch(42% .06 251 / 10%); transition: border-color 160ms ease, box-shadow 160ms ease; }
@@ -624,8 +624,8 @@ svg { display: block; width: 1em; height: 1em; fill: none; stroke: currentColor;
 .composer:focus-within { border-color: oklch(84% .04 87); box-shadow: 0 0 0 2px oklch(84% .04 87 / 28%), 0 8px 26px oklch(40% .04 87 / 10%); }
 .composer.dormant { border-style: dashed; box-shadow: none; cursor: pointer; background: color-mix(in oklch, var(--sidebar) 60%, var(--page)); }
 .composer.dormant:hover { border-color: oklch(66% .018 249); background: var(--sidebar-hover); }
-.composer.dormant textarea { display: none; }
-.composer-dormant-cta { @apply flex flex-1 items-center; gap: 10px; padding: 6px 8px; color: var(--muted); font-size: 14px; }
+.composer.dormant textarea { opacity: 0; }
+.composer-dormant-cta { position: absolute; inset: 13px 13px auto; display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 2px; color: var(--muted); font-size: 14px; pointer-events: none; }
 .composer-dormant-cta svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--subtle); }
 .composer textarea { @apply w-full min-w-0 border-0 bg-transparent outline-0; min-height: 52px; max-height: 220px; flex: 0 0 auto; padding: 0 2px; resize: none; color: var(--text); font-size: 14px; line-height: 1.55; }
 .landing .composer textarea { flex-shrink: 1; }
@@ -680,7 +680,7 @@ svg { display: block; width: 1em; height: 1em; fill: none; stroke: currentColor;
 .model-search-option[aria-selected="true"] > svg { color: var(--accent); }
 .model-search-option svg { width: 14px; height: 14px; flex: 0 0 auto; }
 .model-menu-item-text { @apply flex min-w-0 flex-col; gap: 1px; }
-.model-menu-item-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--subtle); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.model-menu-item-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .model-picker-wrap[data-warning="true"] .model-picker-thinking { color: var(--warning); }
 .model-picker-wrap[data-pending="true"] .model-picker-thinking { opacity: .55; }
 .send-button { @apply grid shrink-0 place-items-center border-0; width: 34px; height: 34px; border-radius: 50%; background: var(--sidebar); transition: background-color 140ms ease, transform 100ms ease; }

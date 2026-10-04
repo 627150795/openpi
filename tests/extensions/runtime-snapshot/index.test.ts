@@ -80,6 +80,7 @@ function fixture() {
       return {
         source: "disk" as const,
         writable: true,
+        diagnostics: [],
         raw: "sk-secret",
         bytes: "secret",
         path: "/private/user/config",
@@ -308,6 +309,83 @@ test("owner/config/context errors are explicit unavailable, never raw exceptions
   }
 });
 
+test("package config provenance follows owner diagnostics, not write eligibility", async (t) => {
+  const cases = [
+    { name: "valid read-only disk config", source: "disk", error: undefined },
+    {
+      name: "missing config uses defaults",
+      source: "missing",
+      error: undefined,
+    },
+    { name: "parse failure", source: "disk", error: "Malformed JSON" },
+    {
+      name: "read failure",
+      source: "disk",
+      error: "Unable to read configuration",
+    },
+    {
+      name: "validation failure",
+      source: "disk",
+      error: "Invalid or unsupported value",
+    },
+  ] as const;
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const f = fixture();
+      const snapshot = await collectRuntimeSnapshot(f.pi, f.ctx, 123, {
+        ...f.dependencies,
+        inspectConfig: () => ({
+          ...f.dependencies.inspectConfig(),
+          source: entry.source,
+          writable: false,
+          diagnostics: entry.error
+            ? [
+                {
+                  severity: "error" as const,
+                  path: "private-path",
+                  message: entry.error,
+                },
+              ]
+            : [
+                {
+                  severity: "warning" as const,
+                  path: "private-path",
+                  message: "private-warning",
+                },
+              ],
+        }),
+      });
+      assert.equal(
+        snapshot.configured.package.availability,
+        entry.error ? "unavailable" : "available",
+      );
+      if (!entry.error) {
+        assert.equal(snapshot.configured.package.availability, "available");
+        assert.equal(
+          snapshot.configured.package.source,
+          entry.source === "missing"
+            ? "package-defaults"
+            : "package-config-disk",
+        );
+        assert.equal(
+          snapshot.configured.package.suggestionModelConfigured,
+          false,
+        );
+      }
+      const output = JSON.stringify(snapshotToolResult(snapshot));
+      for (const privateText of [
+        "private-",
+        "sk-secret",
+        "bytes",
+        "diagnostics",
+        ...(entry.error ? [entry.error] : []),
+      ]) {
+        assert.equal(output.includes(privateText), false, privateText);
+      }
+    });
+  }
+});
+
 test("disk sampling describes the containing worktree from nested cwd, excluding ignored files", async () => {
   const directory = mkdtempSync(join(tmpdir(), "openpi-snapshot-test-"));
   try {
@@ -363,7 +441,7 @@ test("disk sampling describes the containing worktree from nested cwd, excluding
   }
 });
 
-test("disk dirty excludes submodule contents and revisions without leaking sensitive paths", async () => {
+test("disk dirty excludes nested contents but includes checked-out and staged gitlink changes", async () => {
   const directory = mkdtempSync(
     join(tmpdir(), "openpi-snapshot-submodule-test-"),
   );
@@ -402,7 +480,7 @@ test("disk dirty excludes submodule contents and revisions without leaking sensi
     assert.equal(clean.dirty, false);
     const head = clean.head;
 
-    async function assertNoSubmoduleSignal() {
+    async function assertSubmoduleDirty(dirty: boolean) {
       // Prove the fixture would produce a submodule-derived signal without exclusion.
       assert.ok(
         git(
@@ -415,18 +493,25 @@ test("disk dirty excludes submodule contents and revisions without leaking sensi
       const snapshot = await readDiskSnapshot(project);
       assert.equal(snapshot.availability, "available");
       assert.equal(snapshot.head, head);
-      assert.equal(snapshot.dirty, false);
+      assert.equal(snapshot.dirty, dirty);
       assert.equal(JSON.stringify(snapshot).includes(sensitivePath), false);
       assert.equal(JSON.stringify(snapshot).includes(directory), false);
     }
 
     writeFileSync(join(submodule, "untracked-secret.txt"), "untracked");
-    await assertNoSubmoduleSignal();
+    await assertSubmoduleDirty(false);
     writeFileSync(join(submodule, "tracked.txt"), "modified");
-    await assertNoSubmoduleSignal();
+    await assertSubmoduleDirty(false);
     git(submodule, "add", ".");
     git(submodule, "commit", "-qm", "changed submodule revision");
-    await assertNoSubmoduleSignal();
+    await assertSubmoduleDirty(true);
+    git(project, "add", sensitivePath);
+    // Even with the checkout matching the index, the staged gitlink differs from HEAD.
+    await assertSubmoduleDirty(true);
+    git(project, "commit", "-qm", "update gitlink");
+    const committed = await readDiskSnapshot(project);
+    assert.equal(committed.availability, "available");
+    assert.equal(committed.dirty, false);
 
     writeFileSync(join(project, "ordinary-untracked.txt"), "ordinary change");
     const ordinaryDirty = await readDiskSnapshot(project);

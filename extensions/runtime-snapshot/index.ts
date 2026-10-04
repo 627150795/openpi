@@ -99,7 +99,8 @@ async function gitRead(cwd: string, args: string[], signal?: AbortSignal) {
 
 /**
  * Facts for cwd's containing Git worktree, including changes outside nested cwd.
- * Dirty covers tracked and normal untracked status, not ignored files or submodules.
+ * Dirty covers tracked (including gitlink) and normal untracked status,
+ * not ignored files or nested submodule contents.
  * No branch/path/remote names, locks, refresh, or cleanup.
  */
 export async function readDiskSnapshot(cwd: string, signal?: AbortSignal) {
@@ -115,7 +116,7 @@ export async function readDiskSnapshot(cwd: string, signal?: AbortSignal) {
         "status",
         "--porcelain=v1",
         "--untracked-files=normal",
-        "--ignore-submodules=all",
+        "--ignore-submodules=dirty",
       ],
       signal,
     );
@@ -135,7 +136,7 @@ export async function readDiskSnapshot(cwd: string, signal?: AbortSignal) {
 interface SnapshotDependencies {
   inspectConfig: () => Pick<
     ReturnType<typeof inspectSetupConfig>,
-    "source" | "writable" | "config"
+    "source" | "diagnostics" | "config"
   >;
   disk: typeof readDiskSnapshot;
 }
@@ -174,7 +175,12 @@ export async function collectRuntimeSnapshot(
   });
   const packageConfig = sample(() => {
     const inspection = dependencies.inspectConfig();
-    if (!inspection.writable) throw new Error("Unavailable configuration");
+    if (
+      inspection.diagnostics.some(
+        (diagnostic) => diagnostic.severity === "error",
+      )
+    )
+      throw new Error("Unavailable configuration");
     const config = inspection.config;
     return {
       source:

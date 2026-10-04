@@ -22,7 +22,7 @@ import {
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { AgentToolRenderLedger } from "../shared/agent-tool-renderer.ts";
+import { createAgentToolRenderLedger } from "../shared/agent-tool-renderer.ts";
 import {
   bindChildSessionExtensions,
   childToolPolicy,
@@ -413,7 +413,7 @@ export async function runAgent(
   }
 
   const childSession = session;
-  const toolRenderer = new AgentToolRenderLedger();
+  const toolRenderer = createAgentToolRenderLedger(childSession);
   let usage = emptyUsage();
   let modelId = childSession.model?.id ?? options.model?.id;
   let contextWindow = childSession.model?.contextWindow;

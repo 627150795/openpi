@@ -87,6 +87,7 @@ export class AgentSessionPage implements Component, Focusable {
   private rowCount = 0;
   private viewportSize = 1;
   private toolsExpanded: boolean;
+  private availableRows?: (width: number) => number;
   /**
    * Whether the opening anchor has been decided. A page opens on a transcript
    * that already exists, so the first render is the only moment that can tell
@@ -120,12 +121,15 @@ export class AgentSessionPage implements Component, Focusable {
     keybindings: KeybindingsManager,
     source: AgentSessionPageSource,
     options?: AgentSessionPageOptions,
+    /** Native editor mounts may reserve rows for the host footer and widgets. */
+    availableRows?: (width: number) => number,
   ) {
     this.tui = tui;
     this.theme = theme;
     this.keybindings = keybindings;
     this.source = source;
     this.toolsExpanded = options?.toolsExpanded === true;
+    this.availableRows = availableRows;
   }
 
   handleInput(data: string) {
@@ -248,7 +252,10 @@ export class AgentSessionPage implements Component, Focusable {
 
   render(width: number) {
     const state = this.source.getState();
-    const height = Math.max(1, this.tui.terminal.rows || 30);
+    const height = Math.max(
+      1,
+      this.availableRows?.(width) ?? (this.tui.terminal.rows || 30),
+    );
     if (!state) {
       const border = this.theme.fg(
         "borderAccent",

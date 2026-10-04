@@ -545,3 +545,51 @@ test("both child pages expand historical evidence through the configured host bi
   }
   assert.deepEqual(direct.render(80), workflow.render(80));
 });
+
+test("a mounted child page measures only its supplied editor rows on each render", () => {
+  let available = 12;
+  const widths: number[] = [];
+  const source = {
+    getState: () => ({
+      ...state(),
+      document: {
+        items: [
+          {
+            kind: "assistant" as const,
+            parts: [
+              {
+                type: "text" as const,
+                text: Array.from(
+                  { length: 60 },
+                  (_, i) => `viewport ${i}`,
+                ).join("\n\n"),
+              },
+            ],
+          },
+        ],
+      },
+    }),
+    close() {},
+  };
+  const page = new AgentSessionPage(
+    tui(30),
+    theme,
+    keybindings,
+    source,
+    undefined,
+    (width) => {
+      widths.push(width);
+      return available;
+    },
+  );
+  const first = page.render(80);
+  assert.equal(first.length, 12);
+  assert.match(stripVTControlCharacters(first.join("\n")), /viewport 59/);
+  available = 18;
+  assert.equal(page.render(60).length, 18);
+  assert.deepEqual(widths, [80, 60]);
+  available = 0;
+  assert.equal(page.render(60).length, 1);
+  const defaultPage = new AgentSessionPage(tui(30), theme, keybindings, source);
+  assert.equal(defaultPage.render(80).length, 30);
+});

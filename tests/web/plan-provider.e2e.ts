@@ -20,31 +20,75 @@ function startPlanProvider(stream: Parameters<typeof startProvider>[0]) {
   return startProvider(stream, { port: 0 });
 }
 
-async function connectPlanProvider(
-  page: Page,
-  sessionId: string,
-  baseUrl: string,
-) {
-  const response = await page.request.get(
-    `/api/models/configuration?sessionId=${encodeURIComponent(sessionId)}`,
-    { headers },
-  );
-  expect(response.status()).toBe(200);
-  const configuration: import("../../web/runtime/types.ts").WebModelConfigurations =
-    await response.json();
-  const model = configuration.models.find(
-    (model) => model.provider === PROVIDER_ID && model.id === MODEL_ID,
-  );
-  expect(model).toBeDefined();
-  const saved = await page.request.post("/api/models/configuration", {
-    headers,
-    data: {
-      sessionId,
-      revision: configuration.revision,
-      model: { ...model, baseUrl },
+function planProviderConnection(page: Page, baseUrl: string) {
+  let original:
+    | import("../../web/runtime/types.ts").WebModelConfiguration
+    | undefined;
+  const configuration = async (sessionId: string) => {
+    const response = await page.request.get(
+      `/api/models/configuration?sessionId=${encodeURIComponent(sessionId)}`,
+      { headers },
+    );
+    expect(response.status()).toBe(200);
+    return (await response.json()) as import("../../web/runtime/types.ts").WebModelConfigurations;
+  };
+  const save = async (
+    sessionId: string,
+    revision: string,
+    model: import("../../web/runtime/types.ts").WebModelConfiguration,
+  ) => {
+    const saved = await page.request.post("/api/models/configuration", {
+      headers,
+      data: { sessionId, revision, model },
+    });
+    expect(saved.status()).toBe(200);
+  };
+  return {
+    async connect(sessionId: string) {
+      const current = await configuration(sessionId);
+      original = current.models.find(
+        (model) => model.provider === PROVIDER_ID && model.id === MODEL_ID,
+      );
+      expect(original).toBeDefined();
+      if (!original) throw new Error("The seeded fake model is unavailable");
+      // Retain the restore target before the write, including a failed/uncertain response.
+      await save(sessionId, current.revision, { ...original, baseUrl });
     },
-  });
-  expect(saved.status()).toBe(200);
+    async restore() {
+      if (!original) return;
+      // Plan handoff may select another native Session. Requery its owner rather
+      // than writing against the test's earlier Session identity or revision.
+      const snapshot = await page.request.get("/api/snapshot", { headers });
+      expect(snapshot.status()).toBe(200);
+      const { currentSessionId } = await snapshot.json();
+      const current = await configuration(currentSessionId);
+      await save(currentSessionId, current.revision, original);
+      const restored = await configuration(currentSessionId);
+      expect(
+        restored.models.find(
+          (model) => model.provider === PROVIDER_ID && model.id === MODEL_ID,
+        ),
+      ).toEqual(original);
+    },
+  };
+}
+
+async function closePlanProvider(
+  connection: ReturnType<typeof planProviderConnection>,
+  provider: Awaited<ReturnType<typeof startPlanProvider>>,
+  workspace: string,
+) {
+  // A restore rejection must fail the test, while never leaking its listener.
+  const outcomes = await Promise.allSettled([
+    connection.restore(),
+    provider.close(),
+  ]);
+  deferPlanWorkspaceCleanup(workspace);
+  const failures = outcomes.flatMap((outcome) =>
+    outcome.status === "rejected" ? [outcome.reason] : [],
+  );
+  if (failures.length)
+    throw new AggregateError(failures, "Plan provider cleanup failed");
 }
 
 async function togglePlan(page: Page) {
@@ -109,6 +153,7 @@ test("Plan switch changes only owner state; first message gets planning context 
         .join("") + "data: [DONE]\n\n"
     );
   });
+  const connection = planProviderConnection(page, provider.baseUrl);
   try {
     const imported = await page.request.post("/api/workspaces", {
       headers,
@@ -122,7 +167,7 @@ test("Plan switch changes only owner state; first message gets planning context 
       },
     });
     const { sessionId, sessionPath } = await created.json();
-    await connectPlanProvider(page, sessionId, provider.baseUrl);
+    await connection.connect(sessionId);
     const model = await page.request.post("/api/model", {
       headers,
       data: {
@@ -228,8 +273,7 @@ test("Plan switch changes only owner state; first message gets planning context 
       settings.getByRole("radio", { name: "深色", exact: true }),
     ).toBeChecked();
   } finally {
-    await provider.close();
-    deferPlanWorkspaceCleanup(workspace);
+    await closePlanProvider(connection, provider, workspace);
   }
 });
 
@@ -396,6 +440,7 @@ for (const theme of ["light", "dark"] as const) {
         .map((c) => `data: ${JSON.stringify(c)}\n\n`)
         .join("") + "data: [DONE]\n\n";
     });
+    const connection = planProviderConnection(page, provider.baseUrl);
     const workspace = await mkdtemp(join(tmpdir(), "openpi-plan-card-"));
     try {
       await page.emulateMedia({ colorScheme: theme });
@@ -414,7 +459,7 @@ for (const theme of ["light", "dark"] as const) {
       });
       expect(created.status()).toBe(201);
       const session = await created.json();
-      await connectPlanProvider(page, session.sessionId, provider.baseUrl);
+      await connection.connect(session.sessionId);
       const model = await page.request.post("/api/model", {
         headers,
         data: {
@@ -574,8 +619,7 @@ for (const theme of ["light", "dark"] as const) {
       releaseBurst();
       for (const step of streamSteps) step.release();
       releaseFinish();
-      await provider.close();
-      deferPlanWorkspaceCleanup(workspace);
+      await closePlanProvider(connection, provider, workspace);
     }
   });
 }
@@ -663,6 +707,7 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
       "data: [DONE]\n\n"
     );
   });
+  const connection = planProviderConnection(page, provider.baseUrl);
   try {
     const imported = await page.request.post("/api/workspaces", {
       headers,
@@ -676,7 +721,7 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
     });
     expect(created.status()).toBe(201);
     const session = await created.json();
-    await connectPlanProvider(page, session.sessionId, provider.baseUrl);
+    await connection.connect(session.sessionId);
     const model = await page.request.post("/api/model", {
       headers,
       data: {
@@ -962,8 +1007,7 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
       )
       .toBe("idle");
   } finally {
-    await provider.close();
-    deferPlanWorkspaceCleanup(workspace);
+    await closePlanProvider(connection, provider, workspace);
   }
 });
 
@@ -1001,6 +1045,7 @@ test("Plan off gives a visible receipt and clears a ready Plan without another m
         .join("") + "data: [DONE]\n\n"
     );
   });
+  const connection = planProviderConnection(page, provider.baseUrl);
   try {
     const imported = await page.request.post("/api/workspaces", {
       headers,
@@ -1012,7 +1057,7 @@ test("Plan off gives a visible receipt and clears a ready Plan without another m
       data: { workspacePath: path, commandId: "plan-off-session" },
     });
     const session = await created.json();
-    await connectPlanProvider(page, session.sessionId, provider.baseUrl);
+    await connection.connect(session.sessionId);
     const model = await page.request.post("/api/model", {
       headers,
       data: {
@@ -1051,7 +1096,6 @@ test("Plan off gives a visible receipt and clears a ready Plan without another m
     expect(cancelled.runtime.plan).toBe("inactive");
     expect(provider.requests).toHaveLength(1);
   } finally {
-    await provider.close();
-    deferPlanWorkspaceCleanup(workspace);
+    await closePlanProvider(connection, provider, workspace);
   }
 });

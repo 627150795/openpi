@@ -12,6 +12,8 @@ Research records preserve sourced investigation and distinguish observations, in
 
 ## Validated investigations
 
+- [`WORKFLOW_TUI_PROJECTIONS_2026-10-04.md`](WORKFLOW_TUI_PROJECTIONS_2026-10-04.md) — operator projections, native regular dashboard image ownership, and the remaining fullscreen owner boundary (#656/#657/#658/#660).
+
 - [`WORKTREE_VALIDATION_663.md`](WORKTREE_VALIDATION_663.md) — source-controlled inside/outside Git validation, React-domain activation and test-only Vite ancestor-path denial ([#663](https://github.com/openpi-dev/openpi/issues/663)); local evidence and parent review boundary recorded.
 
 - [`CHILD_TOOL_PREFLIGHT_2026-10-04.md`](CHILD_TOOL_PREFLIGHT_2026-10-04.md) — inherited versus explicit child tool requirements, native SDK factories, and fail-closed replay identities ([#637](https://github.com/openpi-dev/openpi/issues/637), [PR #638](https://github.com/openpi-dev/openpi/pull/638)).

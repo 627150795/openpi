@@ -3,9 +3,9 @@ import test from "node:test";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+  CHILD_TOOL_CALL_TIMEOUT_MS,
   createToolCallTimeoutGuard,
   runWithToolCallTimeout,
-  CHILD_TOOL_CALL_TIMEOUT_MS,
   ToolCallTimeoutError,
 } from "../../../extensions/shared/tool-call-timeout.ts";
 
@@ -157,4 +157,44 @@ test("the timeout is fresh for each tool call, not shared across calls", async (
 
   assert.equal(await execute(), "done");
   assert.equal(await execute(), "done");
+});
+
+test("diagnostics observe actual timeout and cancellation without inspecting tool payloads", async () => {
+  const outcomes: string[] = [];
+  await assert.rejects(
+    runWithToolCallTimeout(
+      "fixture",
+      5,
+      undefined,
+      () => new Promise(() => {}),
+      (outcome) => outcomes.push(outcome),
+    ),
+    ToolCallTimeoutError,
+  );
+  const controller = new AbortController();
+  const pending = runWithToolCallTimeout(
+    "fixture",
+    60_000,
+    controller.signal,
+    () => new Promise(() => {}),
+    (outcome) => outcomes.push(outcome),
+  );
+  controller.abort(new Error("fixture"));
+  await assert.rejects(pending, /fixture/);
+  assert.deepEqual(outcomes, ["timeout", "cancelled"]);
+});
+
+test("a failing diagnostic observer cannot prevent the actual timeout outcome", async () => {
+  await assert.rejects(
+    runWithToolCallTimeout(
+      "fixture",
+      5,
+      undefined,
+      () => new Promise(() => {}),
+      () => {
+        throw new Error("diagnostic failure");
+      },
+    ),
+    ToolCallTimeoutError,
+  );
 });

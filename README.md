@@ -308,6 +308,12 @@ Workflow 默认并发 8 个 Agent，单次最多 128 次调用；可配置到 64
 
 ---
 
+正常运行时，活动条只保留任务名称和管理入口；阶段、用量与耗时可在 `/workflows` 查看。完成卡按实际原因区分普通交接、保留现场、警告与执行失败，不把保留 worktree 一律标成错误。运行中的 child 详情默认追尾，主动上滚暂停，回到底部或 End/G 恢复；已结束的长历史从开头打开。
+
+Workflow child 的现有事件会产生有界计时摘要与诊断文件，区分 admission、生命周期、工具时间和未知区间；重放不冒充新执行，不采集工具参数、输出或私有 reasoning。摘要不依赖被裁剪的 transcript。文件按调用有界，但跨运行的磁盘文件没有自动总量回收；覆盖缺口、未完成与省略量明确记录。详见[执行计时边界](docs/architecture/WORKFLOW_EXECUTION_TIMING.md)。
+
+Regular 模式的 Workflow 管理页使用原生整页入口，避免聊天图片穿透；fullscreen 保留原生 overlay，宿主图片合成问题仍由 [#657](https://github.com/openpi-dev/openpi/issues/657) 跟踪。
+
 ## Workflow 不只是并行
 
 OpenPI 把一次调用拆成可以审计的生命周期，而不是把“进程退出 0”当成业务成功。

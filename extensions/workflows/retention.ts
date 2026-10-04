@@ -1,3 +1,4 @@
+import { workflowAgentCompletion } from "./agent-completion.ts";
 import type {
   AgentRecord,
   AgentUsage,
@@ -5,7 +6,6 @@ import type {
   WorkflowMemoryProjection,
 } from "./model.ts";
 import { toSerializable } from "./serialization.ts";
-import { workflowAgentCompletion } from "./agent-completion.ts";
 
 /** Defaults apply only to settled session-memory projections. Disk is canonical. */
 export const DEFAULT_WORKFLOW_SETTLED_MAX_RUNS = 32;
@@ -138,6 +138,10 @@ function compactAgent(
   // turn an otherwise recoverable artifact into an unusable path.
   if (agent.resultArtifact) result.resultArtifact = agent.resultArtifact;
   if (agent.resultRef) result.resultRef = agent.resultRef;
+  if (agent.timingArtifact) result.timingArtifact = agent.timingArtifact;
+  if (agent.timingArtifactState)
+    result.timingArtifactState = agent.timingArtifactState;
+  if (agent.timing) result.timing = agent.timing;
 
   if (!display) return result;
   if (agent.preview) result.preview = bounded(agent.preview, MAX_PREVIEW_BYTES);

@@ -1202,3 +1202,42 @@ test("workflow children guard structured, normal, and dynamically registered too
   assert.equal(dynamicSignal?.aborted, true);
   unsubscribe();
 });
+
+test("runAgent captures tools absent from messages and classifies cancellation independently", async () => {
+  let respond = () => {};
+  const controller = new AbortController();
+  const harness = runnerHarness({ prompt: async () => respond() });
+  respond = () => {
+    harness.emit({
+      type: "tool_execution_start",
+      toolCallId: "observed-only",
+      toolName: "read",
+      args: { private: "secret" },
+    });
+    harness.emit({
+      type: "tool_execution_end",
+      toolCallId: "observed-only",
+      toolName: "read",
+      result: {
+        content: [{ type: "text", text: "secret output" }],
+        details: {},
+      },
+      isError: false,
+    });
+    harness.emit({
+      type: "tool_execution_start",
+      toolCallId: "unfinished",
+      toolName: "read",
+      args: {},
+    });
+    controller.abort(new Error("fixture cancellation"));
+  };
+  const outcome = await runHarnessAgent(harness, { signal: controller.signal });
+  assert.equal(outcome.timing?.summary.tools.started, 2);
+  assert.equal(outcome.timing?.summary.tools.paired, 1);
+  assert.equal(outcome.timing?.summary.tools.unclosedStarts, 1);
+  assert.equal(outcome.timing?.summary.outcome, "cancelled");
+  assert.equal(outcome.timing?.summary.coverage, "partial-tool-events");
+  assert.equal(outcome.transcript.length, 0);
+  assert.ok(!JSON.stringify(outcome.timing).includes("secret"));
+});

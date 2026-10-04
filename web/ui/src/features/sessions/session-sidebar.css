@@ -17,14 +17,16 @@
   height: 38px;
   margin: 8px 0 18px;
   padding: 0 12px;
-  border: 0;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--sidebar-hover);
-  font-weight: 500;
+  background: var(--page);
+  box-shadow: 0 1px 2px oklch(0% 0 0 / 4%);
+  font-weight: 550;
 }
 
 .session-sidebar .new-session-button:hover {
-  background: var(--sidebar-active);
+  border-color: var(--border-strong);
+  background: var(--page);
 }
 
 .sidebar-navigation {
@@ -93,11 +95,11 @@
   padding: 4px 0;
   border: 0;
   background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .session-sidebar .workspace-heading-label svg {
@@ -260,7 +262,7 @@
 .session-sidebar .session-time {
   min-width: 27px;
   text-align: right;
-  color: var(--muted);
+  color: var(--subtle);
 }
 
 .session-sidebar .session-title {
@@ -323,8 +325,8 @@
 
 .sidebar-footer {
   flex: 0 0 auto;
-  padding: 7px 2px 1px;
-  border-top: 0;
+  padding: 8px 2px 1px;
+  border-top: 1px solid var(--border);
 }
 
 .sidebar-settings-button {

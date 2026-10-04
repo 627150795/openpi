@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { subagentCompletion } from "../../../extensions/subagents/src/completion.ts";
+import { delegationCompletionText } from "../../../extensions/shared/delegation-completion.ts";
 import type { SubagentSnapshot } from "../../../extensions/subagents/src/domain.ts";
 import { workflowAgentCompletion } from "../../../extensions/workflows/agent-completion.ts";
 import {
@@ -57,7 +58,7 @@ test("Direct receipts scope normalized observations to a distinguishable executi
   );
   assert.equal(receipt.verification.status, "unknown");
   assert.equal(receipt.workspace.attribution, "unknown");
-  assert.equal(receipt.modelClaimed.textRef, "/evidence/child.jsonl");
+  assert.equal(receipt.modelClaimed.textRef, receipt.observed.evidenceRef);
   assert.equal(JSON.stringify(receipt).includes("tests passed"), false);
   assert.equal(
     subagentCompletion({ ...direct, executionUncertain: true }).observed
@@ -71,6 +72,58 @@ test("Direct receipts scope normalized observations to a distinguishable executi
   });
   assert.equal(legacy.identity.executionId, "unknown");
   assert.deepEqual(legacy.observed.tools.items, []);
+});
+
+test("Direct completion references do not disclose canonical private evidence paths", () => {
+  for (const root of [
+    "/Users/private-host/.pi",
+    "C:\\Users\\private-host\\.pi",
+  ]) {
+    const sessionFilePath = `${root}/sessions/child.jsonl`;
+    const artifactPath = `${root}/artifacts/structured.json`;
+    const snap = {
+      ...direct,
+      meta: { ...direct.meta, sessionFilePath },
+      structuredResult: {
+        value: { verdict: "pass" },
+        json: '{"verdict":"pass"}',
+        byteLength: 18,
+        artifactPath,
+      },
+    };
+    const receipt = subagentCompletion(snap);
+    const projection =
+      JSON.stringify(receipt) + delegationCompletionText(receipt);
+    assert.equal(projection.includes(root), false);
+    assert.equal(projection.includes(sessionFilePath), false);
+    assert.equal(projection.includes(artifactPath), false);
+    assert.match(
+      receipt.observed.evidenceRef ?? "",
+      /^pi-session:[a-f0-9]{64}$/,
+    );
+    assert.match(
+      receipt.modelClaimed.structuredRef ?? "",
+      /^pi-artifact:[a-f0-9]{64}$/,
+    );
+    assert.equal(
+      receipt.observed.tools.evidenceRef,
+      receipt.observed.evidenceRef,
+    );
+    assert.deepEqual(subagentCompletion(snap), receipt);
+    assert.notEqual(
+      subagentCompletion({
+        ...snap,
+        meta: { ...snap.meta, sessionFilePath: `${sessionFilePath}.other` },
+      }).observed.evidenceRef,
+      receipt.observed.evidenceRef,
+    );
+    // The owner retains the canonical paths; the receipt is only a projection.
+    assert.equal(snap.meta.sessionFilePath, sessionFilePath);
+    assert.equal(snap.structuredResult.artifactPath, artifactPath);
+  }
+  const missing = subagentCompletion({ ...direct, meta: { backend: "pi" } });
+  assert.equal(missing.observed.evidenceRef, undefined);
+  assert.equal(missing.modelClaimed.textRef, undefined);
 });
 
 const agent: AgentRecord = {

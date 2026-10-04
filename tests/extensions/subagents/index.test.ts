@@ -119,6 +119,7 @@ test("subagent results render before the hidden wake-up message", () => {
 
 test("automatic delivery exposes structured data and its canonical artifact", () => {
   let entry: { content: string; details: Record<string, unknown> } | undefined;
+  let sent: { content: string } | undefined;
   const pi = {
     appendEntry(
       _customType: string,
@@ -126,7 +127,9 @@ test("automatic delivery exposes structured data and its canonical artifact", ()
     ) {
       entry = data;
     },
-    sendMessage() {},
+    sendMessage(message: { content: string }) {
+      sent = message;
+    },
   } as unknown as ExtensionAPI;
   const dispatch = createSubagentResultDispatcher(pi);
   dispatch([
@@ -141,7 +144,10 @@ test("automatic delivery exposes structured data and its canonical artifact", ()
       outcome: "completed",
       createdAt: 0,
       settledAt: 1_000,
-      meta: { backend: "pi" },
+      meta: {
+        backend: "pi",
+        sessionFilePath: "/Users/private-host/.pi/child.jsonl",
+      },
       usage: {},
       transcriptVersion: 0,
       transcript: [],
@@ -161,6 +167,12 @@ test("automatic delivery exposes structured data and its canonical artifact", ()
   assert.match(entry?.content ?? "", /\{"verdict":"pass"\}/);
   assert.deepEqual(entry?.details.structured, { verdict: "pass" });
   assert.equal(entry?.details.structuredArtifactPath, "/tmp/structured.json");
+  assert.ok(sent);
+  assert.equal(
+    sent.content.includes("/Users/private-host/.pi/child.jsonl"),
+    false,
+  );
+  assert.equal(sent.content.includes("/tmp/structured.json"), false);
 });
 
 test("automatic delivery keeps large structured values in runtime details, not parent model text", () => {

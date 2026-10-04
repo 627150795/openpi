@@ -21,7 +21,12 @@ import { registerWebCapability } from "../../../extensions/shared/web-observer-r
 
 function fixture() {
   const scope = {};
-  let selected = {
+  let selected: {
+    provider?: string;
+    id?: string;
+    baseUrl: string;
+    headers: { Authorization: string };
+  } = {
     provider: "private-account@example.com",
     id: "https://secret-endpoint.invalid/sk-secret",
     baseUrl: "https://private.invalid",
@@ -94,6 +99,9 @@ function fixture() {
     scope,
     dependencies,
     reads: () => configReads,
+    select(provider?: string, id?: string) {
+      selected = { ...selected, provider, id };
+    },
     change() {
       selected = {
         ...selected,
@@ -152,6 +160,48 @@ test("snapshot separates configured/selected/disk/loaded and never serializes pr
   assert.equal(next.trust.projectTrusted, false);
   assert.deepEqual(next.toolBoundary.active.names, ["bash"]);
   assert.equal(next.loaded.registrationEpoch, 456);
+});
+
+test("model matching is unknown unless both selected and configured identities are complete", async () => {
+  const f = fixture();
+  for (const [provider, id] of [
+    [undefined, "configured-model"],
+    ["configured-provider", undefined],
+    ["", "configured-model"],
+    ["configured-provider", ""],
+    [undefined, undefined],
+  ]) {
+    f.select(provider, id);
+    const snapshot = await collectRuntimeSnapshot(
+      f.pi,
+      f.ctx,
+      123,
+      f.dependencies,
+    );
+    assert.equal(snapshot.sessionSelected.availability, "available");
+    assert.equal(snapshot.sessionSelected.model.present, true);
+    assert.equal(snapshot.sessionSelected.matchesConfiguredDefault, "unknown");
+  }
+
+  f.select("configured-provider", "configured-model");
+  const settings = f.pi.getSettings();
+  for (const [defaultProvider, defaultModel] of [
+    [undefined, "configured-model"],
+    ["configured-provider", undefined],
+    ["", "configured-model"],
+    ["configured-provider", ""],
+  ]) {
+    f.pi.getSettings = () => ({ ...settings, defaultProvider, defaultModel });
+    const snapshot = await collectRuntimeSnapshot(
+      f.pi,
+      f.ctx,
+      123,
+      f.dependencies,
+    );
+    assert.equal(snapshot.configured.availability, "available");
+    assert.equal(snapshot.sessionSelected.availability, "available");
+    assert.equal(snapshot.sessionSelected.matchesConfiguredDefault, "unknown");
+  }
 });
 
 test("active tool omissions count only truncated allowlisted names", async () => {
@@ -308,6 +358,80 @@ test("disk sampling describes the containing worktree from nested cwd, excluding
     const aborted = new AbortController();
     aborted.abort();
     await assert.rejects(readDiskSnapshot(directory, aborted.signal));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("disk dirty excludes submodule contents and revisions without leaking sensitive paths", async () => {
+  const directory = mkdtempSync(
+    join(tmpdir(), "openpi-snapshot-submodule-test-"),
+  );
+  const sensitivePath = "sensitive-account@example.invalid";
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync(
+      "git",
+      [
+        "-C",
+        cwd,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "protocol.file.allow=always",
+        ...args,
+      ],
+      { encoding: "utf8", stdio: "pipe" },
+    );
+  try {
+    const source = join(directory, "source");
+    const project = join(directory, "project");
+    mkdirSync(source);
+    mkdirSync(project);
+    git(source, "init", "-q");
+    writeFileSync(join(source, "tracked.txt"), "base");
+    git(source, "add", "tracked.txt");
+    git(source, "commit", "-qm", "base");
+    git(project, "init", "-q");
+    git(project, "submodule", "add", "-q", source, sensitivePath);
+    git(project, "commit", "-qm", "submodule fixture");
+    const submodule = join(project, sensitivePath);
+    const clean = await readDiskSnapshot(project);
+    assert.equal(clean.availability, "available");
+    assert.equal(clean.dirty, false);
+    const head = clean.head;
+
+    async function assertNoSubmoduleSignal() {
+      // Prove the fixture would produce a submodule-derived signal without exclusion.
+      assert.ok(
+        git(
+          project,
+          "status",
+          "--porcelain=v1",
+          "--ignore-submodules=none",
+        ).includes(sensitivePath),
+      );
+      const snapshot = await readDiskSnapshot(project);
+      assert.equal(snapshot.availability, "available");
+      assert.equal(snapshot.head, head);
+      assert.equal(snapshot.dirty, false);
+      assert.equal(JSON.stringify(snapshot).includes(sensitivePath), false);
+      assert.equal(JSON.stringify(snapshot).includes(directory), false);
+    }
+
+    writeFileSync(join(submodule, "untracked-secret.txt"), "untracked");
+    await assertNoSubmoduleSignal();
+    writeFileSync(join(submodule, "tracked.txt"), "modified");
+    await assertNoSubmoduleSignal();
+    git(submodule, "add", ".");
+    git(submodule, "commit", "-qm", "changed submodule revision");
+    await assertNoSubmoduleSignal();
+
+    writeFileSync(join(project, "ordinary-untracked.txt"), "ordinary change");
+    const ordinaryDirty = await readDiskSnapshot(project);
+    assert.equal(ordinaryDirty.availability, "available");
+    assert.equal(ordinaryDirty.dirty, true);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

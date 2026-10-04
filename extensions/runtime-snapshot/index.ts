@@ -99,7 +99,7 @@ async function gitRead(cwd: string, args: string[], signal?: AbortSignal) {
 
 /**
  * Facts for cwd's containing Git worktree, including changes outside nested cwd.
- * Dirty covers tracked and normal untracked status, not ignored files.
+ * Dirty covers tracked and normal untracked status, not ignored files or submodules.
  * No branch/path/remote names, locks, refresh, or cleanup.
  */
 export async function readDiskSnapshot(cwd: string, signal?: AbortSignal) {
@@ -115,7 +115,7 @@ export async function readDiskSnapshot(cwd: string, signal?: AbortSignal) {
         "status",
         "--porcelain=v1",
         "--untracked-files=normal",
-        "--ignore-submodules=none",
+        "--ignore-submodules=all",
       ],
       signal,
     );
@@ -196,7 +196,8 @@ export async function collectRuntimeSnapshot(
       thinking: thinkingLevel(pi.getThinkingLevel()),
       matchesConfiguredDefault:
         configured.availability === "available" &&
-        model &&
+        model?.provider &&
+        model.id &&
         configuredIdentity?.provider &&
         configuredIdentity.model
           ? model.provider === configuredIdentity.provider &&

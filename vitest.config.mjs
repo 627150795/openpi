@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
 import { defineConfig } from "vitest/config";
 
@@ -15,7 +16,7 @@ export default defineConfig({
           throw new Error("Vite's file deny matcher is unavailable");
         }
         const nested = config.root.toLowerCase().split("/").includes(".git");
-        config.fsDenyGlob = (file) => {
+        const isDenied = (file) => {
           const local = relative(config.root, file).replaceAll("\\", "/");
           const inside =
             local !== ".." && !local.startsWith("../") && !isAbsolute(local);
@@ -24,6 +25,18 @@ export default defineConfig({
             return true;
           }
           return deny(nested && inside ? local : file);
+        };
+        config.fsDenyGlob = (file) => {
+          if (isDenied(file)) return true;
+          try {
+            // Static HTTP serving can retain the lexical alias. Check its
+            // actual target too, without widening Vite's existing allow-list.
+            return isDenied(realpathSync.native(file));
+          } catch (error) {
+            // Missing paths contain no readable target; let Vite return 404.
+            // Other lookup failures must not silently bypass target denial.
+            return error.code !== "ENOENT" && error.code !== "ENOTDIR";
+          }
         };
       },
     },

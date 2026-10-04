@@ -50,6 +50,32 @@ configuration. Disabling only the hook reproduced the same module error
 (`main-vitest-green.log`); full gate receipts are `check.log`, `test.log` and
 `validation-status.json`.
 
+## Target-aware HTTP correction
+
+Parent review of `578b393d6ac17b0a2c2b31ce05a06c835cf03149` identified a real
+privacy regression: an inside alias to an outside `.env` returned HTTP 200 with
+synthetic contents, whereas baseline Vite returned 403. The original direct
+matcher assertions did **not** establish HTTP symlink privacy. Parent evidence
+is retained in `/tmp/openpi-workflow-audit/663-http-symlink-proof.json` and its
+self-contained probe; neither artifact was overwritten.
+
+The matcher now checks both the lexical filename and its read-only realpath
+against the same boundary-aware policy. Outside targets retain the original
+matcher. Missing/non-directory paths defer to Vite's ordinary missing-file
+handling; other realpath lookup errors deny access. There is no target cache or
+allow-list expansion.
+
+`/tmp/openpi-663-symlink-fix/http-red.log` records the pre-correction HTTP 200
+metadata leak. `focused-green.log` covers real HTTP 403/no marker for outside
+sensitive targets, HTTP 200 for ordinary files/modules and nonsensitive linked
+files/modules, and HTTP 404 for a missing path. The resolved allow-list is compared
+with unmodified Vite, including Vite's own client-directory allowance. The paired
+Git regression also imports React through the root dependency symlink.
+Windows uses directory junction fixtures; the file-symlink `.env` HTTP case is
+explicitly not exercised there because it requires additional privileges.
+Scoped lint/typecheck receipts are `lint.log` and `typecheck.log`. The previously
+recorded full Node suite remains red; no full suite was rerun for this correction.
+
 ## Limitations / compatibility
 
 The hook depends on Vite 8.2.0's internal resolved `fsDenyGlob` function. It throws

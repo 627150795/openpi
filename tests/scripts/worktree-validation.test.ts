@@ -12,9 +12,86 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { createServer } from "vite";
 
 const source = resolve(".");
 const dependencies = realpathSync(resolve("node_modules"));
+
+test("HTTP denies sensitive symlink targets but serves ordinary files and modules", {
+  timeout: 30_000,
+}, async (context) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "openpi-http-")));
+  const root = join(directory, ".git/pi-worktrees/inside");
+  const modules = join(directory, "modules");
+  const metadata = join(directory, "private/.git");
+  mkdirSync(root, { recursive: true });
+  mkdirSync(modules, { recursive: true });
+  mkdirSync(metadata, { recursive: true });
+  const marker = "OPENPI_SYNTHETIC_PRIVATE_MARKER";
+  writeFileSync(join(directory, ".env"), marker);
+  writeFileSync(join(metadata, "config"), marker);
+  writeFileSync(join(root, "ordinary.txt"), "ordinary fixture");
+  writeFileSync(join(root, "value.js"), "export const value = 42;\n");
+  writeFileSync(join(modules, "ordinary.txt"), "ordinary linked fixture");
+  writeFileSync(join(modules, "value.js"), "export const linkedValue = 43;\n");
+  const linkType = process.platform === "win32" ? "junction" : "dir";
+  symlinkSync(metadata, join(root, "metadata"), linkType);
+  symlinkSync(modules, join(root, "modules"), linkType);
+  if (process.platform !== "win32") {
+    symlinkSync(join(directory, ".env"), join(root, "alias.txt"));
+  } else {
+    context.diagnostic(
+      "Windows: directory junction privacy/compatibility tested; file-symlink .env case requires privileges and is not exercised.",
+    );
+  }
+  const baseline = await createServer({
+    root,
+    configFile: false,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, fs: { strict: true, allow: [root] } },
+  });
+  const originalAllow = [...baseline.config.server.fs.allow];
+  await baseline.close();
+  const server = await createServer({
+    root,
+    configFile: join(source, "vitest.config.mjs"),
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, fs: { strict: true, allow: [root] } },
+  });
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address !== "string");
+    const get = async (path: string) => {
+      const response = await fetch(`http://127.0.0.1:${address.port}${path}`);
+      return { status: response.status, body: await response.text() };
+    };
+    for (const path of [
+      "/metadata/config",
+      ...(process.platform === "win32" ? [] : ["/alias.txt"]),
+    ]) {
+      const response = await get(path);
+      assert.equal(response.status, 403, path);
+      assert.equal(response.body.includes(marker), false, path);
+    }
+    for (const [path, content] of [
+      ["/ordinary.txt", "ordinary fixture"],
+      ["/value.js", "42"],
+      ["/modules/ordinary.txt", "ordinary linked fixture"],
+      ["/modules/value.js", "43"],
+    ]) {
+      const response = await get(path);
+      assert.equal(response.status, 200, path);
+      assert.ok(response.body.includes(content), path);
+    }
+    assert.equal((await get("/missing.txt")).status, 404);
+    assert.equal(server.config.server.fs.strict, true);
+    assert.deepEqual(server.config.server.fs.allow, originalAllow);
+  } finally {
+    await server.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 // Exercise real Git worktrees, real tool discovery and sibling module imports;
 // a config-shape assertion alone misses the absolute-path deny failure (#663).
@@ -58,7 +135,7 @@ test("validation works inside and outside Git metadata without exposing private 
     );
     writeFileSync(
       join(repository, "tests/web/value.spec.ts"),
-      `// @vitest-environment jsdom\nimport { expect, it } from "vitest";\nimport { value } from "../../web/ui/src/value";\nit("loads a sibling source module", () => expect(value).toBe(42));\n`,
+      `// @vitest-environment jsdom\nimport { expect, it } from "vitest";\nimport { value } from "../../web/ui/src/value";\nimport { createElement } from "react";\nit("loads a sibling source module and symlinked dependency", () => { expect(value).toBe(42); expect(typeof createElement).toBe("function"); });\n`,
     );
     run(repository, "git", ["add", "."]);
     run(repository, "git", [

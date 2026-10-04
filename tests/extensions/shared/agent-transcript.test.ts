@@ -57,17 +57,14 @@ const call = (toolId: string, name = "read"): AgentTranscriptItem => ({
   ],
 });
 
-const result = (
-  toolId: string,
-  isError = false,
-  name = "read",
-): AgentTranscriptItem => ({
-  kind: "toolResult",
-  toolId,
-  name,
-  isError,
-  outputPreview: `out-${toolId}`,
-});
+const result = (toolId: string, isError = false, name = "read") =>
+  ({
+    kind: "toolResult",
+    toolId,
+    name,
+    isError,
+    outputPreview: `out-${toolId}`,
+  }) satisfies AgentTranscriptItem;
 
 /** Fresh renderer per call so itemCache never leaks between cases. */
 const render = (items: AgentTranscriptItem[], width = 60) =>

@@ -32,6 +32,8 @@ The implementation at `a95f280f95a480ee7fde8ea01519335b394e7612` uses the existi
 
 These tests prove source/projection contracts, not model compliance with negative instructions or terminal pixel readability. Real TUI pixels, live installation and actual model strategy remain unverified here. The user's installed source was independently identified by `pi list` as the single local `~/work/openpi-main-runtime` checkout at `d36b58b67f87d24b4926521b965bdccfff7719e4`, distinct from the implementation checkout; this work does not modify or reload it. Final combined checks/tests and independent review belong to the integrating task.
 
+An independent review found that re-matching rendered rows loses original filename boundaries after soft wrapping. The correction projects original mention offsets using Pi's published, typed `components/editor.js` `wordWrapLine` helper and public cursor/padding getters. This helper is not re-exported by the root SDK API. It is a limited component-subpath dependency, not a private-state override. Locked SDK 0.99.1 and installed 1.0.2 wrapping outputs and native Editor projections were checked across six synthetic cases. Unknown or mismatched custom-editor geometry skips coloring rather than guessing. Future SDK changes at this subpath require compatibility review; runtime discovery remains independent of this presentation dependency.
+
 ## Alternatives considered
 
 - Keeping the imperative/negation/condition classifier would continue guessing language intent in the runtime and contradict the accepted mention rule.

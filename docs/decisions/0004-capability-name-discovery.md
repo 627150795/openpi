@@ -15,7 +15,7 @@ supersedes: none
 
 [Issue #655](https://github.com/openpi-dev/openpi/issues/655) tracks capability-name feedback and loading. The previous shared classifier required imperative phrases or an entire input consisting of one English name, and suppressed discussion, negation and conditional clauses. README wording also described conflicting mention rules. This made simple naming unreliable and assigned language judgment to runtime heuristics.
 
-On 2026-10-04 the maintainer explicitly chose: “能力名称这个字眼出现就行，具体判别模型决定”. This Decision records that accepted scope from the implementation conversation. It does not claim Issue closure, a merged implementation, an installed update or actual terminal acceptance.
+On 2026-10-04 the maintainer explicitly chose name-based discovery, leaving the interpretation of whether to use the capability to the model. This Decision records that accepted scope from the implementation conversation. It does not claim Issue closure, a merged implementation, an installed update or actual terminal acceptance.
 
 ## Decision
 
@@ -30,7 +30,7 @@ On 2026-10-04 the maintainer explicitly chose: “能力名称这个字眼出现
 
 The implementation at `a95f280f95a480ee7fde8ea01519335b394e7612` uses the existing `before_agent_start` loading seam and shared tool surface. Source-level tests separately cover mention classification, guidance/tool activation, ghost acceptance, identifier boundaries and native editor render bytes. A locked Pi 0.99.1 Editor fixture verifies unchanged input, visible widths, reverse-video cursor state and the native cursor marker across multiple lines and ANSI segments. Targeted child-session tests retain authority intersection and inherited-tool restrictions.
 
-These tests prove source/projection contracts, not model compliance with negative instructions or terminal pixel readability. Real TUI pixels, live installation and actual model strategy remain unverified here. The user's installed source was independently identified by `pi list` as `/Users/tushaokun/work/openpi-main-runtime` at `d36b58b67f87d24b4926521b965bdccfff7719e4`, distinct from the implementation checkout; this work does not modify or reload it. Final combined checks/tests and independent review belong to the integrating task.
+These tests prove source/projection contracts, not model compliance with negative instructions or terminal pixel readability. Real TUI pixels, live installation and actual model strategy remain unverified here. The user's installed source was independently identified by `pi list` as the single local `~/work/openpi-main-runtime` checkout at `d36b58b67f87d24b4926521b965bdccfff7719e4`, distinct from the implementation checkout; this work does not modify or reload it. Final combined checks/tests and independent review belong to the integrating task.
 
 ## Alternatives considered
 

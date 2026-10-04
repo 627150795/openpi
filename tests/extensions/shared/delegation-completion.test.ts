@@ -230,7 +230,8 @@ test("cwd identifiers disclose neither host paths nor sensitive components", () 
     const text = JSON.stringify(receipt) + delegationCompletionText(receipt);
     for (const sensitive of [cwd, "private-host", "sensitive-project"])
       assert.equal(text.includes(sensitive), false);
-    assert.match(receipt.workspace.effectiveCwd ?? "", /^cwd:[a-f0-9]{64}$/);
+    assert.equal(receipt.workspace.effectiveCwd, undefined);
+    assert.equal(receipt.workspace.requestedCwd, undefined);
     assert.equal(
       receipt.workspace.effectiveCwd,
       receipt.workspace.requestedCwd,

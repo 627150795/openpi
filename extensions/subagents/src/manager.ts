@@ -106,8 +106,9 @@ interface MutableSnapshot {
   worktreeBranch?: string;
   worktreeBaseSha?: string;
   requestedCwd?: string;
-  runGeneration: number;
+  runGeneration?: number;
   completionGeneration?: number;
+  evidence?: SubagentSnapshot["evidence"];
   runTranscriptStart: number;
   createdAt: number;
   settledAt?: number;
@@ -360,7 +361,7 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
         // A cancel can clear a queued restart before RunStarted reaches the
         // manager. Its RunSettled still belongs to the new run, not the old
         // settled snapshot, so promote the lifecycle before applying it.
-        s.runGeneration++;
+        if (s.runGeneration !== undefined) s.runGeneration++;
         s.runTranscriptStart = s.transcriptVersion;
         s.status = "running";
         s.settledAt = undefined;
@@ -423,10 +424,15 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
       const s = entry.snapshot;
       switch (event._tag) {
         case "RunStarted":
+          if (event.generation !== undefined) {
+            s.runGeneration = event.generation;
+          } else if (s.status !== "running") {
+            s.runGeneration = (s.runGeneration ?? 0) + 1;
+          }
           if (s.status !== "running") {
-            s.runGeneration++;
             s.runTranscriptStart = s.transcriptVersion;
           }
+          s.evidence = undefined;
           entry.restarting = false;
           s.status = "running";
           s.outcome = undefined;
@@ -438,6 +444,8 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
           s.structuredResult = undefined;
           break;
         case "RunSettled":
+          if (event.notStarted) s.runGeneration = undefined;
+          s.evidence = event.evidence;
           settle(entry, event.outcome);
           return; // settle() already notified
         case "UserMessage":

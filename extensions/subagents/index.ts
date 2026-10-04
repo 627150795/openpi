@@ -56,6 +56,7 @@ import {
   type DelegationCompletion,
 } from "../shared/delegation-completion.ts";
 import { subagentCompletion } from "./src/completion.ts";
+import { queryDirectEvidence } from "./src/evidence.ts";
 import {
   sessionChildExecutionAdmission,
   type ChildExecutionAdmission,
@@ -188,6 +189,9 @@ interface SpawnResultDetails {
 }
 
 interface SubagentFinishedData {
+  readonly origin?: "model";
+  readonly evidence?: SubagentSnapshot["evidence"];
+  readonly completion?: DelegationCompletion;
   readonly id: string;
   readonly title: string;
   readonly status: SubagentSnapshot["status"];
@@ -800,12 +804,21 @@ export default function (
     }
     // Mark the finish in the transcript. The result itself reaches the model
     // separately; this line is for the reader watching the run.
-    pi.appendEntry<SubagentFinishedData>("subagent-finished", {
-      id: snap.id,
-      title: snap.title,
-      status: snap.status,
-      elapsed: formatElapsed(snap),
-    });
+    try {
+      if (snap.evidence) snap.evidence.parentBound = true;
+      pi.appendEntry<SubagentFinishedData>("subagent-finished", {
+        id: snap.id,
+        origin: "model",
+        title: snap.title,
+        status: snap.status,
+        elapsed: formatElapsed(snap),
+        evidence: snap.evidence,
+        completion: subagentCompletion(snap),
+      });
+    } catch {
+      // Storage failure must not hide execution success or invent a locator.
+      if (snap.evidence) snap.evidence.parentBound = false;
+    }
     if (consumed) {
       resultDelivery.consume([snap.id]);
       return;
@@ -1107,6 +1120,8 @@ export default function (
         ...(worktree ? { worktree: { ...worktree, repoCwd: cwd } } : {}),
         parent: {
           parentCwd: ctx.cwd,
+          sessionId: ctx.sessionManager?.getSessionId?.(),
+          originEntryId: ctx.sessionManager?.getLeafId?.(),
           projectTrusted,
           inheritedModel: ctx.model
             ? { provider: ctx.model.provider, id: ctx.model.id }
@@ -1528,8 +1543,55 @@ export default function (
       id: Type.String({
         description: SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS.id,
       }),
+      generation: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          description:
+            "Actual Direct run generation; omitted selects the latest active-branch owner record when reading evidence.",
+        }),
+      ),
+      evidence: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal("transcript"),
+            Type.Literal("final"),
+            Type.Literal("structured"),
+          ],
+          {
+            description:
+              "Explicit original evidence read through Pi permissions. Native nestedCalls may disclose read paths. Missing/legacy/unsealed/pruned/denied/oversized evidence is unavailable.",
+          },
+        ),
+      ),
+      offset: Type.Optional(
+        Type.Integer({
+          minimum: 0,
+          description:
+            "Unicode code-point offset in selected evidence; use nextOffset to continue.",
+        }),
+      ),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 4096,
+          description:
+            "Maximum code points per page (default 2048); serialized page capped at 16 KiB.",
+        }),
+      ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (
+        params.generation !== undefined ||
+        params.evidence !== undefined ||
+        params.offset !== undefined ||
+        params.limit !== undefined
+      ) {
+        const evidence = await queryDirectEvidence(ctx, params, signal);
+        return {
+          content: [{ type: "text", text: JSON.stringify(evidence) }],
+          details: evidence,
+        };
+      }
       const manager = await getManager();
       const snap = manager.view.get(params.id);
       if (!snap || !isModelVisible(snap)) {

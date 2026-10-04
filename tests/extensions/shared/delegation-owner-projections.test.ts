@@ -38,6 +38,17 @@ const direct: SubagentSnapshot = {
   transcriptVersion: 3,
   runGeneration: 2,
   completionGeneration: 2,
+  evidence: {
+    generation: 2,
+    sessionId: "12345678-1234-1234-1234-123456789abc",
+    sessionPath: "/evidence/child.jsonl",
+    startEntryId: "start",
+    endEntryId: "end",
+    finalEntryId: "end",
+    sealed: true,
+    parentBound: true,
+    structured: { status: "not-run" },
+  },
   runTranscriptStart: 2,
   transcript: [
     { kind: "toolResult", toolId: "old", name: "bash", isError: false },
@@ -85,6 +96,14 @@ test("Direct completion references do not disclose canonical private evidence pa
     const snap = {
       ...direct,
       meta: { ...direct.meta, sessionFilePath },
+      evidence: {
+        ...direct.evidence!,
+        structured: {
+          status: "saved" as const,
+          path: artifactPath,
+          digest: "content-digest",
+        },
+      },
       structuredResult: {
         value: { verdict: "pass" },
         json: '{"verdict":"pass"}',
@@ -100,18 +119,18 @@ test("Direct completion references do not disclose canonical private evidence pa
     assert.equal(projection.includes(artifactPath), false);
     assert.match(
       receipt.observed.evidenceRef ?? "",
-      /^pi-session:[a-f0-9]{64}$/,
+      /^direct:[a-f0-9-]+:run:2$/,
     );
     assert.match(
       receipt.modelClaimed.structuredRef ?? "",
-      /^pi-artifact:[a-f0-9]{64}$/,
+      /^direct:[a-f0-9-]+:run:2$/,
     );
     assert.equal(
       receipt.observed.tools.evidenceRef,
       receipt.observed.evidenceRef,
     );
     assert.deepEqual(subagentCompletion(snap), receipt);
-    assert.notEqual(
+    assert.equal(
       subagentCompletion({
         ...snap,
         meta: { ...snap.meta, sessionFilePath: `${sessionFilePath}.other` },
@@ -122,7 +141,11 @@ test("Direct completion references do not disclose canonical private evidence pa
     assert.equal(snap.meta.sessionFilePath, sessionFilePath);
     assert.equal(snap.structuredResult.artifactPath, artifactPath);
   }
-  const missing = subagentCompletion({ ...direct, meta: { backend: "pi" } });
+  const missing = subagentCompletion({
+    ...direct,
+    evidence: undefined,
+    meta: { backend: "pi" },
+  });
   assert.equal(missing.observed.evidenceRef, undefined);
   assert.equal(missing.modelClaimed.textRef, undefined);
 });
@@ -150,11 +173,12 @@ test("Direct evidence and claims require current-generation settlement provenanc
     ...direct,
     runGeneration: 3,
     completionGeneration: 3,
+    evidence: { ...direct.evidence!, generation: 3 },
   });
   assert.notEqual(next.observed.evidenceRef, previous.observed.evidenceRef);
-  assert.equal(next.observed.referenceKind, "fingerprint");
-  assert.equal(next.modelClaimed.referenceKind, "fingerprint");
-  assert.match(delegationCompletionText(next), /evidence-fingerprint=/);
+  assert.equal(next.observed.referenceKind, "owner-locator");
+  assert.equal(next.modelClaimed.referenceKind, "owner-locator");
+  assert.match(delegationCompletionText(next), /evidence=direct:/);
 });
 
 const agent: AgentRecord = {

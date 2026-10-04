@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 /** A presentation-only join of existing owner facts, never acceptance authority. */
 export type DelegationOutcome =
   | "running"
@@ -70,12 +68,6 @@ export function decodeDelegationReplayOrigin(value: unknown) {
 
 export const COMPLETION_MAX_BYTES = 16 * 1024;
 
-function cwdIdentifier(value: string | undefined) {
-  return value
-    ? `cwd:${createHash("sha256").update(value).digest("hex")}`
-    : undefined;
-}
-
 function enumValue<const T extends string>(
   value: unknown,
   allowed: readonly T[],
@@ -115,8 +107,9 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
     toolEvidenceRef: boundedReference(input.toolEvidenceRef),
     textRef: boundedReference(input.textRef),
     structuredRef: boundedReference(input.structuredRef),
-    requestedCwd: cwdIdentifier(input.requestedCwd),
-    effectiveCwd: cwdIdentifier(input.effectiveCwd),
+    // Paths and guessable path hashes are not owner identities.
+    requestedCwd: undefined,
+    effectiveCwd: undefined,
     branch: boundedReference(input.branch, 512),
     baseSha: boundedReference(input.baseSha, 128),
     handoffRef: boundedReference(input.handoffRef),

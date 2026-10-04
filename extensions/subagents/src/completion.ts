@@ -1,21 +1,6 @@
-import { createHash } from "node:crypto";
+import { directEvidenceRef } from "./evidence.ts";
 import { projectDelegationCompletion } from "../../shared/delegation-completion.ts";
 import type { SubagentSnapshot } from "./domain.ts";
-
-// Fingerprints correlate evidence across projections without disclosing host paths.
-// Canonical paths stay with the Pi session / structured-result owner; these are
-// identifiers, not filesystem locators or grants of access to private evidence.
-function evidenceReference(
-  kind: "session" | "artifact",
-  generation: number,
-  filePath?: string,
-) {
-  return filePath
-    ? `pi-${kind}:${createHash("sha256")
-        .update(JSON.stringify([filePath, generation]))
-        .digest("hex")}`
-    : undefined;
-}
 
 export function subagentCompletion(snap: SubagentSnapshot) {
   const retainedStart = snap.transcriptVersion - snap.transcript.length;
@@ -34,7 +19,9 @@ export function subagentCompletion(snap: SubagentSnapshot) {
   const evidenceRef =
     generation === undefined
       ? undefined
-      : evidenceReference("session", generation, snap.meta.sessionFilePath);
+      : snap.evidence?.generation === generation
+        ? directEvidenceRef(snap.evidence)
+        : undefined;
   return projectDelegationCompletion({
     owner: "direct",
     executionId:
@@ -53,24 +40,27 @@ export function subagentCompletion(snap: SubagentSnapshot) {
               ? "cancelled"
               : "uncertain",
     evidenceRef,
-    referenceKind: "fingerprint",
+    referenceKind: "owner-locator",
     tools: runTranscript.flatMap((item) =>
       item.kind === "toolResult"
         ? [{ callId: item.toolId, name: item.name, isError: item.isError }]
         : [],
     ),
     textRef:
-      snap.status !== "running" && snap.finalText ? evidenceRef : undefined,
+      snap.status !== "running" && snap.finalText && snap.evidence?.finalEntryId
+        ? evidenceRef
+        : undefined,
     structuredRef:
-      generation === undefined
-        ? undefined
-        : evidenceReference(
-            "artifact",
-            generation,
-            snap.structuredResult?.artifactPath,
-          ),
+      evidenceRef && snap.evidence?.structured.status === "saved"
+        ? evidenceRef
+        : undefined,
     persistence:
-      generation !== undefined && snap.structuredResult ? "saved" : "unknown",
+      snap.evidence?.parentBound === false ||
+      snap.evidence?.structured.status === "failed"
+        ? "failed"
+        : snap.evidence?.structured.status === "saved"
+          ? "saved"
+          : "unknown",
     effectiveCwd: snap.cwd,
     requestedCwd: snap.requestedCwd,
     isolation: snap.worktreeBranch ? "worktree" : "shared",

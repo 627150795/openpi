@@ -12,8 +12,6 @@ Research records preserve sourced investigation and distinguish observations, in
 
 ## Validated investigations
 
-- [`COMPLETION_RETRY_CONSUMPTION_2026-10-03.md`](COMPLETION_RETRY_CONSUMPTION_2026-10-03.md) — invalidated completion claims, late transport retries, and producer-adapter regression evidence ([#647](https://github.com/openpi-dev/openpi/issues/647)).
-
 - [`PI_0_99_COMPATIBILITY_2026-09-30.md`](PI_0_99_COMPATIBILITY_2026-09-30.md) — native transcript and prompt admission migration, nested child authority regressions, and local Pi CLI verification ([#635](https://github.com/openpi-dev/openpi/issues/635)).
 
 - [`WEB_DSH_COMPOSER_2026-09-29.md`](WEB_DSH_COMPOSER_2026-09-29.md) — DSH 输入区参考、原生目标入口和压缩消息保留/投递边界（[#597](https://github.com/openpi-dev/openpi/issues/597)、[PR #598](https://github.com/openpi-dev/openpi/pull/598)）。
@@ -77,6 +75,8 @@ Research records preserve sourced investigation and distinguish observations, in
 - [`CAPABILITY_GATEWAY_BOUNDARY_2026-08-30.md`](CAPABILITY_GATEWAY_BOUNDARY_2026-08-30.md) — source-scoped research and explicitly labelled future proposals ([PR #308](https://github.com/openpi-dev/openpi/pull/308)).
 
 - [`CACHE_USAGE_CONTRACT_2026-09-11.md`](CACHE_USAGE_CONTRACT_2026-09-11.md) — source-scoped Pi usage field matrix and synthetic cache-diagnostic replay boundaries; real comparative Session evidence remains open ([#156](https://github.com/openpi-dev/openpi/issues/156)).
+
+- [`COMPLETION_RETRY_CONSUMPTION_2026-10-03.md`](COMPLETION_RETRY_CONSUMPTION_2026-10-03.md) — invalidated completion claims, late transport retries, and producer-adapter regression evidence ([#647](https://github.com/openpi-dev/openpi/issues/647)).
 
 - [`CURSOR_NATIVE_RECOVERY_2026-09-08.md`](CURSOR_NATIVE_RECOVERY_2026-09-08.md) — bounded in-band native execution rejection, Pi-owned tools, cancellation identity, and actual child acceptance ([#234](https://github.com/openpi-dev/openpi/issues/234)).
 

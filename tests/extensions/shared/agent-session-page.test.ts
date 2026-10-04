@@ -212,7 +212,8 @@ function bashState() {
   };
 }
 
-test("Direct and Workflow children use one read-only full-terminal page", () => {
+test("Direct and Workflow children use one read-only full-terminal page", (t) => {
+  t.mock.method(Date, "now", () => 0);
   const direct = new AgentSessionPage(tui(18), theme, keybindings, {
     getState: state,
     close() {},

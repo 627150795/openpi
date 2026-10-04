@@ -68,7 +68,8 @@ if (suite !== "ui") {
     process.exit(parallelNodeResult);
   }
 
-  // Windows process-tree tests must not overlap unrelated Node test files.
+  // Windows process-tree and real-host subprocess tests must not overlap
+  // unrelated Node test files.
   // Keep the rest of the suite on Node's default file-level concurrency.
   const serialNodeResult = runNodeTests(nodeTestGroups.serial, [
     "--test-concurrency=1",

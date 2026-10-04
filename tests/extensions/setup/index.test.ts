@@ -1182,11 +1182,28 @@ test("builds a focused review prompt when configuration already exists", () => {
   assert.doesNotMatch(message, /This is the first setup/);
 });
 
+function assertBoundedConfigurationPath(message: string, detail: string) {
+  const match = /error @ (.+?): (.+?)\)/u.exec(message);
+  assert.ok(match);
+  const displayedPath = match[1]!;
+  assert.ok(Array.from(displayedPath).length <= 80);
+  if (displayedPath.endsWith("…"))
+    assert.ok(SETUP_CONFIG_PATH.startsWith(displayedPath.slice(0, -1)));
+  else assert.equal(displayedPath, SETUP_CONFIG_PATH);
+  assert.equal(match[2], detail);
+}
+
 test("session start reports configuration load errors without changing the file or starting setup", async () => {
-  for (const raw of [
-    '{"PRIVATE_VALUE":',
-    '{"configVersion":999}',
-    '{"configVersion":1,"ui":{"footerStyle":"PRIVATE_VALUE"}}',
+  for (const [raw, detail] of [
+    ['{"PRIVATE_VALUE":', `error @ ${SETUP_CONFIG_PATH}: Malformed JSON`],
+    [
+      '{"configVersion":999}',
+      "error @ configVersion: Unsupported configuration version",
+    ],
+    [
+      '{"configVersion":1,"ui":{"footerStyle":"PRIVATE_VALUE"}}',
+      "error @ ui.footerStyle: Invalid or unsupported value",
+    ],
   ]) {
     writeFileSync(SETUP_CONFIG_PATH, raw);
     const h = visibilityHarness();
@@ -1198,6 +1215,9 @@ test("session start reports configuration load errors without changing the file 
     assert.match(notice.message, /safe defaults/i);
     assert.match(notice.message, /writes are blocked/i);
     assert.match(notice.message, /\/openpi-setup/);
+    if (detail.includes(SETUP_CONFIG_PATH))
+      assertBoundedConfigurationPath(notice.message, "Malformed JSON");
+    else assert.ok(notice.message.includes(detail));
     assert.doesNotMatch(notice.message, /PRIVATE_VALUE/);
     assert.equal(readFileSync(SETUP_CONFIG_PATH, "utf8"), raw);
     assert.equal(h.isActive(), false);
@@ -1207,29 +1227,74 @@ test("session start reports configuration load errors without changing the file 
   rmSync(SETUP_CONFIG_PATH);
 });
 
-test("session start warns about unknown fields and legacy documents without migrating them", async () => {
-  for (const raw of [
-    "{}",
-    '{"configVersion":1,"future":{"token":"PRIVATE_VALUE"}}',
-  ]) {
-    writeFileSync(SETUP_CONFIG_PATH, raw);
+test("session start is silent for a writable legacy-only file without migrating it", async () => {
+  const raw = "{}";
+  writeFileSync(SETUP_CONFIG_PATH, raw);
+  const h = visibilityHarness();
+  h.ctx.hasUI = true;
+  await h.emit("session_start");
+  assert.deepEqual(h.notifications, []);
+  assert.equal(readFileSync(SETUP_CONFIG_PATH, "utf8"), raw);
+  assert.equal(h.isActive(), false);
+  assert.deepEqual(h.customMessages, []);
+  rmSync(SETUP_CONFIG_PATH);
+});
+
+test("session start warns about unknown fields with their location without migrating the file", async () => {
+  const raw = '{"future":{"token":"PRIVATE_VALUE"}}';
+  writeFileSync(SETUP_CONFIG_PATH, raw);
+  const h = visibilityHarness();
+  h.ctx.hasUI = true;
+  await h.emit("session_start");
+  assert.equal(h.notifications.length, 1);
+  const notice = h.notifications[0];
+  assert.equal(notice.level, "warning");
+  assert.match(notice.message, /warning @ future: Unknown field preserved/);
+  assert.doesNotMatch(notice.message, /legacy format or unknown fields/i);
+  assert.doesNotMatch(notice.message, /configVersion/);
+  assert.match(notice.message, /\/openpi-setup/);
+  assert.doesNotMatch(
+    notice.message,
+    /PRIVATE_VALUE|token|safe defaults|writes are blocked/,
+  );
+  assert.equal(readFileSync(SETUP_CONFIG_PATH, "utf8"), raw);
+  assert.equal(h.isActive(), false);
+  assert.deepEqual(h.customMessages, []);
+  rmSync(SETUP_CONFIG_PATH);
+});
+
+test("session start bounds and sanitizes unknown diagnostic paths", async () => {
+  const longKey = `unknown-long-\u001bfield\n${"😀".repeat(100)}`;
+  const raw = JSON.stringify({
+    configVersion: 1,
+    [longKey]: true,
+    futureSecond: true,
+    futureThird: true,
+    futureFourth: true,
+    futureFifth: true,
+  });
+  writeFileSync(SETUP_CONFIG_PATH, raw);
+  try {
     const h = visibilityHarness();
     h.ctx.hasUI = true;
     await h.emit("session_start");
     assert.equal(h.notifications.length, 1);
     const notice = h.notifications[0];
     assert.equal(notice.level, "warning");
-    assert.match(notice.message, /configuration.*warning/i);
-    assert.match(notice.message, /\/openpi-setup/);
-    assert.doesNotMatch(
+    assert.equal((notice.message.match(/warning @ /g) ?? []).length, 3);
+    assert.match(notice.message, /…/);
+    assert.match(notice.message, /unknown-long-/);
+    assert.doesNotMatch(notice.message, /futureFourth|futureFifth/);
+    assert.doesNotMatch(notice.message, /[\u0000-\u001f\u007f-\u009f]/);
+    const firstPath = /warning @ (.*?): Unknown field preserved/.exec(
       notice.message,
-      /PRIVATE_VALUE|token|safe defaults|writes are blocked/,
-    );
+    )?.[1];
+    assert.ok(firstPath);
+    assert.ok(Array.from(firstPath).length <= 80);
     assert.equal(readFileSync(SETUP_CONFIG_PATH, "utf8"), raw);
-    assert.equal(h.isActive(), false);
-    assert.deepEqual(h.customMessages, []);
+  } finally {
+    rmSync(SETUP_CONFIG_PATH, { force: true });
   }
-  rmSync(SETUP_CONFIG_PATH);
 });
 
 test("session start is quiet for missing or valid configuration and clears errors after repair", async () => {
@@ -1263,6 +1328,10 @@ test("session start reports read errors without turning them into a missing conf
     assert.equal(h.notifications.length, 1);
     assert.equal(h.notifications[0].level, "error");
     assert.match(h.notifications[0].message, /writes are blocked/i);
+    assertBoundedConfigurationPath(
+      h.notifications[0].message,
+      "Unable to read configuration",
+    );
     assert.equal(existsSync(SETUP_CONFIG_PATH), true);
     assert.deepEqual(h.customMessages, []);
   } finally {

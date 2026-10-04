@@ -113,6 +113,7 @@ export function seedAgentDirectory(
 }
 
 export type FakeProvider = {
+  readonly baseUrl: string;
   readonly requests: RecordedProviderRequest[];
   /** Hold the next response until {@link release} settles it. */
   holdNextResponse(): void;
@@ -162,6 +163,7 @@ export async function startFakeProvider(
     body: unknown,
     requestIndex: number,
   ) => string | AsyncIterable<string>,
+  { port = PROVIDER_PORT }: { port?: number } = {},
 ): Promise<FakeProvider> {
   const requests: RecordedProviderRequest[] = [];
   let pendingRelease: (() => void) | undefined;
@@ -217,10 +219,14 @@ export async function startFakeProvider(
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(PROVIDER_PORT, "127.0.0.1", resolve);
+    server.listen(port, "127.0.0.1", resolve);
   });
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("Fake provider has no TCP address");
 
   return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
     holdNextResponse() {
       holdRequested = true;

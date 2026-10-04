@@ -73,6 +73,24 @@ const subagentRoleModelValueSchema = Type.Union([
   Type.Null(),
 ]);
 
+const MAX_SESSION_START_PATHS = 3;
+const MAX_SESSION_START_PATH_CODE_POINTS = 80;
+
+// ponytail: startup shows three short paths; /openpi-setup keeps the full report.
+function formatSessionStartPath(path: string) {
+  let formattedPath = "";
+  let codePoints = 0;
+  for (const character of path) {
+    if (codePoints === MAX_SESSION_START_PATH_CODE_POINTS - 1)
+      return `${formattedPath}…`;
+    formattedPath += /[\u0000-\u001f\u007f-\u009f]/u.test(character)
+      ? "�"
+      : character;
+    codePoints++;
+  }
+  return formattedPath;
+}
+
 export const SUBAGENT_ROLE_MODELS_SCHEMA = Type.Partial(
   Type.Record(
     Type.Union(SUBAGENT_ROLE_NAMES.map((role) => Type.Literal(role))),
@@ -289,12 +307,42 @@ export default function openPiSetup(pi: ExtensionAPI) {
     resetEpisode();
     if (!ctx.hasUI) return;
     const inspected = inspectSetupConfig();
-    if (inspected.diagnostics.length === 0) return;
+    const diagnostics = inspected.diagnostics;
+    if (diagnostics.length === 0) return;
+    const actionableDiagnostics = diagnostics.filter(
+      (diagnostic) =>
+        !(
+          diagnostic.severity === "warning" &&
+          diagnostic.path === "configVersion" &&
+          diagnostic.message.startsWith("Legacy unversioned")
+        ),
+    );
+    if (
+      inspected.writable &&
+      diagnostics.length === 1 &&
+      actionableDiagnostics.length === 0
+    )
+      return;
+    const hasErrors = actionableDiagnostics.some(
+      (diagnostic) => diagnostic.severity === "error",
+    );
+    const details = actionableDiagnostics
+      .slice(0, MAX_SESSION_START_PATHS)
+      .map((diagnostic) => {
+        const message =
+          diagnostic.path === "configVersion" && diagnostic.severity === "error"
+            ? "Unsupported configuration version"
+            : diagnostic.message;
+        return `${diagnostic.severity} @ ${formatSessionStartPath(diagnostic.path || inspected.path)}: ${message}`;
+      })
+      .join("; ");
+    const more =
+      actionableDiagnostics.length > MAX_SESSION_START_PATHS ? "; …" : "";
     ctx.ui.notify(
-      inspected.writable
-        ? "OpenPI configuration loaded with warnings (legacy format or unknown fields). The file is unchanged. Run /openpi-setup for details."
-        : "OpenPI could not load the saved configuration; safe defaults are in use and configuration writes are blocked. The file is unchanged. Run /openpi-setup for diagnostics and recovery guidance.",
-      inspected.writable ? "warning" : "error",
+      hasErrors
+        ? `OpenPI could not load the saved configuration; safe defaults are in use and configuration writes are blocked (${details}${more}). The file is unchanged. Run /openpi-setup for diagnostics and recovery guidance.`
+        : `OpenPI configuration loaded with warnings (${details}${more}). The file is unchanged. Run /openpi-setup for full diagnostics.`,
+      hasErrors ? "error" : "warning",
     );
   });
 
@@ -556,19 +604,19 @@ export default function openPiSetup(pi: ExtensionAPI) {
       subagent_result_display: Type.Optional(
         StringEnum(DETAIL_DISPLAYS, {
           description:
-            "How completed Subagent results render by default: full shows complete output; compact shows only bounded status rows while app.tools.expand reveals the full child report. Omit to preserve the current value.",
+            "How completed Subagent results render by default in Pi and Web: full shows complete output; compact shows bounded status rows, with disclosure controls revealing the report. Omit to preserve the current value.",
         }),
       ),
       bash_tool_display: Type.Optional(
         StringEnum(DETAIL_DISPLAYS, {
           description:
-            "How Bash commands and output render by default: compact shows one semantic activity row with running/success/failure state; app.tools.expand restores Pi's native command, output, error, timing, and full-output metadata. Full keeps Pi's native rendering expanded by default. Omit to preserve the current value.",
+            "How Bash commands and output render by default in Pi and Web: compact shows a semantic activity row with execution state; disclosure controls reveal command, output and evidence. Full expands the evidence and enclosing Web execution group by default. Omit to preserve the current value.",
         }),
       ),
       file_mutation_display: Type.Optional(
         StringEnum(DETAIL_DISPLAYS, {
           description:
-            "How Write/Edit content and diffs render by default: compact shows one semantic activity row with path, status, and line/diff counts; app.tools.expand restores Pi's native preview, output, error, and diff. Full keeps Pi's native rendering expanded by default. Omit to preserve the current value.",
+            "How Write/Edit content and diffs render by default in Pi and Web: compact shows path, status and change counts; disclosure controls reveal native preview, output, error and diff. Full expands the evidence and enclosing Web execution group by default. Omit to preserve the current value.",
         }),
       ),
       subagent_role_models: Type.Optional(SUBAGENT_ROLE_MODELS_SCHEMA),

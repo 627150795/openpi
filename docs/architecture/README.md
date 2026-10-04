@@ -6,4 +6,5 @@ Keep unresolved alternatives and implementation proposals in [`../design/`](../d
 
 Each new or materially revised architecture record should identify its evidence status, source revision, affected Pi primitive, current invariants, related Issues and Decisions, and any record it supersedes.
 
+- [`WORKTREE_HANDOFF_INVENTORY.md`](WORKTREE_HANDOFF_INVENTORY.md) - #661 bounded Git inventory coverage and preservation semantics (draft candidate)
 - [`WEB_MODEL_DISCOVERY.md`](WEB_MODEL_DISCOVERY.md) - bounded Web model snapshots and full-catalog discovery through Pi's model runtime

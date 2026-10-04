@@ -431,6 +431,9 @@ export async function reclaimWorktree(
   const untracked = statusLines.some((line) => line.startsWith("??"));
   const dirty = statusLines.length > 0;
 
+  // Only presence matters here. Git's directory summary avoids expanding an
+  // installed dependency tree, while any nonempty result still forbids removal.
+  // Overflow/timeouts remain unknown and preserve the checkout.
   const ignoredFiles = await run([
     "-C",
     worktree.path,
@@ -438,6 +441,8 @@ export async function reclaimWorktree(
     "--others",
     "--ignored",
     "--exclude-standard",
+    "--directory",
+    "--no-empty-directory",
     "-z",
   ]);
   if (ignoredFiles.code !== 0) {

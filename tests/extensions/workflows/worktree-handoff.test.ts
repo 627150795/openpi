@@ -92,7 +92,8 @@ test("handoff captures tracked binary patch plus untracked and ignored inventori
     assert.equal(prepared.manifest.version, WORKTREE_HANDOFF_VERSION);
     assert.match(prepared.manifest.patch.content, /GIT binary patch/);
     assert.ok(prepared.manifest.untracked.includes("loose.txt"));
-    assert.ok(prepared.manifest.ignored.includes("ignored/artifact"));
+    assert.deepEqual(prepared.manifest.ignored, ["ignored/artifact"]);
+    assert.equal(prepared.manifest.inventoryCoverage, undefined);
     assert.ok(fs.existsSync(prepared.absolutePath));
 
     const cleanup = await reclaimWorktree(repo, worktree.worktree);
@@ -113,6 +114,67 @@ test("handoff captures tracked binary patch plus untracked and ignored inventori
   });
 });
 
+test("large ignored dependency inventory retains the patch and preserves the checkout", async () => {
+  await fixture(async ({ repo, runDir, worktree }) => {
+    const cwd = worktree.worktree.path;
+    fs.writeFileSync(path.join(cwd, "a.txt"), "deliverable\n");
+    const ignored = path.join(cwd, "ignored", "dependencies");
+    fs.mkdirSync(ignored, { recursive: true });
+    for (let i = 0; i < 6000; i++) {
+      fs.writeFileSync(
+        path.join(ignored, `${"x".repeat(200)}-${i}`),
+        "private\n",
+      );
+    }
+    // Prove this fixture exceeds both old handoff and cleanup buffers.
+    const expanded = execFileSync(
+      "git",
+      ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+      { cwd, maxBuffer: 4 * 1024 * 1024 },
+    );
+    assert.ok(expanded.length > 1024 * 1024);
+    fs.writeFileSync(path.join(cwd, "loose-�\n.txt"), "keep\n");
+    fs.symlinkSync(ignored, path.join(cwd, "dependency-link"));
+    const prepared = prepareWorktreeHandoff({
+      runDir,
+      runId: "wf_large",
+      agentIndex: 1,
+      agentLabel: "impl",
+      repoCwd: repo,
+      worktree: worktree.worktree,
+    });
+    assert.ok(prepared.ok, prepared.ok ? "" : prepared.reason);
+    if (!prepared.ok) return;
+    assert.match(prepared.manifest.patch.content, /\+deliverable/);
+    assert.deepEqual(prepared.manifest.ignored, ["ignored/"]);
+    assert.deepEqual(prepared.manifest.inventoryCoverage, {
+      untracked: "complete-files",
+      ignored: "directory-summary",
+    });
+    assert.deepEqual(prepared.manifest.untracked, [
+      "dependency-link",
+      "loose-�\n.txt",
+    ]);
+    assert.ok(fs.statSync(prepared.absolutePath).size < 1024 * 1024);
+    const cleanup = await reclaimWorktree(repo, worktree.worktree);
+    assert.equal(cleanup.removed, false);
+    assert.equal(cleanup.ignored, true);
+    assert.equal(
+      fs.readFileSync(path.join(ignored, `${"x".repeat(200)}-0`), "utf8"),
+      "private\n",
+    );
+    const disk = JSON.parse(fs.readFileSync(prepared.absolutePath, "utf8"));
+    assert.deepEqual(
+      disk.inventoryCoverage,
+      prepared.manifest.inventoryCoverage,
+    );
+    assert.equal(
+      finalizeWorktreeHandoff(prepared, cleanup).patch.content,
+      prepared.manifest.patch.content,
+    );
+  });
+});
+
 test("handoff capture failure is explicit and leaves cleanup to the caller", async () => {
   await fixture(async ({ repo, runDir, worktree }) => {
     const prepared = prepareWorktreeHandoff({
@@ -125,6 +187,119 @@ test("handoff capture failure is explicit and leaves cleanup to the caller", asy
     });
     assert.equal(prepared.ok, false);
     assert.ok(fs.existsSync(worktree.worktree.path));
+  });
+});
+
+for (const kind of ["untracked", "ignored"] as const) {
+  test(`oversized loose ${kind} inventory fails explicitly without partial facts`, async () => {
+    await fixture(async ({ repo, runDir, worktree }) => {
+      const cwd = worktree.worktree.path;
+      if (kind === "ignored")
+        fs.appendFileSync(path.join(cwd, ".gitignore"), "*.private\n");
+      for (let i = 0; i < 3100; i++) {
+        fs.writeFileSync(
+          path.join(cwd, `${"x".repeat(200)}-${i}.private`),
+          "keep\n",
+        );
+      }
+      const prepared = prepareWorktreeHandoff({
+        runDir,
+        runId: "wf_loose",
+        agentIndex: 1,
+        agentLabel: "impl",
+        repoCwd: repo,
+        worktree: worktree.worktree,
+      });
+      assert.equal(prepared.ok, false);
+      if (!prepared.ok)
+        assert.match(
+          prepared.reason,
+          new RegExp(
+            `${kind} inventory exceeded .*even with directory summaries`,
+          ),
+        );
+      assert.equal(
+        fs.existsSync(path.join(runDir, "worktrees", "agent-1.json")),
+        false,
+      );
+      const cleanup = await reclaimWorktree(repo, worktree.worktree);
+      assert.equal(cleanup.removed, false);
+      assert.ok(fs.existsSync(path.join(cwd, `${"x".repeat(200)}-0.private`)));
+    });
+  });
+}
+
+test("large untracked directory uses explicit directory coverage", async () => {
+  await fixture(async ({ repo, runDir, worktree }) => {
+    const loose = path.join(worktree.worktree.path, "loose-�\n");
+    fs.mkdirSync(loose);
+    for (let i = 0; i < 3100; i++)
+      fs.writeFileSync(path.join(loose, `${"x".repeat(200)}-${i}`), "keep\n");
+    const prepared = prepareWorktreeHandoff({
+      runDir,
+      runId: "wf_directory",
+      agentIndex: 1,
+      agentLabel: "impl",
+      repoCwd: repo,
+      worktree: worktree.worktree,
+    });
+    assert.ok(prepared.ok, prepared.ok ? "" : prepared.reason);
+    if (!prepared.ok) return;
+    assert.deepEqual(prepared.manifest.untracked, ["loose-�\n/"]);
+    assert.deepEqual(prepared.manifest.inventoryCoverage, {
+      untracked: "directory-summary",
+      ignored: "complete-files",
+    });
+    assert.equal(
+      (await reclaimWorktree(repo, worktree.worktree)).removed,
+      false,
+    );
+  });
+});
+
+test("handoff path ownership rejects a symlink escaping the Git directory", async () => {
+  await fixture(async ({ repo, runDir, worktree }) => {
+    const link = path.join(path.dirname(worktree.worktree.path), "escape");
+    fs.symlinkSync(repo, link);
+    const prepared = prepareWorktreeHandoff({
+      runDir,
+      runId: "wf_escape",
+      agentIndex: 1,
+      agentLabel: "impl",
+      repoCwd: repo,
+      worktree: { ...worktree.worktree, path: link },
+    });
+    assert.equal(prepared.ok, false);
+    if (!prepared.ok) assert.match(prepared.reason, /escaped/);
+    assert.ok(fs.existsSync(worktree.worktree.path));
+  });
+});
+
+test("invalid UTF-8 inventory paths are rejected rather than replaced", {
+  skip: process.platform !== "linux",
+}, async () => {
+  await fixture(async ({ repo, runDir, worktree }) => {
+    fs.writeFileSync(
+      Buffer.concat([
+        Buffer.from(`${worktree.worktree.path}/invalid-`),
+        Buffer.from([0xff]),
+      ]),
+      "keep\n",
+    );
+    const prepared = prepareWorktreeHandoff({
+      runDir,
+      runId: "wf_invalid_path",
+      agentIndex: 1,
+      agentLabel: "impl",
+      repoCwd: repo,
+      worktree: worktree.worktree,
+    });
+    assert.equal(prepared.ok, false);
+    if (!prepared.ok) assert.match(prepared.reason, /UTF-8/);
+    assert.equal(
+      fs.existsSync(path.join(runDir, "worktrees", "agent-1.json")),
+      false,
+    );
   });
 });
 

@@ -374,17 +374,20 @@ it("does not refresh a different archive query after a late rename settles", asy
 });
 
 it("keeps loaded rows and the retained range retry when a post-rename archive page fails", async () => {
-  const records = Array.from({ length: 50 }, (_, index) =>
+  // Two pages are sufficient to exercise retained-range retry. Rendering 50
+  // rows here spends the Windows timeout on DOM queries, not this contract.
+  // The preceding native-page test retains full 25-row pagination coverage.
+  const records = Array.from({ length: 4 }, (_, index) =>
     session(`Archived ${index + 1}`, true),
   );
   const read = vi
     .spyOn(WebClient.prototype, "listArchivedSessions")
-    .mockResolvedValueOnce(archivePage(records.slice(0, 25), "second-page"))
-    .mockResolvedValueOnce(archivePage(records.slice(25)))
-    .mockResolvedValueOnce(archivePage(records.slice(0, 25), "second-page"))
+    .mockResolvedValueOnce(archivePage(records.slice(0, 2), "second-page"))
+    .mockResolvedValueOnce(archivePage(records.slice(2)))
+    .mockResolvedValueOnce(archivePage(records.slice(0, 2), "second-page"))
     .mockRejectedValueOnce(new Error("offline"))
-    .mockResolvedValueOnce(archivePage(records.slice(0, 25), "second-page"))
-    .mockResolvedValueOnce(archivePage(records.slice(25)));
+    .mockResolvedValueOnce(archivePage(records.slice(0, 2), "second-page"))
+    .mockResolvedValueOnce(archivePage(records.slice(2)));
   const { actions } = mount([]);
   vi.spyOn(actions, "renameSession").mockResolvedValue();
   fireEvent.click(
@@ -392,12 +395,12 @@ it("keeps loaded rows and the retained range retry when a post-rename archive pa
   );
   await screen.findByText("Archived 1");
   fireEvent.click(screen.getByRole("button", { name: i18n.t("moreArchives") }));
-  await screen.findByText("Archived 50");
-  const input = await openRename("Archived 30");
+  await screen.findByText("Archived 4");
+  const input = await openRename("Archived 3");
   fireEvent.change(input, { target: { value: "Revised" } });
   fireEvent.click(screen.getByRole("button", { name: i18n.t("save") }));
   await screen.findByText(i18n.t("archiveLoadFailed"));
-  expect(screen.getByText("Archived 50")).toBeTruthy();
+  expect(screen.getByText("Archived 4")).toBeTruthy();
   expect(
     screen.queryByRole("dialog", { name: i18n.t("renameConversation") }),
   ).toBeNull();
@@ -409,7 +412,7 @@ it("keeps loaded rows and the retained range retry when a post-rename archive pa
   await waitFor(() =>
     expect(screen.queryByText(i18n.t("archiveLoadFailed"))).toBeNull(),
   );
-  expect(screen.getByText("Archived 50")).toBeTruthy();
+  expect(screen.getByText("Archived 4")).toBeTruthy();
 });
 
 it("aborts a retained-range refresh when the archive query changes and ignores its late second page", async () => {

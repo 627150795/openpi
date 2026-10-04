@@ -22,8 +22,8 @@ import { registerWebCapability } from "../../../extensions/shared/web-observer-r
 function fixture() {
   const scope = {};
   let selected: {
-    provider?: string;
-    id?: string;
+    provider?: unknown;
+    id?: unknown;
     baseUrl: string;
     headers: { Authorization: string };
   } = {
@@ -100,7 +100,7 @@ function fixture() {
     scope,
     dependencies,
     reads: () => configReads,
-    select(provider?: string, id?: string) {
+    select(provider?: unknown, id?: unknown) {
       selected = { ...selected, provider, id };
     },
     change() {
@@ -171,6 +171,12 @@ test("model matching is unknown unless both selected and configured identities a
     ["", "configured-model"],
     ["configured-provider", ""],
     [undefined, undefined],
+    [123, "configured-model"],
+    ["configured-provider", {}],
+    [true, "configured-model"],
+    ["configured-provider", []],
+    ["   ", "configured-model"],
+    ["configured-provider", "\t\n"],
   ]) {
     f.select(provider, id);
     const snapshot = await collectRuntimeSnapshot(
@@ -191,8 +197,18 @@ test("model matching is unknown unless both selected and configured identities a
     ["configured-provider", undefined],
     ["", "configured-model"],
     ["configured-provider", ""],
+    [123, "configured-model"],
+    ["configured-provider", {}],
+    [true, "configured-model"],
+    ["configured-provider", []],
+    ["   ", "configured-model"],
+    ["configured-provider", "\t\n"],
   ]) {
-    f.pi.getSettings = () => ({ ...settings, defaultProvider, defaultModel });
+    // Effective settings are typed, but malformed persisted/runtime inputs can occur.
+    f.pi.getSettings = () =>
+      ({ ...settings, defaultProvider, defaultModel }) as ReturnType<
+        ExtensionAPI["getSettings"]
+      >;
     const snapshot = await collectRuntimeSnapshot(
       f.pi,
       f.ctx,
@@ -300,8 +316,20 @@ test("owner/config/context errors are explicit unavailable, never raw exceptions
     });
     assert.equal(snapshot.configured.package.availability, "unavailable");
     assert.equal(snapshot.resources.workflows.availability, "unavailable");
+    for (const owner of [
+      snapshot.resources.workflows,
+      snapshot.resources.background,
+    ]) {
+      for (const field of ["items", "omitted", "truncated"]) {
+        assert.equal(Object.hasOwn(owner, field), false, field);
+      }
+      assert.equal(owner.source, "session-owner-observer");
+      assert.equal(typeof owner.sampledAt, "number");
+    }
     assert.equal(snapshot.resources.subagents.availability, "available");
     assert.deepEqual(snapshot.resources.subagents.items, []);
+    assert.equal(snapshot.resources.subagents.omitted, 0);
+    assert.equal(snapshot.resources.subagents.truncated, false);
     assert.equal(JSON.stringify(snapshot).includes("private-error"), false);
   } finally {
     unregister();
@@ -554,6 +582,9 @@ test("large collector inputs produce a complete result within the byte budget", 
     assert.equal(snapshot.toolBoundary.availability, "available");
     assert.equal(snapshot.toolBoundary.active.names.length, 64);
     assert.equal(snapshot.toolBoundary.active.omitted, 32);
+    assert.equal(snapshot.resources.subagents.availability, "available");
+    assert.equal(snapshot.resources.workflows.availability, "available");
+    assert.equal(snapshot.resources.background.availability, "available");
     assert.equal(snapshot.resources.subagents.items.length, 32);
     assert.equal(snapshot.resources.subagents.omitted, 100_032);
     assert.equal(snapshot.resources.workflows.omitted, 100_064);
@@ -601,20 +632,87 @@ test("the total resource and result byte budgets fail closed", async () => {
       f.dependencies,
     );
     assert.equal(
-      Object.values(snapshot.resources).reduce(
-        (total, owner) => total + owner.items.length,
-        0,
-      ),
+      Object.values(snapshot.resources).reduce((total, owner) => {
+        assert.equal(owner.availability, "available");
+        return total + owner.items.length;
+      }, 0),
       32,
     );
+    assert.equal(snapshot.resources.background.availability, "available");
     assert.equal(snapshot.resources.background.omitted, 32);
     assert.equal(snapshot.toolBoundary.availability, "available");
     snapshot.toolBoundary.active.names = ["x".repeat(MAX_SNAPSHOT_BYTES)];
     const bounded = snapshotToolResult(snapshot);
     assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= MAX_SNAPSHOT_BYTES);
     assert.match(JSON.stringify(bounded), /output-bound/);
+    const details = JSON.parse(bounded.content[0].text);
+    assert.equal(details.sampledAt, snapshot.sampledAt);
+    assert.equal(details.completedAt, snapshot.completedAt);
+    assert.equal(details.consistency, snapshot.consistency);
+    assert.deepEqual(details.loaded, snapshot.loaded);
+    assert.deepEqual(details.resources, snapshot.resources);
+    assert.deepEqual(details.disk, snapshot.disk);
+    assert.deepEqual(details.configured, snapshot.configured);
+    assert.equal(details.toolBoundary.availability, "available");
+    assert.equal(
+      details.toolBoundary.sampledAt,
+      snapshot.toolBoundary.sampledAt,
+    );
+    assert.equal(details.toolBoundary.source, snapshot.toolBoundary.source);
+    assert.equal(details.toolBoundary.output, "omitted");
+    assert.equal(details.toolBoundary.reason, "output-bound");
+    assert.equal(Object.hasOwn(details.toolBoundary, "active"), false);
+    assert.deepEqual(details, bounded.details);
   } finally {
     for (const dispose of unregister) dispose();
+  }
+});
+
+test("output omission preserves each owner's availability and sample provenance", async () => {
+  const f = fixture();
+  const unregister = registerWebCapability(f.scope, {
+    kind: "subagents",
+    snapshot: () => ({ items: [], omitted: 0, truncated: false }),
+  });
+  try {
+    const snapshot = await collectRuntimeSnapshot(
+      f.pi,
+      f.ctx,
+      123,
+      f.dependencies,
+    );
+    assert.equal(snapshot.resources.subagents.availability, "available");
+    assert.equal(snapshot.toolBoundary.availability, "available");
+    // Force more than one sample past the output budget, including Unicode
+    // and escaping overhead in both visible text and structured details.
+    snapshot.resources.subagents.items = Array.from({ length: 2_000 }, () => ({
+      status: "running",
+    }));
+    snapshot.toolBoundary.active.names = ['私密"\\'.repeat(MAX_SNAPSHOT_BYTES)];
+    const result = snapshotToolResult(snapshot);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_SNAPSHOT_BYTES,
+    );
+    const details = JSON.parse(result.content[0].text);
+    const owner = details.resources.subagents;
+    assert.equal(owner.availability, "available");
+    assert.equal(owner.sampledAt, snapshot.resources.subagents.sampledAt);
+    assert.equal(owner.source, "session-owner-observer");
+    assert.equal(owner.query, "subagent_list");
+    assert.equal(owner.output, "omitted");
+    assert.equal(owner.reason, "output-bound");
+    for (const field of ["items", "omitted", "truncated"]) {
+      assert.equal(Object.hasOwn(owner, field), false, field);
+    }
+    assert.equal(details.toolBoundary.output, "omitted");
+    assert.deepEqual(details.resources.workflows, snapshot.resources.workflows);
+    assert.equal(details.resources.workflows.availability, "unavailable");
+    assert.equal(Object.hasOwn(details.resources.workflows, "items"), false);
+    assert.deepEqual(details.loaded, snapshot.loaded);
+    assert.deepEqual(details, result.details);
+    assert.equal(JSON.stringify(result).includes("私密"), false);
+  } finally {
+    unregister();
   }
 });
 

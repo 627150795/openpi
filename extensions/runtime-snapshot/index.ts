@@ -63,6 +63,10 @@ function sample<T>(read: () => T) {
   }
 }
 
+function validIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function thinkingLevel(value: unknown) {
   return REASONING_LEVELS.find((level) => level === value) ?? "unknown";
 }
@@ -154,7 +158,7 @@ export async function collectRuntimeSnapshot(
   abortIfNeeded(signal);
   const startedAt = Date.now();
   // Read each source afresh. Do not cache settings, context, or owner samples.
-  let configuredIdentity: { provider?: string; model?: string } | undefined;
+  let configuredIdentity: { provider?: unknown; model?: unknown } | undefined;
   const configured = sample(() => {
     const settings = pi.getSettings();
     configuredIdentity = {
@@ -201,10 +205,10 @@ export async function collectRuntimeSnapshot(
       thinking: thinkingLevel(pi.getThinkingLevel()),
       matchesConfiguredDefault:
         configured.availability === "available" &&
-        model?.provider &&
-        model.id &&
-        configuredIdentity?.provider &&
-        configuredIdentity.model
+        validIdentifier(model?.provider) &&
+        validIdentifier(model?.id) &&
+        validIdentifier(configuredIdentity?.provider) &&
+        validIdentifier(configuredIdentity?.model)
           ? model.provider === configuredIdentity.provider &&
             model.id === configuredIdentity.model
           : ("unknown" as const),
@@ -273,9 +277,6 @@ export async function collectRuntimeSnapshot(
       ...ownerSample,
       source: "session-owner-observer" as const,
       query,
-      items: "items" in ownerSample ? ownerSample.items : [],
-      omitted: "omitted" in ownerSample ? ownerSample.omitted : 0,
-      truncated: "truncated" in ownerSample ? ownerSample.truncated : false,
     };
   }
   const resources = {
@@ -329,16 +330,77 @@ export function snapshotToolResult(
   };
   if (Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_SNAPSHOT_BYTES)
     return result;
-  // Bound the entire tool result, including details, not only its visible text.
-  const bounded = {
-    availability: "unavailable",
-    reason: "output-bound",
-    sampledAt: Date.now(),
+  // Omit the largest sample payloads first, not the evidence that they were
+  // sampled. Source availability and output omission are independent facts.
+  const { package: packageConfig, ...configured } = snapshot.configured;
+  const samples = {
+    configured,
+    packageConfig,
+    sessionSelected: snapshot.sessionSelected,
+    trust: snapshot.trust,
+    packageProvenance: snapshot.packageProvenance,
+    toolBoundary: snapshot.toolBoundary,
+    packageDisk: snapshot.disk.package,
+    projectDisk: snapshot.disk.project,
+    loaded: snapshot.loaded,
+    ...snapshot.resources,
   };
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(bounded) }],
-    details: bounded,
-  };
+  type Sample = (typeof samples)[keyof typeof samples];
+  const projected: Record<
+    keyof typeof samples,
+    | Sample
+    | {
+        availability: Sample["availability"];
+        sampledAt: number;
+        source?: string;
+        query?: string;
+        output: "omitted";
+        reason: "output-bound";
+      }
+  > = { ...samples };
+  const keys = Object.keys(samples) as (keyof typeof samples)[];
+  keys.sort(
+    (a, b) =>
+      Buffer.byteLength(JSON.stringify(samples[b]), "utf8") -
+      Buffer.byteLength(JSON.stringify(samples[a]), "utf8"),
+  );
+  for (const key of keys) {
+    const entry = samples[key];
+    projected[key] = {
+      availability: entry.availability,
+      sampledAt: entry.sampledAt,
+      ...("source" in entry ? { source: entry.source } : {}),
+      ...("query" in entry ? { query: entry.query } : {}),
+      output: "omitted",
+      reason: "output-bound",
+    };
+    const bounded = {
+      version: snapshot.version,
+      sampledAt: snapshot.sampledAt,
+      completedAt: snapshot.completedAt,
+      consistency: snapshot.consistency,
+      configured: { ...projected.configured, package: projected.packageConfig },
+      sessionSelected: projected.sessionSelected,
+      trust: projected.trust,
+      packageProvenance: projected.packageProvenance,
+      toolBoundary: projected.toolBoundary,
+      disk: { package: projected.packageDisk, project: projected.projectDisk },
+      loaded: projected.loaded,
+      resources: {
+        subagents: projected.subagents,
+        workflows: projected.workflows,
+        background: projected.background,
+      },
+    };
+    const result = {
+      content: [{ type: "text" as const, text: JSON.stringify(bounded) }],
+      details: bounded,
+    };
+    if (Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_SNAPSHOT_BYTES)
+      return result;
+  }
+  // Collector metadata is fixed-size; do not claim completion if that changes.
+  throw new Error("Snapshot metadata exceeds output bound");
 }
 
 export default function runtimeSnapshot(pi: ExtensionAPI) {

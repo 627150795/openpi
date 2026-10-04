@@ -85,11 +85,11 @@ pi install npm:@tt-a1i/openpi
 <summary>能力如何按需开启，以及原生 Skill 的使用方式</summary>
 
 > [!TIP]
-> Capability discovery 默认 `explicit`：明确说出能力意图才会加载对应组。整条输入只有英文 `subagent` / `subagents` 或 `workflow` / `workflows` 时，视为主动选择对应能力（忽略大小写与首尾空白），名称会高亮，提交后加载工具组。加载不等于立即启动任务，模型仍根据任务上下文决定是否调用。普通句子中仅提及名称不会因此加载；也可以明确要求「用 subagent 帮我查」。
-> 例如 `subagent, workflow` → 同时加载两组；「在后台运行 dev server」→ 后台终端；「用/使用子代理检查」或句首「子代理了解下项目」→ Subagent；「用工作流编排」→ Workflow；「用 fd/rg 搜索」或「用 git diff 比较分支」→ 搜索与只读 Git 工具。
-> 关键是把意图说清楚（说「用子代理」「子代理检查项目」「后台运行」这类带执行动作的短语），不需要记住任何工具名。仅讨论能力的「子代理是什么」不会加载；否定或条件表达也继续 fail closed。
+> Capability discovery 默认 `explicit`：输入中出现独立名称 `subagent` / `subagents` / `子代理` 或 `workflow` / `workflows` / `工作流`，就会显示名称高亮，提交后加载对应工具组并提供说明路径。英文忽略大小写；多行、讨论、否定和条件句中的名称同样参与发现，`subagent.ts`、`workflow_status` 等文件名或标识符片段不会触发。模型根据完整请求判断是否实际使用，名称发现不会自动启动子代理或 Workflow，也不改变工具权限。采用范围见 [Decision 0004](docs/decisions/0004-capability-name-discovery.md)。
+> 例如 `subagent, workflow` → 同时加载两组；「子代理是什么」→ 加载子代理说明与工具，供模型解释；「不要用 Workflow」→ 仍发现 Workflow，模型应遵守用户的否定要求。其他能力保持现有明确请求入口：「在后台运行 dev server」→ 后台终端；「用 fd/rg 搜索」或「用 git diff 比较分支」→ 搜索与只读 Git 工具。
 > `/plan` 是一个运行时安全例外：进入或恢复 Plan Mode 时会为当前 Session 自动加载 `search` 组，让只读调研直接使用结构化 Git 工具。
-> 在交互输入框中，保留词 `Subagent` / `Workflow`，以及已被识别的中文能力请求，会使用 Claude Code 风格的薰衣草紫显示；浅色终端自动使用更深的紫色以维持可读性。变色表示提交后会加载对应能力。因为英文名称本身就是授权词，讨论中写出它们也会开闸；条件句和否定句仍保持普通显示，Suggestion 幽灵文字也要在用户接受进输入框后才参与识别。
+> 在交互输入框中，中英文能力名称使用 Claude Code 风格的薰衣草紫显示；浅色终端使用更深的紫色。变色仅表示提交后会加载对应能力。Suggestion 幽灵文字在用户接受进输入框之前不着色、不参与发现；光标和原始输入仍由 Pi 编辑器管理。
+
 
 Skill 使用 Pi 原生机制：模型根据名称、描述和路径按需用 `read` 读取；用户明确调用时，在输入开头使用 `/skill:code-review 审查这个 PR`（前提是 Pi 已加载该 Skill）。候选补全、正文展开和运行中追加输入均由 Pi 处理。OpenPI 不提供专门的 `$skill` 语法或独立的 Skill 加载通道。
 

@@ -70,7 +70,7 @@ function capabilitySkillPaths(capabilities: readonly OpenPiCapability[]) {
 function skillGuidance(capabilities: readonly OpenPiCapability[]) {
   const skills = capabilitySkillPaths(capabilities);
   return skills.length > 0
-    ? `Before first use, read the matching OpenPI capability guidance: ${skills.join(", ")}.`
+    ? `Capability discovery only; loading tools does not request execution. Decide whether to use them from the user's full request. Before first use, read the matching OpenPI capability guidance: ${skills.join(", ")}.`
     : "";
 }
 

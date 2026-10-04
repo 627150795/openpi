@@ -124,13 +124,17 @@ test("all nested statuses include earlier failures and cancellations despite out
   assert.match(text, /✓ completed · 2\.3s · 15 calls/u);
   assert.match(text, /✗ early-read · error: permission denied/u);
   assert.match(text, /⊘ early-cancel · cancelled/u);
-  assert.match(text, /… pending · running/u);
-  assert.match(text, /⋯ 9 more calls/u);
+  assert.match(text, /^ +pending$/mu);
+  assert.doesNotMatch(text, /… pending|pending · running/u);
+  assert.doesNotMatch(text, /more calls?/u);
+  for (let index = 0; index < 12; index++)
+    assert.match(text, new RegExp(`read-${index} · 3ms`, "u"));
   assert.match(text, /ctrl\+o.*to expand/iu);
-  assert.doesNotMatch(text, /PRIVATE ARGS|read-0/u);
-  assert.ok(
-    rows.length <= 15,
-    "collapsed height does not grow with the ledger",
+  assert.doesNotMatch(text, /PRIVATE ARGS/u);
+  assert.equal(
+    rows.length,
+    calls.length + 3,
+    "each call gets exactly one compact row",
   );
   const full = rendered(result("done", calls), { expanded: true }).join("\n");
   assert.match(full, /Calls/u);
@@ -148,8 +152,9 @@ test("partial updates, outer errors and unknown historical evidence do not claim
     result("not-final", [{ name: "read", status: "running" }]),
     { partial: true },
   ).join("\n");
-  assert.match(partial, /… running · 1 call/u);
-  assert.match(partial, /Output pending/u);
+  assert.match(partial, /1 call/u);
+  assert.doesNotMatch(partial, /…|running/u);
+  assert.doesNotMatch(partial, /Output pending/u);
   assert.doesNotMatch(partial, /not-final/u);
   assert.match(
     rendered(result("failed"), { error: true }).join("\n"),
@@ -178,12 +183,47 @@ test("partial updates, outer errors and unknown historical evidence do not claim
 test("outer JSON string becomes readable text with raw evidence retained on expansion", () => {
   const raw = JSON.stringify("first line\nsecond line\nthird line");
   const compact = rendered(result(raw)).join("\n");
-  assert.match(compact, /│ first line\n│ second line\n│ third line/u);
+  assert.doesNotMatch(compact, /first line|second line|third line/u);
   assert.doesNotMatch(compact, /\\n/u);
   const expanded = rendered(result(raw), { expanded: true }).join("\n");
   assert.match(expanded, /Display projection \(outer JSON decoded\)/u);
   assert.match(expanded, /Raw output \(terminal controls stripped\)/u);
   assert.ok(expanded.includes(raw));
+});
+
+test("compact hides all output and spill paths without changing expanded evidence or results", () => {
+  const output =
+    "Warning: truncated output\nPRIVATE_OUTPUT\n" + "x".repeat(8_000);
+  const calls = [
+    { name: "bash", args: '{"command":"echo hello"}', status: "ok" },
+    {
+      name: "read",
+      args: '{"path":"missing.ts"}',
+      status: "error",
+      error: "denied",
+    },
+    { name: "edit", status: "cancelled" },
+    { name: "rg", status: "unknown" },
+  ];
+  const value = result(output, calls);
+  value.details = { calls, fullOutputPath: "/tmp/private-output-evidence.txt" };
+  const before = JSON.stringify(value);
+  for (const options of [{}, { partial: true }, { error: true }]) {
+    const compact = rendered(value, options).join("\n");
+    assert.doesNotMatch(
+      compact,
+      /PRIVATE_OUTPUT|Warning:|Full output:|private-output-evidence/u,
+    );
+    assert.match(compact, /✓ \uea85 Bash echo hello/u);
+    assert.match(compact, /✗ \ueaa4 Read missing\.ts · error: denied/u);
+    assert.match(compact, /⊘ \uea73 Edit · cancelled/u);
+    assert.match(compact, /\? \uea6d Rg · unknown/u);
+    assert.match(compact, /ctrl\+o.*to expand/iu);
+  }
+  const expanded = rendered(value, { expanded: true, width: 200 }).join("\n");
+  assert.match(expanded, /Warning: truncated output\nPRIVATE_OUTPUT/u);
+  assert.match(expanded, /Full output: \/tmp\/private-output-evidence\.txt/u);
+  assert.equal(JSON.stringify(value), before);
 });
 
 test("structured JSON remains structured and nested JSON-looking strings are not interpreted", () => {
@@ -288,7 +328,7 @@ test("expanded mode retains every call, Script/Calls/Output sections and spilled
   assert.match(text, /Full output: \/tmp\/full-evidence.txt/u);
 });
 
-test("early cancellation stays identifiable at widths 1, 4 and 8 even when salient rows select later errors", () => {
+test("all cancellation and error rows remain visible at widths 1, 4 and 8", () => {
   const calls = [
     { name: "first cancelled", status: "cancelled" },
     { name: "later error", status: "error" },
@@ -367,14 +407,132 @@ test("compact call rows name their first string argument within the row budget",
   ];
   const rows = rendered(result("done", calls), { width: 60 });
   const text = rows.join("\n");
-  assert.match(text, /✓ read package\.json · 6ms/u);
-  assert.match(text, /✓ bash x+… · 16ms/u);
-  assert.match(text, /^ {2}✓ bash$/mu, "truncated JSON yields no guessed hint");
+  assert.match(text, /✓ \ueaa4 Read package\.json · 6ms/u);
+  assert.match(text, /✓ \uea85 Bash x+… · 16ms/u);
+  assert.match(
+    text,
+    /^ {2}✓ \uea85 Bash$/mu,
+    "truncated JSON yields no guessed hint",
+  );
   assert.match(text, /✗ web cats · error: boom/u);
   assert.ok(rows.every((row) => visibleWidth(row) <= 60));
 });
 
-test("a shared row puts the status in the call header and skips blank preview lines", () => {
+test("compact shows every call once and in order without a more-calls placeholder", () => {
+  for (const count of [5, 20, 100]) {
+    const calls = Array.from({ length: count }, (_, index) => ({
+      name: `call-${index}`,
+      status: index % 2 ? "running" : "ok",
+    }));
+    const rows = rendered(result("HIDDEN_OUTPUT", calls));
+    const displayed = rows.filter((row) => /call-\d+/u.test(row));
+    assert.equal(displayed.length, count);
+    displayed.forEach((row, index) => {
+      assert.match(row, new RegExp(`\\bcall-${index}$`, "u"));
+    });
+    assert.doesNotMatch(rows.join("\n"), /more calls?|HIDDEN_OUTPUT/u);
+  }
+});
+
+test("compact pending rows use muted text without running labels or status dots", () => {
+  const muted = {
+    ...theme,
+    fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+  } as Theme;
+  const shared = context();
+  const header = codemodeRenderers.renderCall!({ code }, muted, shared);
+  const body = codemodeRenderers.renderResult!(
+    result("hidden", [
+      { name: "bash", args: '{"command":"echo hello"}', status: "running" },
+    ]),
+    { expanded: false, isPartial: true },
+    muted,
+    shared,
+  );
+  const text = [...header.render(300), ...body.render(300)].join("\n");
+  assert.match(text, /<muted>codemode<\/muted>/u);
+  assert.match(text, /<muted>Bash<\/muted>/u);
+  assert.match(text, /echo hello/u);
+  assert.doesNotMatch(text, /…|running|hidden/u);
+  const expanded = rendered(
+    result("pending", [{ name: "bash", status: "running" }]),
+    { expanded: true, partial: true },
+  ).join("\n");
+  assert.match(expanded, /running/u);
+});
+
+test("Bash command previews stop at 80 columns even in wide terminals", () => {
+  for (const command of [
+    `printf ${"x".repeat(120)} HIDDEN_SUFFIX`,
+    `printf ${"界".repeat(80)} HIDDEN_SUFFIX`,
+  ]) {
+    const args = JSON.stringify({ command });
+    for (const status of ["ok", "running", "error", "cancelled", "unknown"]) {
+      const value = result("hidden", [
+        { name: "bash", args, status, durationMs: 102 },
+      ]);
+      for (const width of [60, 120, 300]) {
+        const rows = rendered(value, { width });
+        const row = rows.find((row) => row.includes("Bash printf"));
+        assert.ok(row, `command preview remains visible at ${width}`);
+        const preview = row.split("Bash ")[1]!.split(" · ")[0]!;
+        assert.ok(visibleWidth(preview) <= 80, `preview width at ${width}`);
+        assert.match(preview, /…$/u);
+        assert.doesNotMatch(row, /HIDDEN_SUFFIX/u);
+        assert.ok(rows.every((row) => visibleWidth(row) <= width));
+      }
+      assert.ok(
+        rendered(value, { expanded: true, width: 300 })
+          .join("\n")
+          .includes(args),
+      );
+    }
+  }
+});
+
+test("native 200-character previews keep long Bash commands and Read paths visible", () => {
+  const command = `git status --short; echo ${"long-command ".repeat(40)}`;
+  const path = `/workspace/${"long-directory/".repeat(30)}README.md`;
+  const preview = (args: unknown) => `${JSON.stringify(args).slice(0, 197)}...`;
+  const value = result("HIDDEN_OUTPUT", [
+    { name: "bash", status: "ok", args: preview({ command }), durationMs: 102 },
+    { name: "read", status: "ok", args: preview({ path }), durationMs: 19 },
+  ]);
+  const before = JSON.stringify(value);
+  for (const width of [60, 120, 300]) {
+    const rows = rendered(value, { width });
+    const text = rows.join("\n");
+    assert.match(
+      text,
+      /Bash git status --short; echo long-command.*… · 102ms/u,
+    );
+    assert.match(text, /Read \/workspace\/long-directory\/.*… · 19ms/u);
+    assert.doesNotMatch(text, /HIDDEN_OUTPUT/u);
+    assert.ok(rows.every((row) => visibleWidth(row) <= width));
+  }
+  assert.equal(JSON.stringify(value), before);
+  const expanded = rendered(value, { expanded: true, width: 300 }).join("\n");
+  assert.ok(expanded.includes(preview({ command })));
+});
+
+test("native preview cuts through escapes and Unicode retain a safe command prefix", () => {
+  for (const suffix of ['"', "\\", "\n", "\t", "\u0001", "🧑‍💻", "你好"]) {
+    for (let fill = 175; fill <= 187; fill++) {
+      const command = `printf ${"x".repeat(fill)}${suffix}${"tail".repeat(30)}`;
+      const raw = `${JSON.stringify({ command }).slice(0, 197)}...`;
+      const value = result("hidden", [
+        { name: "bash", status: "ok", args: raw, durationMs: 102 },
+      ]);
+      const rows = rendered(value, { width: 300 });
+      const compact = rows.join("\n");
+      assert.match(compact, /Bash printf x+.*… · 102ms/u);
+      assert.doesNotMatch(compact, /[\u0001\u001b\ud800-\udfff]/u);
+      assert.ok(rows.every((row) => visibleWidth(row) <= 300));
+    }
+  }
+});
+
+test("a shared row puts the status in the call header and hides output", () => {
   const state = {};
   const shared = { ...context(), state };
   const header = codemodeRenderers.renderCall!({ code }, theme, shared);
@@ -392,5 +550,5 @@ test("a shared row puts the status in the call header and skips blank preview li
     "✓ codemode completed · 2.3s · 1 call · 2 script lines",
   ]);
   assert.doesNotMatch(body.join("\n"), /completed/u);
-  assert.match(body.join("\n"), /│ first\n│ second/u);
+  assert.doesNotMatch(body.join("\n"), /first|second|│/u);
 });

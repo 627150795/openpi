@@ -594,7 +594,8 @@ test("a mounted child page measures only its supplied editor rows on each render
   assert.equal(defaultPage.render(80).length, 30);
 });
 
-test("tiny child viewport exposes back first, bounds chrome and preserves paused position", () => {
+test("tiny child viewport exposes back first, bounds chrome and preserves paused position", (t) => {
+  t.mock.method(Date, "now", () => 0);
   let available = 20;
   const source = {
     getState: () => ({

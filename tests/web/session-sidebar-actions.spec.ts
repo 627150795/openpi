@@ -401,9 +401,11 @@ it("keeps loaded rows and the retained range retry when a post-rename archive pa
   fireEvent.click(screen.getByRole("button", { name: i18n.t("save") }));
   await screen.findByText(i18n.t("archiveLoadFailed"));
   expect(screen.getByText("Archived 4")).toBeTruthy();
-  expect(
-    screen.queryByRole("dialog", { name: i18n.t("renameConversation") }),
-  ).toBeNull();
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: i18n.t("renameConversation") }),
+    ).toBeNull(),
+  );
   expect(screen.queryByText(i18n.t("renameFailed"))).toBeNull();
   fireEvent.click(
     screen.getByRole("button", { name: i18n.t("retryArchives") }),

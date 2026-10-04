@@ -1182,6 +1182,17 @@ test("builds a focused review prompt when configuration already exists", () => {
   assert.doesNotMatch(message, /This is the first setup/);
 });
 
+function assertBoundedConfigurationPath(message: string, detail: string) {
+  const match = /error @ (.+?): (.+?)\)/u.exec(message);
+  assert.ok(match);
+  const displayedPath = match[1]!;
+  assert.ok(Array.from(displayedPath).length <= 80);
+  if (displayedPath.endsWith("…"))
+    assert.ok(SETUP_CONFIG_PATH.startsWith(displayedPath.slice(0, -1)));
+  else assert.equal(displayedPath, SETUP_CONFIG_PATH);
+  assert.equal(match[2], detail);
+}
+
 test("session start reports configuration load errors without changing the file or starting setup", async () => {
   for (const [raw, detail] of [
     ['{"PRIVATE_VALUE":', `error @ ${SETUP_CONFIG_PATH}: Malformed JSON`],
@@ -1204,7 +1215,9 @@ test("session start reports configuration load errors without changing the file 
     assert.match(notice.message, /safe defaults/i);
     assert.match(notice.message, /writes are blocked/i);
     assert.match(notice.message, /\/openpi-setup/);
-    assert.ok(notice.message.includes(detail));
+    if (detail.includes(SETUP_CONFIG_PATH))
+      assertBoundedConfigurationPath(notice.message, "Malformed JSON");
+    else assert.ok(notice.message.includes(detail));
     assert.doesNotMatch(notice.message, /PRIVATE_VALUE/);
     assert.equal(readFileSync(SETUP_CONFIG_PATH, "utf8"), raw);
     assert.equal(h.isActive(), false);
@@ -1315,10 +1328,9 @@ test("session start reports read errors without turning them into a missing conf
     assert.equal(h.notifications.length, 1);
     assert.equal(h.notifications[0].level, "error");
     assert.match(h.notifications[0].message, /writes are blocked/i);
-    assert.ok(
-      h.notifications[0].message.includes(
-        `error @ ${SETUP_CONFIG_PATH}: Unable to read configuration`,
-      ),
+    assertBoundedConfigurationPath(
+      h.notifications[0].message,
+      "Unable to read configuration",
     );
     assert.equal(existsSync(SETUP_CONFIG_PATH), true);
     assert.deepEqual(h.customMessages, []);

@@ -40,6 +40,7 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
     "edit",
     "write",
     "openpi_load_tools",
+    "runtime_snapshot",
     "fd",
     "rg",
     "subagent_spawn",
@@ -108,6 +109,9 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
     patchOwnedTools(pi, "gitRead", {
       enable: OPENPI_TOOL_SURFACE.gitRead.entry,
     });
+    patchOwnedTools(pi, "runtime", {
+      enable: ["runtime_snapshot"],
+    });
     patchOwnedTools(pi, "subagents", {
       enable: OPENPI_TOOL_SURFACE.subagents.entry,
     });
@@ -142,6 +146,22 @@ test("ordinary sessions add no resident OpenPI model tool", () => {
   const h = harness();
   h.start();
   assert.deepEqual(h.active(), ["read", "bash", "edit", "write"]);
+});
+
+test("runtime inspection is discoverable but not resident", async () => {
+  const h = harness();
+  h.start();
+  assert.equal(h.active().includes("runtime_snapshot"), false);
+  const listing = await h.tool().execute("list", {});
+  assert.match(JSON.stringify(listing), /runtime/);
+  await h.tool().execute("load-runtime", { groups: ["runtime"] });
+  assert.deepEqual(h.active(), [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "runtime_snapshot",
+  ]);
 });
 
 test("adaptive discovery keeps only the capability gateway resident", () => {
@@ -190,7 +210,14 @@ test("the gateway exposes a provider-portable string enum for capability groups"
 
   assert.deepEqual(parameters.properties.groups.items, {
     type: "string",
-    enum: ["search", "delegate", "workflow", "background", "session"],
+    enum: [
+      "search",
+      "delegate",
+      "workflow",
+      "background",
+      "session",
+      "runtime",
+    ],
   });
 });
 

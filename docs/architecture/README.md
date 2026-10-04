@@ -6,4 +6,5 @@ Keep unresolved alternatives and implementation proposals in [`../design/`](../d
 
 Each new or materially revised architecture record should identify its evidence status, source revision, affected Pi primitive, current invariants, related Issues and Decisions, and any record it supersedes.
 
+- [`RUNTIME_SNAPSHOT.md`](RUNTIME_SNAPSHOT.md) - parent-only, bounded runtime observation through the existing capability gateway
 - [`WEB_MODEL_DISCOVERY.md`](WEB_MODEL_DISCOVERY.md) - bounded Web model snapshots and full-catalog discovery through Pi's model runtime

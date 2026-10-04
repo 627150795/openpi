@@ -19,6 +19,7 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
+  Container,
   type TUI,
   type TuiMouseEvent,
   truncateToWidth,
@@ -1437,14 +1438,15 @@ export class WorkflowDashboard {
     }
     const height = this.pageRows
       ? this.pageRows(width)
-      : Math.max(MIN_HEIGHT, this.tui.terminal.rows - 1);
-    if (height < 4) {
+      : Math.max(1, this.tui.terminal.rows - 1);
+    if (height < MIN_HEIGHT) {
       return [
         truncateToWidth(
-          `${this.keys("tui.select.cancel")} close · Workflows · ${this.entries.length} runs`,
+          `${this.keys("tui.select.cancel")} back/close · Workflows · ${this.entries.length} runs`,
           width,
           "",
         ),
+        ...Array(Math.max(0, height - 1)).fill(""),
       ];
     }
     let lines: string[];
@@ -1905,7 +1907,6 @@ export async function showWorkflowDashboard(
         sessionWorkflowRunIds(ctx),
         startedSince,
         () => {
-          dashboard.dispose();
           done(undefined);
         },
         initialRunId,
@@ -1941,7 +1942,32 @@ export async function showWorkflowDashboard(
           },
         };
       }
-      return dashboard;
+      // Native editor replacement can grow the main-screen buffer. Let the
+      // renderer clear a shrink when the editor returns, so chat images are
+      // restored into the visible viewport, then restore its previous policy.
+      const clearOnShrink = tui.getClearOnShrink();
+      tui.setClearOnShrink(true);
+      const page = new (class extends Container {
+        get focused() {
+          return dashboard.focused;
+        }
+        set focused(value: boolean) {
+          dashboard.focused = value;
+        }
+        handleInput(data: string) {
+          dashboard.handleInput(data);
+        }
+        dispose() {
+          dashboard.dispose();
+          try {
+            tui.renderNow();
+          } finally {
+            if (tui.getClearOnShrink()) tui.setClearOnShrink(clearOnShrink);
+          }
+        }
+      })();
+      page.addChild(dashboard);
+      return page;
     },
     {
       overlay: false,

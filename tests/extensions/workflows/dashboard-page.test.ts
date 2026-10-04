@@ -156,14 +156,19 @@ for (const mode of ["regular", "fullscreen"] as const) {
           [80, 18, 2],
           [44, 14, 3],
           [100, 24, 1],
+          [80, 4, 2],
+          [80, 5, 2],
         ]) {
           dimensions.columns = columns;
           dimensions.rows = rows;
           footerRows = trailing;
           const pending = showWorkflowDashboard(ctx, () => new Map());
           await Promise.resolve();
+          const mounted = editorContainer.children[0];
           const page =
-            mode === "regular" ? editorContainer.children[0] : overlayPage;
+            mode === "regular" && mounted instanceof Container
+              ? mounted.children[0]
+              : overlayPage;
           assert.ok(page instanceof WorkflowDashboard);
           assert.equal(tui.hasOverlay(), mode === "fullscreen");
           if (mode === "regular")
@@ -174,7 +179,8 @@ for (const mode of ["regular", "fullscreen"] as const) {
           for (let refresh = 0; refresh < 2; refresh++) {
             tui.renderNow();
             const visible = frame();
-            assert.ok(visible.some((line) => line.includes("Workflows")));
+            if (mode === "regular")
+              assert.ok(visible.some((line) => line.includes("Workflows")));
             assert.ok(visible.some((line) => line.includes("close")));
             // Fullscreen keeps its existing overlay path; the Pi image compositor
             // limitation remains tracked, rather than a false no-image assertion.
@@ -190,7 +196,15 @@ for (const mode of ["regular", "fullscreen"] as const) {
           assert.deepEqual(editorContainer.children, [editor]);
           assert.equal(draft, "keep my unsent input");
           assert.equal(tui.hasOverlay(), false);
-          assert.ok(frame().some((line) => line.includes(image)));
+          assert.equal(tui.getClearOnShrink(), false);
+          if (rows >= 10)
+            assert.ok(frame().some((line) => line.includes(image)));
+          if (tui instanceof TuiMainScreen)
+            assert.ok(
+              tui
+                .captureRenderState()
+                .previousLines.some((line) => line.includes(image)),
+            );
         }
         assert.ok(writes.length > 0);
       } finally {

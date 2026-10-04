@@ -12,7 +12,6 @@
  */
 
 import * as fs from "node:fs";
-import { decodeDelegationReplayOrigin } from "../shared/delegation-completion.ts";
 import * as path from "node:path";
 import {
   type ExtensionContext,
@@ -27,6 +26,7 @@ import {
 import { AgentSessionPage } from "../shared/agent-session-page.ts";
 import { fitNavigationSides } from "../shared/below-editor-navigation.ts";
 import { contextPercent } from "../shared/context-utilization.ts";
+import { decodeDelegationReplayOrigin } from "../shared/delegation-completion.ts";
 import {
   panelFrame,
   type ScreenHint,
@@ -37,6 +37,7 @@ import { SPINNER_INTERVAL_MS, spinnerFrame } from "../shared/spinner.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { isAcceptanceLedger } from "./acceptance.ts";
 import { recoverPendingWorkflowCommit } from "./artifacts.ts";
+import { decodeExecutionTimingSummary } from "./execution-timing.ts";
 import { projectWorkflowGraph } from "./graph-projection.ts";
 import {
   classifyInterruptedInvocation,
@@ -428,8 +429,24 @@ export function normalizePersistedWorkflowDetails(
       a.executionOutcome === "replayed"
         ? a.executionOutcome
         : undefined;
+    const timing =
+      executionOutcome === "replayed" ||
+      invocation?.admissionState === "replayed"
+        ? undefined
+        : decodeExecutionTimingSummary(a.timing);
+    const timingArtifact =
+      typeof a.timingArtifact === "string" &&
+      /^agent-timing\/agent-\d{4,8}\.json$/u.test(a.timingArtifact)
+        ? a.timingArtifact
+        : undefined;
     agents.push({
       index,
+      ...(timing ? { timing } : {}),
+      ...(timingArtifact ? { timingArtifact } : {}),
+      ...(a.timingArtifactState === "saved" ||
+      a.timingArtifactState === "failed"
+        ? { timingArtifactState: a.timingArtifactState }
+        : {}),
       ...(executionOutcome ? { executionOutcome } : {}),
       ...(a.resultPersistence === "saved" || a.resultPersistence === "failed"
         ? { resultPersistence: a.resultPersistence }
@@ -908,6 +925,21 @@ export function buildWorkflowReport(details: WorkflowDetails): string {
         `- **${agent.label}** — ${status}${stats ? ` (${stats})` : ""}`,
       );
       if (agent.error) lines.push(`  - error: ${agent.error}`);
+      if (agent.timing) {
+        const timing = agent.timing;
+        lines.push(
+          `  - timing: ${Math.round(timing.toolWallMs)}ms tool wall / ${Math.round(timing.toolDurationMs)}ms summed tool duration; ${Math.round(timing.unattributedMs)}ms unattributed; ${timing.tools.paired}/${timing.tools.started} paired; ${timing.coverage}`,
+        );
+        lines.push(
+          `  - timing coverage: ${timing.tools.trackingDropped} tracking drops, ${timing.tools.unmatchedEnds} unmatched ends, ${timing.tools.unclosedStarts} unclosed starts, ${timing.tools.entriesOmitted} detail entries omitted; timeout=${timing.tools.timedOut}, cancelled=${timing.tools.cancelled}`,
+        );
+      }
+      if (agent.timingArtifact)
+        lines.push(`  - timing artifact: ${agent.timingArtifact}`);
+      if (agent.timingArtifactState === "failed")
+        lines.push(
+          "  - timing artifact: persistence failed (summary retained)",
+        );
     }
   }
 

@@ -51,22 +51,21 @@ import { type Static, Type } from "typebox";
 import { createStatusWriter } from "../shared/activity-status.ts";
 import { fitNavigationSides } from "../shared/below-editor-navigation.ts";
 import {
-  sessionChildExecutionAdmission,
   type ChildExecutionAdmission,
+  sessionChildExecutionAdmission,
 } from "../shared/child-execution-admission.ts";
 import {
   inheritedChildToolAllowlist,
   resolveStandaloneChildProjectTrust,
   waitBounded,
 } from "../shared/child-session.ts";
-import { onSetupApply } from "../shared/setup-apply.ts";
-import { contextPercent } from "../shared/context-utilization.ts";
 import { completionOwnerFor } from "../shared/completion-inbox.ts";
-import { workflowAgentCompletion } from "./agent-completion.ts";
+import { contextPercent } from "../shared/context-utilization.ts";
 import {
   registerEditorLayer,
   removeEditorLayer,
 } from "../shared/editor-layers.ts";
+import { onSetupApply } from "../shared/setup-apply.ts";
 import { loadSetupConfig } from "../shared/setup-config.ts";
 import { SPINNER_INTERVAL_MS } from "../shared/spinner.ts";
 import {
@@ -97,10 +96,12 @@ import {
   applyAcceptance,
   parseAcceptanceContract,
 } from "./acceptance.ts";
+import { workflowAgentCompletion } from "./agent-completion.ts";
 import {
   createWorkflowPersistence,
   loadJournal,
   persistWorkflowAgentResult,
+  persistWorkflowAgentTiming,
   persistWorkflowDeliveryState,
   persistWorkflowJson,
   persistWorkflowTerminalState,
@@ -212,9 +213,9 @@ import {
   type WorkflowSettledRunRetentionOptions,
 } from "./retention.ts";
 import {
+  type AgentOutcome,
   createWorkflowResources,
   runAgent,
-  type AgentOutcome,
   type ThinkingLevel,
   type WorkflowAgentSessionFactory,
   type WorkflowModel,
@@ -1888,6 +1889,22 @@ export default function workflows(
             return { ok: false as const, error: errorText(error) };
           }
         };
+        const persistAgentTiming = (
+          entries?: Parameters<typeof persistWorkflowAgentTiming>[2],
+        ) => {
+          try {
+            record.timingArtifact = persistWorkflowAgentTiming(
+              runDir,
+              record,
+              entries,
+            );
+            record.timingArtifactState = "saved";
+          } catch {
+            // Diagnostics do not rewrite execution/result outcomes. Failure is
+            // explicit, and the small summary still persists in workflow.json.
+            record.timingArtifactState = "failed";
+          }
+        };
         // Checked before controller.schedule on purpose: schedule() charges the
         // run's agent-call budget on entry, and a replayed call runs no agent.
         const cached =
@@ -1965,6 +1982,7 @@ export default function workflows(
           });
           record.state = "done";
           record.replayed = true;
+          persistAgentTiming();
           record.resultArtifact = persisted.artifact;
           const ref = handoffs.register({
             callId,
@@ -2162,6 +2180,7 @@ export default function workflows(
               record.contextWindow =
                 outcome.contextWindow ?? record.contextWindow;
               record.transcript = outcome.transcript;
+              record.timing = outcome.timing?.summary;
               record.preview = sanitizeWorkflowDisplayText(
                 outcome.output || record.preview,
                 PREVIEW_LENGTH,
@@ -2200,6 +2219,7 @@ export default function workflows(
                 outcome: outcomeOk ? "success" : "error",
                 at: finishedAt,
               });
+              persistAgentTiming(outcome.timing?.entries);
               record.state = outcomeOk ? "done" : "error";
               if (outcomeOk) delete record.error;
               else {

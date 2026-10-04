@@ -413,13 +413,16 @@ export async function reclaimWorktree(
     }
   }
 
+  // Cleanup needs presence, not every descendant path. Git's normal status
+  // summarizes untracked directories (including Windows junctions), avoiding
+  // inventory overflow while still forbidding removal of any untracked data.
   const status = await run([
     "--no-optional-locks",
     "-C",
     worktree.path,
     "status",
     "--porcelain=v1",
-    "--untracked-files=all",
+    "--untracked-files=normal",
   ]);
   if (status.code !== 0) {
     return preserve(

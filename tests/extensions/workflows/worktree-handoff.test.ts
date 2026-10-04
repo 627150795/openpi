@@ -246,8 +246,15 @@ test("large untracked directory uses explicit directory coverage", async () => {
     const looseName = process.platform === "win32" ? "loose-�" : "loose-�\n";
     const loose = path.join(worktree.worktree.path, looseName);
     fs.mkdirSync(loose);
-    for (let i = 0; i < 3100; i++)
+    for (let i = 0; i < 6000; i++)
       fs.writeFileSync(path.join(loose, `${"x".repeat(200)}-${i}`), "keep\n");
+    // Exceed the cleanup status buffer too, without creating a second tree.
+    const expandedStatus = execFileSync(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      { cwd: worktree.worktree.path, maxBuffer: 4 * 1024 * 1024 },
+    );
+    assert.ok(expandedStatus.length > 1024 * 1024);
     const prepared = prepareWorktreeHandoff({
       runDir,
       runId: "wf_directory",
@@ -263,10 +270,11 @@ test("large untracked directory uses explicit directory coverage", async () => {
       untracked: "directory-summary",
       ignored: "complete-files",
     });
-    assert.equal(
-      (await reclaimWorktree(repo, worktree.worktree)).removed,
-      false,
-    );
+    const cleanup = await reclaimWorktree(repo, worktree.worktree);
+    assert.equal(cleanup.removed, false);
+    assert.equal(cleanup.dirty, true);
+    assert.equal(cleanup.untracked, true);
+    assert.equal(cleanup.ignored, false);
   });
 });
 

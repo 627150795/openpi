@@ -14,7 +14,9 @@ when they fit the existing 576 KiB Git-output budget. On buffer overflow only,
 it retries with native Git `ls-files --directory --no-empty-directory` under
 the same shared five-second deadline and byte budget. No bytes from the failed
 enumeration become manifest facts. Git still owns ignore rules and directory
-boundaries; filesystem symlinks are not recursively followed by this inventory.
+boundaries. Native Git treats Unix symlinks as links but Windows directory
+junctions as directories; a junction may therefore produce directory-summary
+coverage rather than an exact link entry.
 
 The version-1 `untracked` and `ignored` arrays remain readable as path arrays.
 When a fallback is used, an additive `inventoryCoverage` object marks each
@@ -36,14 +38,18 @@ rejected. Files hidden beneath summaries are not decoded or validated.
 presence. Any nonempty result still blocks removal; errors, timeouts, and
 oversized loose inventories remain unknown and preserve the checkout. Cleanup
 does not infer safety from a handoff manifest and never deletes ignored data.
-Other cleanup checks, including status and index inspection, remain unchanged
-and may independently exceed their existing budgets and preserve the checkout.
+Cleanup status uses native `--untracked-files=normal`: directory presence is
+sufficient to block removal, so it does not expand every untracked descendant.
+Tracked changes and untracked presence remain distinct facts; index flags are
+still inspected before status. Other inspection failures and oversized loose
+inventories preserve the checkout under the existing time and byte budgets.
 
 The regression invokes the real `prepareWorktreeHandoff` seam with ignored
 file-name output exceeding both the old handoff and cleanup buffers. It checks
 patch retention, explicit summary coverage, bounded persistence, and ignored
 content preservation through reclaim. Additional cases cover exact legacy
-inventories, oversized loose inventories, untracked directory summaries,
+inventories, oversized loose inventories, untracked directory summaries above
+the cleanup status buffer,
 literal U+FFFD, invalid emitted UTF-8, and symlink ownership. Invalid-byte
 filesystem names are tested on Linux; macOS rejects their creation with EILSEQ.
 Full validation results are recorded in the delivery receipt, not asserted here.

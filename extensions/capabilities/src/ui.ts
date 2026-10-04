@@ -5,7 +5,6 @@ import {
   stripTerminalSequences,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { wordWrapLine } from "@earendil-works/pi-tui/dist/components/editor.js";
 import {
   BelowEditorNavigationEditor,
   BelowEditorStripState,
@@ -132,9 +131,9 @@ function highlightNameRanges(
     .join("");
 }
 
-/** Data-only projection through the published typed component wrap helper.
- * Pi does not root-export this helper; exact render/cursor checks fail closed
- * if its geometry, a custom editor, or a future SDK no longer agrees. */
+/** Project original draft offsets from Pi's public cursor/padding and its
+ * actual rendered rows. No layout helper, private state or row reclassification.
+ * Unmatched geometry stops projection before border, completion or strip text. */
 function highlightDraft(
   rows: string[],
   text: string,
@@ -166,6 +165,8 @@ function highlightDraft(
   }
   if (
     !cursor ||
+    !Number.isInteger(width) ||
+    width < 1 ||
     padding === undefined ||
     !Number.isFinite(padding) ||
     padding < 0 ||
@@ -188,24 +189,11 @@ function highlightDraft(
   const contentWidth = Math.max(1, width - pad * 2);
   const layoutWidth = Math.max(1, contentWidth - (pad ? 0 : 1));
   let offset = 0;
-  const chunks = lines.flatMap((line, lineIndex) => {
+  const starts = lines.map((line) => {
     const start = offset;
     offset += line.length + 1;
-    const wrapped = wordWrapLine(line, layoutWidth);
-    return wrapped.map((chunk, index) => ({
-      ...chunk,
-      sourceStart: start + chunk.startIndex,
-      logicalLine: lineIndex,
-      last: index === wrapped.length - 1,
-    }));
+    return start;
   });
-  const sourceCursor = chunks.findIndex(
-    (chunk) =>
-      chunk.logicalLine === cursor.line &&
-      cursor.col >= chunk.startIndex &&
-      (chunk.last || cursor.col < chunk.endIndex),
-  );
-  if (sourceCursor < 0) return rows;
   const markers = rows.flatMap((row, index) => {
     const marker = row.indexOf(CURSOR_MARKER);
     const reverseCursor = row.indexOf("\u001b[7m");
@@ -216,44 +204,108 @@ function highlightDraft(
   });
   if (markers.length !== 1) return rows;
   const anchor = markers[0]!;
-  const current = chunks[sourceCursor]!;
-  const cursorOffset = Math.min(
-    cursor.col - current.startIndex,
-    current.text.length,
-  );
-  if (anchor.prefix !== " ".repeat(pad) + current.text.slice(0, cursorOffset))
+  const cursorSource = starts[cursor.line]! + cursor.col;
+  const sourceStart = cursorSource - (anchor.prefix.length - pad);
+  const lineStart = starts[cursor.line]!;
+  const lineEnd = lineStart + lines[cursor.line]!.length;
+  if (
+    sourceStart < lineStart ||
+    sourceStart > cursorSource ||
+    anchor.prefix !== " ".repeat(pad) + text.slice(sourceStart, cursorSource)
+  )
     return rows;
-  const result = [...rows];
-  const project = (rowIndex: number) => {
-    const chunkIndex = sourceCursor + rowIndex - anchor.index;
-    const chunk = chunks[chunkIndex];
-    if (!chunk || rowIndex < 0 || rowIndex >= rows.length) return false;
-    const extraCursor =
-      chunkIndex === sourceCursor && cursorOffset === chunk.text.length ? 1 : 0;
-    const occupied = visibleWidth(chunk.text) + extraCursor;
-    const expected =
+  const expected = (value: string, extraCursor = 0) => {
+    const occupied = visibleWidth(value) + extraCursor;
+    return (
       " ".repeat(pad) +
-      chunk.text +
+      value +
       " ".repeat(
         extraCursor +
           Math.max(0, contentWidth - occupied) +
           Math.max(0, pad - (occupied > contentWidth ? 1 : 0)),
-      );
-    if (plainRows[rowIndex] !== expected) return false;
+      )
+    );
+  };
+  // Match only a bounded source segment against the actual native row. Padding
+  // may match source whitespace; the longest exact span retains that whitespace.
+  const matchSpan = (
+    row: number,
+    boundary: number,
+    limit: number,
+    forward: boolean,
+    extraCursor = 0,
+  ) => {
+    const plain = plainRows[row];
+    if (plain === undefined) return undefined;
+    const available = Math.min(
+      Math.abs(limit - boundary),
+      Math.max(0, plain.length - pad * 2),
+    );
+    for (let length = available; length >= 0; length--) {
+      const start = forward ? boundary : boundary - length;
+      const end = forward ? boundary + length : boundary;
+      const value = text.slice(start, end);
+      if (
+        visibleWidth(value) <= layoutWidth &&
+        plain === expected(value, extraCursor)
+      )
+        return { start, end };
+    }
+    return undefined;
+  };
+  const current = matchSpan(
+    anchor.index,
+    sourceStart,
+    lineEnd,
+    true,
+    cursorSource === lineEnd ? 1 : 0,
+  );
+  if (!current || current.end < cursorSource) return rows;
+  const result = [...rows];
+  const project = (row: number, span: { start: number; end: number }) => {
     const ranges = mentions
       .map((mention) => ({
-        start: pad + Math.max(mention.start - chunk.sourceStart, 0),
-        end: pad + Math.min(mention.end - chunk.sourceStart, chunk.text.length),
+        start: pad + Math.max(mention.start - span.start, 0),
+        end: pad + Math.min(mention.end - span.start, span.end - span.start),
       }))
       .filter((mention) => mention.start < mention.end);
-    result[rowIndex] = highlightNameRanges(rows[rowIndex]!, ranges, highlight);
-    return true;
+    result[row] = highlightNameRanges(rows[row]!, ranges, highlight);
   };
-  if (!project(anchor.index)) return rows;
-  // Only this contiguous, cursor-anchored source projection can be colored.
-  // Stop at the first mismatch; never scan border, autocomplete or strip text.
-  for (let row = anchor.index - 1; project(row); row--) {}
-  for (let row = anchor.index + 1; project(row); row++) {}
+  project(anchor.index, current);
+  let start = current.start;
+  let logicalLine = cursor.line;
+  for (let row = anchor.index - 1; row >= 0; row--) {
+    if (start === starts[logicalLine]) {
+      if (logicalLine === 0) break;
+      logicalLine--;
+      start = starts[logicalLine]! + lines[logicalLine]!.length;
+    }
+    const span = matchSpan(row, start, starts[logicalLine]!, false);
+    if (!span || (span.start === span.end && lines[logicalLine]!.length !== 0))
+      break;
+    project(row, span);
+    start = span.start;
+  }
+  let end = current.end;
+  logicalLine = cursor.line;
+  for (let row = anchor.index + 1; row < rows.length; row++) {
+    if (end === starts[logicalLine]! + lines[logicalLine]!.length) {
+      if (logicalLine === lines.length - 1) break;
+      logicalLine++;
+      end = starts[logicalLine]!;
+    }
+    const span = matchSpan(
+      row,
+      end,
+      starts[logicalLine]! + lines[logicalLine]!.length,
+      true,
+    );
+    if (!span || (span.start === span.end && lines[logicalLine]!.length !== 0))
+      break;
+    project(row, span);
+    end = span.end;
+  }
+
   return result;
 }
 

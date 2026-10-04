@@ -1,18 +1,95 @@
-import { AxeBuilder } from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
 import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AxeBuilder } from "@axe-core/playwright";
+import { expect, type Page, test } from "@playwright/test";
 import {
+  deferPlanWorkspaceCleanup,
   MODEL_ID,
   PROVIDER_ID,
-  deferPlanWorkspaceCleanup,
-  startFakeProvider,
+  startFakeProvider as startProvider,
 } from "./provider-e2e-support.ts";
 
 const plan =
   '# 导出会话记录\n\n## 目标\n\n首版提供 **Markdown** 导出，方便阅读与分享，沿用 Pi 的会话记录。\n\n## 实现步骤\n\n1. 从当前分支读取用户消息、助手回复及工具结果。\n2. 保留消息顺序，使用明确标题区分内容类型。\n3. 导出前选择目标位置，避免覆盖已有文件。\n\n## 验证\n\n- [ ] 中文、代码块和长消息可读。\n- [ ] 空会话、取消与写入失败有明确反馈。\n\n```ts\nconst format = "markdown";\n```\n\n本次仅提交开发计划。';
 const headers = { Authorization: `Bearer ${process.env.OPENPI_WEB_E2E_TOKEN}` };
+
+// The backend is shared, but each test owns its provider listener. Publish its
+// actual address through the normal revision-checked model configuration lane.
+function startPlanProvider(stream: Parameters<typeof startProvider>[0]) {
+  return startProvider(stream, { port: 0 });
+}
+
+function planProviderConnection(page: Page, baseUrl: string) {
+  let original:
+    | import("../../web/runtime/types.ts").WebModelConfiguration
+    | undefined;
+  const configuration = async (sessionId: string) => {
+    const response = await page.request.get(
+      `/api/models/configuration?sessionId=${encodeURIComponent(sessionId)}`,
+      { headers },
+    );
+    expect(response.status()).toBe(200);
+    return (await response.json()) as import("../../web/runtime/types.ts").WebModelConfigurations;
+  };
+  const save = async (
+    sessionId: string,
+    revision: string,
+    model: import("../../web/runtime/types.ts").WebModelConfiguration,
+  ) => {
+    const saved = await page.request.post("/api/models/configuration", {
+      headers,
+      data: { sessionId, revision, model },
+    });
+    expect(saved.status()).toBe(200);
+  };
+  return {
+    async connect(sessionId: string) {
+      const current = await configuration(sessionId);
+      original = current.models.find(
+        (model) => model.provider === PROVIDER_ID && model.id === MODEL_ID,
+      );
+      expect(original).toBeDefined();
+      if (!original) throw new Error("The seeded fake model is unavailable");
+      // Retain the restore target before the write, including a failed/uncertain response.
+      await save(sessionId, current.revision, { ...original, baseUrl });
+    },
+    async restore() {
+      if (!original) return;
+      // Plan handoff may select another native Session. Requery its owner rather
+      // than writing against the test's earlier Session identity or revision.
+      const snapshot = await page.request.get("/api/snapshot", { headers });
+      expect(snapshot.status()).toBe(200);
+      const { currentSessionId } = await snapshot.json();
+      const current = await configuration(currentSessionId);
+      await save(currentSessionId, current.revision, original);
+      const restored = await configuration(currentSessionId);
+      expect(
+        restored.models.find(
+          (model) => model.provider === PROVIDER_ID && model.id === MODEL_ID,
+        ),
+      ).toEqual(original);
+    },
+  };
+}
+
+async function closePlanProvider(
+  connection: ReturnType<typeof planProviderConnection>,
+  provider: Awaited<ReturnType<typeof startPlanProvider>>,
+  workspace: string,
+) {
+  // A restore rejection must fail the test, while never leaking its listener.
+  const outcomes = await Promise.allSettled([
+    connection.restore(),
+    provider.close(),
+  ]);
+  deferPlanWorkspaceCleanup(workspace);
+  const failures = outcomes.flatMap((outcome) =>
+    outcome.status === "rejected" ? [outcome.reason] : [],
+  );
+  if (failures.length)
+    throw new AggregateError(failures, "Plan provider cleanup failed");
+}
 
 async function togglePlan(page: Page) {
   await page.getByRole("button", { name: "添加上下文", exact: true }).click();
@@ -24,7 +101,7 @@ test("Plan switch changes only owner state; first message gets planning context 
 }) => {
   const workspace = await mkdtemp(join(tmpdir(), "openpi-plan-switch-"));
   const forbidden = join(workspace, "should-not-exist.txt");
-  const provider = await startFakeProvider((_body, index) => {
+  const provider = await startPlanProvider((_body, index) => {
     const delta =
       index === 0
         ? {
@@ -76,6 +153,7 @@ test("Plan switch changes only owner state; first message gets planning context 
         .join("") + "data: [DONE]\n\n"
     );
   });
+  const connection = planProviderConnection(page, provider.baseUrl);
   try {
     const imported = await page.request.post("/api/workspaces", {
       headers,
@@ -89,6 +167,7 @@ test("Plan switch changes only owner state; first message gets planning context 
       },
     });
     const { sessionId, sessionPath } = await created.json();
+    await connection.connect(sessionId);
     const model = await page.request.post("/api/model", {
       headers,
       data: {
@@ -194,8 +273,7 @@ test("Plan switch changes only owner state; first message gets planning context 
       settings.getByRole("radio", { name: "深色", exact: true }),
     ).toBeChecked();
   } finally {
-    await provider.close();
-    deferPlanWorkspaceCleanup(workspace);
+    await closePlanProvider(connection, provider, workspace);
   }
 });
 
@@ -244,7 +322,7 @@ for (const theme of ["light", "dark"] as const) {
         return { gate, release };
       },
     );
-    const provider = await startFakeProvider(async function* (_body, index) {
+    const provider = await startPlanProvider(async function* (_body, index) {
       const name = index === 0 ? "ask_user" : "plan_ready";
       const args =
         index === 0
@@ -362,6 +440,7 @@ for (const theme of ["light", "dark"] as const) {
         .map((c) => `data: ${JSON.stringify(c)}\n\n`)
         .join("") + "data: [DONE]\n\n";
     });
+    const connection = planProviderConnection(page, provider.baseUrl);
     const workspace = await mkdtemp(join(tmpdir(), "openpi-plan-card-"));
     try {
       await page.emulateMedia({ colorScheme: theme });
@@ -380,6 +459,7 @@ for (const theme of ["light", "dark"] as const) {
       });
       expect(created.status()).toBe(201);
       const session = await created.json();
+      await connection.connect(session.sessionId);
       const model = await page.request.post("/api/model", {
         headers,
         data: {
@@ -539,8 +619,7 @@ for (const theme of ["light", "dark"] as const) {
       releaseBurst();
       for (const step of streamSteps) step.release();
       releaseFinish();
-      await provider.close();
-      deferPlanWorkspaceCleanup(workspace);
+      await closePlanProvider(connection, provider, workspace);
     }
   });
 }
@@ -550,7 +629,7 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
 }) => {
   const workspace = await mkdtemp(join(tmpdir(), "openpi-plan-handoff-"));
   const implementationFile = join(workspace, "implementation.txt");
-  const provider = await startFakeProvider((_body, index) => {
+  const provider = await startPlanProvider((_body, index) => {
     const tool = [
       {
         name: "plan_ready",
@@ -628,6 +707,7 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
       "data: [DONE]\n\n"
     );
   });
+  const connection = planProviderConnection(page, provider.baseUrl);
   try {
     const imported = await page.request.post("/api/workspaces", {
       headers,
@@ -641,6 +721,7 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
     });
     expect(created.status()).toBe(201);
     const session = await created.json();
+    await connection.connect(session.sessionId);
     const model = await page.request.post("/api/model", {
       headers,
       data: {
@@ -926,8 +1007,7 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
       )
       .toBe("idle");
   } finally {
-    await provider.close();
-    deferPlanWorkspaceCleanup(workspace);
+    await closePlanProvider(connection, provider, workspace);
   }
 });
 
@@ -935,7 +1015,7 @@ test("Plan off gives a visible receipt and clears a ready Plan without another m
   page,
 }) => {
   const workspace = await mkdtemp(join(tmpdir(), "openpi-plan-off-"));
-  const provider = await startFakeProvider(() => {
+  const provider = await startPlanProvider(() => {
     const delta = {
       role: "assistant",
       tool_calls: [
@@ -965,6 +1045,7 @@ test("Plan off gives a visible receipt and clears a ready Plan without another m
         .join("") + "data: [DONE]\n\n"
     );
   });
+  const connection = planProviderConnection(page, provider.baseUrl);
   try {
     const imported = await page.request.post("/api/workspaces", {
       headers,
@@ -976,6 +1057,7 @@ test("Plan off gives a visible receipt and clears a ready Plan without another m
       data: { workspacePath: path, commandId: "plan-off-session" },
     });
     const session = await created.json();
+    await connection.connect(session.sessionId);
     const model = await page.request.post("/api/model", {
       headers,
       data: {
@@ -1014,7 +1096,6 @@ test("Plan off gives a visible receipt and clears a ready Plan without another m
     expect(cancelled.runtime.plan).toBe("inactive");
     expect(provider.requests).toHaveLength(1);
   } finally {
-    await provider.close();
-    deferPlanWorkspaceCleanup(workspace);
+    await closePlanProvider(connection, provider, workspace);
   }
 });

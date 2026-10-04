@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test, { beforeEach } from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   fauxAssistantMessage,
@@ -27,16 +27,18 @@ import { registerWebCommandFeedback } from "../../../extensions/shared/web-comma
 // Package configuration uses Pi's process-level agent directory, independently
 // of createAgentSession({ agentDir }). Keep developer discovery preferences out
 // of this real-host fixture; Node isolates this test file in its own process.
-beforeEach((context) => {
+let restoreAgentDirectory = () => {};
+beforeEach(() => {
   const previous = process.env.PI_CODING_AGENT_DIR;
   const directory = mkdtempSync(path.join(tmpdir(), "openpi-goal-config-"));
   process.env.PI_CODING_AGENT_DIR = directory;
-  context.after(() => {
+  restoreAgentDirectory = () => {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previous;
     rmSync(directory, { recursive: true, force: true });
-  });
+  };
 });
+afterEach(() => restoreAgentDirectory());
 
 const CAPABILITIES_EXTENSION = fileURLToPath(
   new URL("../../../extensions/capabilities/index.ts", import.meta.url),

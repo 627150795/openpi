@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -667,6 +674,51 @@ test("disk samples explicit cwd despite foreign repository environment and leave
     assert.equal(absent.availability, "unavailable");
     assert.deepEqual({ ...process.env }, contaminated);
     assert.equal(JSON.stringify(snapshot).includes(directory), false);
+  } finally {
+    for (const name of Object.keys(overrides)) {
+      if (original[name] === undefined) delete process.env[name];
+      else process.env[name] = original[name];
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("disk sampling cannot create or append inherited Git trace output", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "openpi-snapshot-trace-test-"));
+  const project = join(directory, "project");
+  const eventPath = join(directory, "trace-event.json");
+  const tracePath = join(directory, "existing-trace.log");
+  const overrides = { GIT_TRACE2_EVENT: eventPath, GIT_TRACE: tracePath };
+  const original = { ...process.env };
+  try {
+    mkdirSync(project);
+    execFileSync("git", ["-C", project, "init", "-q"], { stdio: "pipe" });
+    execFileSync(
+      "git",
+      [
+        "-C",
+        project,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "fixture",
+      ],
+      { stdio: "pipe" },
+    );
+    writeFileSync(tracePath, "synthetic sentinel\n");
+    Object.assign(process.env, overrides);
+    const snapshot = await readDiskSnapshot(project);
+    assert.equal(snapshot.availability, "available");
+    assert.equal(snapshot.dirty, false);
+    for (const [name, value] of Object.entries(overrides)) {
+      assert.equal(process.env[name], value);
+    }
+    assert.equal(existsSync(eventPath), false);
+    assert.equal(readFileSync(tracePath, "utf8"), "synthetic sentinel\n");
   } finally {
     for (const name of Object.keys(overrides)) {
       if (original[name] === undefined) delete process.env[name];

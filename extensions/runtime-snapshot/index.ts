@@ -96,6 +96,10 @@ async function gitRead(cwd: string, args: string[], signal?: AbortSignal) {
   ]) {
     delete env[name];
   }
+  // Inherited tracing can create/append files even for read-only Git commands.
+  for (const name of Object.keys(env)) {
+    if (name.startsWith("GIT_TRACE")) delete env[name];
+  }
   return new Promise<string>((resolve, reject) => {
     execFile(
       "git",

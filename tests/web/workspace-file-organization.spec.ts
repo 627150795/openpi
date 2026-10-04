@@ -198,7 +198,16 @@ const menu = async (name: string, action: string) => {
       name: i18n.t("filesPathActions", { name }),
     }),
   );
-  fireEvent.click(await screen.findByRole("menuitem", { name: action }));
+  const item = await screen.findByRole("menuitem", { name: action });
+  const popup = item.closest('[role="menu"]')!;
+  // detail=0 opens in keyboard/AT mode. Wait for its opening-frame focus
+  // before selecting: jsdom lets a late callback focus a display:none item.
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      within(popup as HTMLElement).getAllByRole("menuitem")[0],
+    ),
+  );
+  fireEvent.click(item);
 };
 
 it("renames from the row menu, focuses its name and retains an unsaved editor draft at the new canonical path", async () => {

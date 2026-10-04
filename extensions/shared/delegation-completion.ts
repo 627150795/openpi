@@ -76,13 +76,40 @@ function cwdIdentifier(value: string | undefined) {
     : undefined;
 }
 
+function enumValue<const T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+) {
+  return allowed.find((candidate) => candidate === value);
+}
+
 export function projectDelegationCompletion(input: DelegationCompletionFacts) {
+  const referenceKind =
+    input.referenceKind === undefined
+      ? ("owner-locator" as const)
+      : (enumValue(input.referenceKind, ["fingerprint", "owner-locator"]) ??
+        "unknown");
   const facts = {
-    owner: input.owner,
-    outcome: input.outcome,
-    isolation: input.isolation,
-    persistence: input.persistence,
-    replay: input.replay,
+    owner: enumValue(input.owner, ["direct", "workflow"]) ?? "unknown",
+    outcome:
+      enumValue(input.outcome, [
+        "running",
+        "success",
+        "failure",
+        "cancelled",
+        "uncertain",
+        "replayed",
+      ]) ?? "uncertain",
+    isolation: enumValue(input.isolation, ["shared", "worktree"]),
+    persistence: enumValue(input.persistence, ["saved", "failed", "unknown"]),
+    // Retain no caller-owned replay object or unchecked metadata.
+    replay: input.replay
+      ? {
+          origin:
+            decodeDelegationReplayOrigin(input.replay?.origin) ??
+            ("unknown" as const),
+        }
+      : undefined,
     executionId: boundedReference(input.executionId),
     evidenceRef: boundedReference(input.evidenceRef),
     toolEvidenceRef: boundedReference(input.toolEvidenceRef),
@@ -95,8 +122,6 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
     handoffRef: boundedReference(input.handoffRef),
   };
   const tools = input.tools ?? [];
-  const replayOrigin =
-    decodeDelegationReplayOrigin(input.replay?.origin) ?? ("unknown" as const);
   const projection = {
     version: 1 as const,
     identity: {
@@ -105,7 +130,7 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
     },
     observed: {
       outcome: facts.outcome,
-      referenceKind: input.referenceKind ?? "owner-locator",
+      referenceKind,
       ...(facts.evidenceRef ? { evidenceRef: facts.evidenceRef } : {}),
       tools: {
         // Normalized owner transcripts are bounded, not complete audit logs.
@@ -134,7 +159,7 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
       },
     },
     modelClaimed: {
-      referenceKind: input.referenceKind ?? "owner-locator",
+      referenceKind,
       status:
         facts.textRef || facts.structuredRef
           ? ("referenced" as const)
@@ -162,7 +187,7 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
     persistence: { status: facts.persistence ?? "unknown" },
     ...(facts.replay
       ? {
-          replay: { newExecution: false as const, origin: replayOrigin },
+          replay: { newExecution: false as const, origin: facts.replay.origin },
         }
       : {}),
   };
@@ -188,6 +213,24 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
     projection.modelClaimed.textRef || projection.modelClaimed.structuredRef
       ? "referenced"
       : "unknown";
+  if (
+    !projection.observed.evidenceRef &&
+    !projection.observed.tools.evidenceRef
+  )
+    projection.observed.referenceKind = "unknown";
+  if (projection.modelClaimed.status === "unknown")
+    projection.modelClaimed.referenceKind = "unknown";
+  // Recheck after metadata changes; shed remaining optional workspace fields.
+  if (overBudget()) {
+    delete projection.workspace.branch;
+    delete projection.workspace.baseSha;
+    delete projection.workspace.requestedCwd;
+    delete projection.workspace.effectiveCwd;
+  }
+  // Only validated enums and fixed-size unknown facts remain after shedding.
+  // Fail closed rather than ever returning an over-budget projection.
+  if (overBudget())
+    throw new Error("Delegation completion exceeds byte budget");
   return projection;
 }
 

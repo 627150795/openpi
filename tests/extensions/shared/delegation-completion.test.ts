@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  COMPLETION_MAX_BYTES,
+  type DelegationCompletionFacts,
   delegationCompletionText,
   projectDelegationCompletion,
 } from "../../../extensions/shared/delegation-completion.ts";
@@ -116,6 +118,103 @@ test("completion has an aggregate UTF-8 budget even with near-limit references",
   });
   assert.ok(Buffer.byteLength(JSON.stringify(escaped)) <= 16 * 1024);
   assert.equal(escaped.identity.executionId, "unknown");
+});
+
+test("runtime enum fields cannot inject unbounded strings or objects", () => {
+  for (const invalid of [
+    "x".repeat(100_000),
+    { payload: "x".repeat(100_000) },
+    null,
+  ]) {
+    const input = {
+      ...facts,
+      owner: invalid,
+      outcome: invalid,
+      isolation: invalid,
+      persistence: invalid,
+      referenceKind: invalid,
+    } as unknown as DelegationCompletionFacts;
+    const receipt = projectDelegationCompletion(input);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(receipt)) <= COMPLETION_MAX_BYTES,
+    );
+    assert.equal(receipt.identity.owner, "unknown");
+    assert.equal(receipt.observed.outcome, "uncertain");
+    assert.equal(receipt.workspace.isolation, "unknown");
+    assert.equal(receipt.workspace.attribution, "unknown");
+    assert.equal(receipt.persistence.status, "unknown");
+    assert.equal(receipt.observed.referenceKind, "unknown");
+    assert.equal(receipt.modelClaimed.referenceKind, "unknown");
+  }
+});
+
+test("replay copies only bounded decoded origin fields, never runtime payloads", () => {
+  const huge = "x".repeat(100_000);
+  for (const origin of [
+    huge,
+    null,
+    {},
+    { executionId: huge, evidenceRef: huge },
+    { executionId: {}, evidenceRef: [] },
+  ]) {
+    const receipt = projectDelegationCompletion({
+      ...facts,
+      replay: { origin, payload: huge },
+    } as unknown as DelegationCompletionFacts);
+    assert.deepEqual(receipt.replay, {
+      newExecution: false,
+      origin: "unknown",
+    });
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(receipt)) <= COMPLETION_MAX_BYTES,
+    );
+  }
+  const origin = {
+    executionId: "original-run",
+    evidenceRef: "original.jsonl",
+    payload: huge,
+  };
+  const receipt = projectDelegationCompletion({ ...facts, replay: { origin } });
+  assert.deepEqual(receipt.replay?.origin, {
+    executionId: "original-run",
+    evidenceRef: "original.jsonl",
+  });
+  assert.notEqual(receipt.replay?.origin, origin);
+  assert.equal(origin.payload, huge);
+});
+
+test("reference metadata becomes unknown when all corresponding locators are unavailable", () => {
+  for (const referenceKind of ["fingerprint", "owner-locator"] as const) {
+    for (const ref of ["x".repeat(100_000), "\u0000".repeat(4096)]) {
+      const receipt = projectDelegationCompletion({
+        ...facts,
+        referenceKind,
+        executionId: ref,
+        evidenceRef: ref,
+        toolEvidenceRef: ref,
+        textRef: ref,
+        structuredRef: ref,
+        handoffRef: ref,
+        branch: "\u0000".repeat(512),
+        baseSha: "\u0000".repeat(128),
+        replay: { origin: { executionId: ref, evidenceRef: ref } },
+      });
+      assert.ok(
+        Buffer.byteLength(JSON.stringify(receipt)) <= COMPLETION_MAX_BYTES,
+      );
+      assert.equal(receipt.identity.executionId, "unknown");
+      assert.equal(receipt.observed.evidenceRef, undefined);
+      assert.equal(receipt.observed.tools.evidenceRef, undefined);
+      assert.equal(receipt.observed.referenceKind, "unknown");
+      assert.equal(receipt.modelClaimed.textRef, undefined);
+      assert.equal(receipt.modelClaimed.structuredRef, undefined);
+      assert.equal(receipt.modelClaimed.status, "unknown");
+      assert.equal(receipt.modelClaimed.referenceKind, "unknown");
+    }
+    const retained = projectDelegationCompletion({ ...facts, referenceKind });
+    assert.equal(retained.observed.referenceKind, referenceKind);
+    assert.equal(retained.modelClaimed.referenceKind, referenceKind);
+  }
 });
 
 test("cwd identifiers disclose neither host paths nor sensitive components", () => {

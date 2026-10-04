@@ -103,7 +103,7 @@ const { session } = await createAgentSession({
   modelRuntime,
   settingsManager,
   resourceLoader: loader,
-  sessionManager: SessionManager.inMemory(cwd),
+  sessionManager: SessionManager.create(cwd, agentDir + "/sessions"),
 });
 try {
   await session.bindExtensions({ mode: "print" });
@@ -116,7 +116,16 @@ try {
   await session.prompt("/openpi-setup use dark theme");
   await session.waitForIdle();
   const config = JSON.parse(await readFile(agentDir + "/my-pi-setup.json", "utf8"));
-  process.stdout.write(JSON.stringify({ snapshots, active: session.getActiveToolNames(), config }));
+  const requests = (messages) => messages.filter((message) => message.role === "custom" && message.customType === "openpi-setup-request");
+  const runtimeRequests = requests(session.messages);
+  const reopened = SessionManager.open(session.sessionManager.getSessionFile());
+  const restoredRequests = requests(reopened.buildSessionContext().messages);
+  const htmlPath = await session.exportToHtml(cwd + "/session.html");
+  const html = await readFile(htmlPath, "utf8");
+  const encoded = html.match(/<script id="session-data" type="application\\/json">([^<]+)<\\/script>/)[1];
+  const exported = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+  const exportedRequests = exported.entries.filter((entry) => entry.type === "custom_message" && entry.customType === "openpi-setup-request");
+  process.stdout.write(JSON.stringify({ snapshots, active: session.getActiveToolNames(), config, runtimeRequests, restoredRequests, exportedRequests }));
 } finally {
   session.dispose();
 }
@@ -149,8 +158,44 @@ try {
       }>;
       active: string[];
       config: { suggestions: { enabled: boolean }; ui: { webTheme: string } };
+      runtimeRequests: Array<{
+        content: string;
+        display: boolean;
+        details: unknown;
+      }>;
+      restoredRequests: Array<{
+        content: string;
+        display: boolean;
+        details: unknown;
+      }>;
+      exportedRequests: Array<{
+        content: string;
+        display: boolean;
+        details: unknown;
+      }>;
     };
     assert.equal(result.snapshots.length, 6);
+    assert.equal(result.runtimeRequests.length, 3);
+    const executionPayloads = (requests: typeof result.runtimeRequests) =>
+      requests.map(({ content, display, details }) => ({
+        content,
+        display,
+        details,
+      }));
+    assert.deepEqual(
+      executionPayloads(result.restoredRequests),
+      executionPayloads(result.runtimeRequests),
+    );
+    for (const [index, request] of result.runtimeRequests.entries()) {
+      const exported = result.exportedRequests[index];
+      assert.ok(exported);
+      assert.equal(exported.content, request.content);
+      assert.equal(exported.display, true);
+      assert.deepEqual(exported.details, request.details);
+      assert.match(request.content, /Current configuration:/);
+      assert.match(request.content, /configure_my_pi_setup/);
+    }
+    assert.equal(result.exportedRequests.length, 3);
     assert.ok(
       result.snapshots[0]?.tools?.some(
         ({ name }) => name === "configure_my_pi_setup",

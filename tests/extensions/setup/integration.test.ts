@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 test("real Pi provider snapshots setup writer across closed and successfully applied episodes", {
-  timeout: 20_000,
+  timeout: 30_000,
 }, async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "openpi-setup-integration-"));
   const agentDir = path.join(cwd, "agent");
@@ -25,9 +25,11 @@ test("real Pi provider snapshots setup writer across closed and successfully app
   ];
   const script = `
 import {
+  AgentSessionRuntime,
   createAgentSession,
   DefaultResourceLoader,
   ModelRuntime,
+  runRpcMode,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -96,6 +98,8 @@ modelRuntime.registerNativeProvider(faux.provider);
 await modelRuntime.setRuntimeApiKey("openpi-setup-fixture", "fixture-key");
 const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, additionalExtensionPaths: extensionPaths });
 await loader.reload();
+// Both configuration and persisted sessions belong to the test-owned cwd.
+const sessionDir = cwd + "/sessions";
 const { session } = await createAgentSession({
   cwd,
   agentDir,
@@ -103,7 +107,7 @@ const { session } = await createAgentSession({
   modelRuntime,
   settingsManager,
   resourceLoader: loader,
-  sessionManager: SessionManager.create(cwd, agentDir + "/sessions"),
+  sessionManager: SessionManager.create(cwd, sessionDir),
 });
 try {
   await session.bindExtensions({ mode: "print" });
@@ -118,26 +122,35 @@ try {
   const config = JSON.parse(await readFile(agentDir + "/my-pi-setup.json", "utf8"));
   const requests = (messages) => messages.filter((message) => message.role === "custom" && message.customType === "openpi-setup-request");
   const runtimeRequests = requests(session.messages);
-  const reopened = SessionManager.open(session.sessionManager.getSessionFile());
+  const sessionFile = session.sessionManager.getSessionFile();
+  const reopened = SessionManager.open(sessionFile);
   const restoredRequests = requests(reopened.buildSessionContext().messages);
   const htmlPath = await session.exportToHtml(cwd + "/session.html");
   const html = await readFile(htmlPath, "utf8");
   const encoded = html.match(/<script id="session-data" type="application\\/json">([^<]+)<\\/script>/)[1];
   const exported = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
   const exportedRequests = exported.entries.filter((entry) => entry.type === "custom_message" && entry.customType === "openpi-setup-request");
-  process.stdout.write(JSON.stringify({ snapshots, active: session.getActiveToolNames(), config, runtimeRequests, restoredRequests, exportedRequests }));
+  process.stdout.write(JSON.stringify({ snapshots, active: session.getActiveToolNames(), config, sessionFile, runtimeRequests, restoredRequests, exportedRequests }) + "\\n");
+  // Exercise the supported RPC host with the real setup renderer registered.
+  // get_messages must return full content, never the collapsed TUI projection.
+  const runtime = new AgentSessionRuntime(
+    session,
+    { cwd, agentDir, modelRuntime, settingsManager, resourceLoader: loader, diagnostics: [] },
+    async () => { throw new Error("Unexpected session replacement in export fixture"); },
+  );
+  await runRpcMode(runtime);
 } finally {
   session.dispose();
 }
 `;
 
   try {
-    const { stdout } = await execFileAsync(
+    const subprocess = execFileAsync(
       process.execPath,
       ["--experimental-strip-types", "--input-type=module", "--eval", script],
       {
         cwd: repositoryRoot,
-        timeout: 8_000,
+        timeout: 15_000,
         env: {
           ...process.env,
           PI_CODING_AGENT_DIR: agentDir,
@@ -146,7 +159,13 @@ try {
         },
       },
     );
-    const result = JSON.parse(stdout) as {
+    assert.ok(subprocess.child.stdin);
+    subprocess.child.stdin.end(
+      `${JSON.stringify({ id: "setup-messages", type: "get_messages" })}\n`,
+    );
+    const { stdout } = await subprocess;
+    const [fixtureLine, ...rpcLines] = stdout.trim().split("\n");
+    const result = JSON.parse(fixtureLine) as {
       snapshots: Array<{
         messages: Array<{
           role: string;
@@ -157,6 +176,7 @@ try {
         tools?: Array<{ name: string }>;
       }>;
       active: string[];
+      sessionFile: string;
       config: { suggestions: { enabled: boolean }; ui: { webTheme: string } };
       runtimeRequests: Array<{
         content: string;
@@ -174,6 +194,30 @@ try {
         details: unknown;
       }>;
     };
+    const rpcResponse = rpcLines
+      .map((line) => JSON.parse(line))
+      .find(({ id }) => id === "setup-messages") as {
+      command: string;
+      success: boolean;
+      data: {
+        messages: Array<{
+          role: string;
+          customType?: string;
+          content: string;
+          display: boolean;
+          details: unknown;
+        }>;
+      };
+    };
+    assert.ok(rpcResponse);
+    assert.equal(rpcResponse.command, "get_messages");
+    assert.equal(rpcResponse.success, true);
+    const rpcRequests = rpcResponse.data.messages.filter(
+      ({ role, customType }) =>
+        role === "custom" && customType === "openpi-setup-request",
+    );
+    assert.equal(path.dirname(result.sessionFile), path.join(cwd, "sessions"));
+    await access(result.sessionFile);
     assert.equal(result.snapshots.length, 6);
     assert.equal(result.runtimeRequests.length, 3);
     const executionPayloads = (requests: typeof result.runtimeRequests) =>
@@ -185,6 +229,11 @@ try {
     assert.deepEqual(
       executionPayloads(result.restoredRequests),
       executionPayloads(result.runtimeRequests),
+    );
+    assert.deepEqual(
+      executionPayloads(rpcRequests),
+      executionPayloads(result.runtimeRequests),
+      "the RPC/JSON wire must retain full setup content and display metadata",
     );
     for (const [index, request] of result.runtimeRequests.entries()) {
       const exported = result.exportedRequests[index];
@@ -271,5 +320,6 @@ try {
     assert.equal(result.active.includes("configure_my_pi_setup"), false);
   } finally {
     await rm(cwd, { recursive: true, force: true });
+    await assert.rejects(access(cwd), { code: "ENOENT" });
   }
 });

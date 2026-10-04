@@ -225,6 +225,8 @@ function hideConfigureTool(pi: ExtensionAPI) {
 }
 
 export default function openPiSetup(pi: ExtensionAPI) {
+  // Pi invokes message renderers only from its interactive TUI. RPC/JSON
+  // serialize raw messages, and HTML export renders stored content separately.
   pi.registerMessageRenderer(
     SETUP_REQUEST_CUSTOM_TYPE,
     (message, { expanded }, theme) => {

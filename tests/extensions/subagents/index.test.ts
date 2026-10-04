@@ -18,6 +18,10 @@ import subagents, {
   truncatedOutput,
 } from "../../../extensions/subagents/index.ts";
 import { projectResult } from "../../../extensions/subagents/src/result-artifact.ts";
+import {
+  delegationCompletionText,
+  projectDelegationCompletion,
+} from "../../../extensions/shared/delegation-completion.ts";
 
 import {
   type AgentSession,
@@ -71,6 +75,12 @@ test("subagent results render before the hidden wake-up message", () => {
     },
   ]);
 
+  const completion = projectDelegationCompletion({
+    owner: "direct",
+    outcome: "uncertain",
+    effectiveCwd: process.cwd(),
+    isolation: "shared",
+  });
   assert.deepEqual(events, [
     {
       kind: "entry",
@@ -82,6 +92,7 @@ test("subagent results render before the hidden wake-up message", () => {
           title: "investigate plan mode",
           status: "done",
           elapsed: "1s",
+          completion,
         },
       },
     },
@@ -89,14 +100,14 @@ test("subagent results render before the hidden wake-up message", () => {
       kind: "message",
       message: {
         customType: "subagent-result",
-        content:
-          'Subagent sa-3 "investigate plan mode" finished.\n\nreport\n\n(This result is already shown to the user. Act on it and relay only the decisions or next steps — do not repeat it verbatim.)',
+        content: `Subagent sa-3 "investigate plan mode" finished.\n\nreport\n\n${delegationCompletionText(completion)}\n\n(This result is already shown to the user. Act on it and relay only the decisions or next steps — do not repeat it verbatim.)`,
         display: false,
         details: {
           id: "sa-3",
           title: "investigate plan mode",
           status: "done",
           elapsed: "1s",
+          completion,
           displayContent:
             'Subagent sa-3 "investigate plan mode" finished.\n\nreport',
         },
@@ -1158,6 +1169,20 @@ test("ordinary and typed Direct spawns inherit real single-file package provenan
             ctx,
           );
         assert.match(JSON.stringify(waited), /intercom boundary verified/);
+        const queried = await tools
+          .get("subagent_check")!
+          .execute("check", { id: spawned.details.id });
+        const waitedProjection = waited as {
+          details: { results: Array<{ completion: unknown }> };
+        };
+        const queriedProjection = queried as {
+          details: { completion: unknown };
+        };
+        assert.deepEqual(
+          queriedProjection.details.completion,
+          waitedProjection.details.results[0]?.completion,
+        );
+        assert.match(JSON.stringify(waited), /verification=unknown/);
         assert.deepEqual(parent.getActiveToolNames(), ["read", "intercom"]);
       }
       assert.equal(prompts, 2);

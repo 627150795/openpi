@@ -52,6 +52,11 @@ import {
 } from "../shared/activity-status.ts";
 import { sanitizeText } from "../shared/agent-transcript.ts";
 import {
+  delegationCompletionText,
+  type DelegationCompletion,
+} from "../shared/delegation-completion.ts";
+import { subagentCompletion } from "./src/completion.ts";
+import {
   sessionChildExecutionAdmission,
   type ChildExecutionAdmission,
 } from "../shared/child-execution-admission.ts";
@@ -190,6 +195,7 @@ interface SubagentFinishedData {
 }
 
 interface SubagentResultDetails {
+  readonly completion?: DelegationCompletion;
   readonly id?: string;
   readonly title?: string;
   readonly status?: SubagentSnapshot["status"];
@@ -202,6 +208,7 @@ interface SubagentResultDetails {
   readonly structuredArtifactPath?: string;
   readonly count?: number;
   readonly results?: ReadonlyArray<{
+    readonly completion?: DelegationCompletion;
     readonly id: string;
     readonly title: string;
     readonly status: SubagentSnapshot["status"];
@@ -317,7 +324,7 @@ export function createSubagentResultDispatcher(
         title: snap.title,
         status: snap.status,
         errorText: snap.errorText,
-        output: "",
+        output: delegationCompletionText(subagentCompletion(snap)),
       }),
     );
     const wrapperBytes =
@@ -347,7 +354,10 @@ export function createSubagentResultDispatcher(
     const projections = snaps.map((snap, index) =>
       normalizeProjection(outputFor(snap, allocation.budgets[index]!)),
     );
-    const outputs = projections.map((projection) => projection.text);
+    const outputs = projections.map(
+      (projection, index) =>
+        `${projection.text}\n\n${delegationCompletionText(subagentCompletion(snaps[index]!))}`,
+    );
     const displayContent = boundAutomaticResultBatch(
       snaps
         .map((snap, index) =>
@@ -356,7 +366,7 @@ export function createSubagentResultDispatcher(
             title: snap.title,
             status: snap.status,
             errorText: snap.errorText,
-            output: outputs[index]!,
+            output: projections[index]!.text,
           }),
         )
         .join("\n\n"),
@@ -377,6 +387,7 @@ export function createSubagentResultDispatcher(
     const details: SubagentResultDetails =
       snaps.length === 1
         ? {
+            completion: subagentCompletion(snaps[0]!),
             id: snaps[0]!.id,
             title: snaps[0]!.title,
             status: snaps[0]!.status,
@@ -400,6 +411,7 @@ export function createSubagentResultDispatcher(
         : {
             count: snaps.length,
             results: snaps.map((snap, index) => ({
+              completion: subagentCompletion(snap),
               id: snap.id,
               title: snap.title,
               status: snap.status,
@@ -1279,6 +1291,7 @@ export default function (
         const verb = snap.status === "error" ? "failed" : "finished";
         let header = `## ${snap.id} "${snap.title}" ${verb}`;
         if (snap.errorText) header += `\nError: ${snap.errorText}`;
+        header += `\n\n${delegationCompletionText(subagentCompletion(snap))}`;
         return { id, snap, header };
       });
       const separatorsBytes = Math.max(0, entries.length - 1) * 7;
@@ -1347,6 +1360,7 @@ export default function (
             const snap = manager.view.get(id);
             return {
               id,
+              ...(snap ? { completion: subagentCompletion(snap) } : {}),
               title: snap?.title,
               status: snap?.status,
               ...(snap?.outcome ? { outcome: snap.outcome } : {}),
@@ -1540,9 +1554,20 @@ export default function (
         text += "\n\n(no text output yet)";
       }
 
+      const completion = subagentCompletion(snap);
       return {
-        content: [{ type: "text", text }],
-        details: { id: snap.id, status: snap.status, turns: snap.turns },
+        content: [
+          {
+            type: "text",
+            text: `${text}\n\n${delegationCompletionText(completion)}`,
+          },
+        ],
+        details: {
+          id: snap.id,
+          status: snap.status,
+          turns: snap.turns,
+          completion,
+        },
       };
     },
   });

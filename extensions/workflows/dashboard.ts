@@ -12,6 +12,7 @@
  */
 
 import * as fs from "node:fs";
+import { decodeDelegationReplayOrigin } from "../shared/delegation-completion.ts";
 import * as path from "node:path";
 import {
   type ExtensionContext,
@@ -417,8 +418,36 @@ export function normalizePersistedWorkflowDetails(
             ),
           )
         : decodedInvocation;
+    const replayOrigin = decodeDelegationReplayOrigin(a.replayOrigin);
+    const executionOutcome =
+      a.executionOutcome === "success" ||
+      a.executionOutcome === "failure" ||
+      a.executionOutcome === "cancelled" ||
+      a.executionOutcome === "uncertain" ||
+      a.executionOutcome === "replayed"
+        ? a.executionOutcome
+        : undefined;
     agents.push({
       index,
+      ...(executionOutcome ? { executionOutcome } : {}),
+      ...(a.resultPersistence === "saved" || a.resultPersistence === "failed"
+        ? { resultPersistence: a.resultPersistence }
+        : {}),
+      ...(a.resultHasStructured === true ? { resultHasStructured: true } : {}),
+      ...(typeof a.requestedCwd === "string" && a.requestedCwd.length <= 4096
+        ? { requestedCwd: a.requestedCwd }
+        : {}),
+      ...(typeof a.effectiveCwd === "string" && a.effectiveCwd.length <= 4096
+        ? { effectiveCwd: a.effectiveCwd }
+        : {}),
+      ...(a.isolation === "shared" || a.isolation === "worktree"
+        ? { isolation: a.isolation }
+        : {}),
+      ...(replayOrigin
+        ? { replayOrigin }
+        : a.replayOrigin === "unknown"
+          ? { replayOrigin: "unknown" as const }
+          : {}),
       ...(typeof a.callId === "string" && a.callId
         ? { callId: sanitizeLine(a.callId, 256) }
         : {}),

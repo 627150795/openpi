@@ -5,6 +5,7 @@ import type {
   WorkflowMemoryProjection,
 } from "./model.ts";
 import { toSerializable } from "./serialization.ts";
+import { workflowAgentCompletion } from "./agent-completion.ts";
 
 /** Defaults apply only to settled session-memory projections. Disk is canonical. */
 export const DEFAULT_WORKFLOW_SETTLED_MAX_RUNS = 32;
@@ -111,11 +112,13 @@ function compactInvocation(agent: AgentRecord) {
 }
 
 function compactAgent(
+  runId: string,
   agent: AgentRecord,
   display: boolean,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {
     index: agent.index,
+    completion: workflowAgentCompletion(runId, agent),
     ...(agent.callId ? { callId: agent.callId } : {}),
     ...(agent.invocation ? { invocation: compactInvocation(agent) } : {}),
     label: bounded(agent.label, MAX_LABEL_BYTES) ?? "agent",
@@ -320,7 +323,9 @@ export function projectWorkflowDetails(
   let display = true;
   let agentLimit = details.agents.length;
   let logLimit = Math.min(MAX_LOGS, details.logs?.length ?? 0);
-  let agents = details.agents.map((agent) => compactAgent(agent, display));
+  let agents = details.agents.map((agent) =>
+    compactAgent(details.runId, agent, display),
+  );
   let logs = (details.logs ?? []).slice(-logLimit).map((log) => ({
     at: log.at,
     text: bounded(log.text, MAX_PREVIEW_BYTES) ?? "",
@@ -328,7 +333,9 @@ export function projectWorkflowDetails(
 
   const removeOptionalFields = () => {
     display = false;
-    agents = details.agents.map((agent) => compactAgent(agent, false));
+    agents = details.agents.map((agent) =>
+      compactAgent(details.runId, agent, false),
+    );
     logs = [];
     logLimit = 0;
   };

@@ -229,7 +229,15 @@ export interface SubagentSnapshot {
   readonly cwd: string;
   readonly status: SubagentStatus;
   readonly outcome?: SubagentOutcome;
+  /** Terminal presentation after a stop deadline is not proof of quiescence. */
+  readonly executionUncertain?: boolean;
   readonly worktreeBranch?: string;
+  readonly worktreeBaseSha?: string;
+  readonly requestedCwd?: string;
+  /** Session-local execution generation; absent on legacy snapshots. */
+  readonly runGeneration?: number;
+  /** Absolute transcript item offset at the start of this execution. */
+  readonly runTranscriptStart?: number;
   readonly createdAt: number;
   readonly settledAt?: number;
   readonly errorText?: string;

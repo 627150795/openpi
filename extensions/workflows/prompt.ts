@@ -4,6 +4,7 @@ import {
 } from "../shared/result-budget.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { projectText } from "../shared/text-projection.ts";
+import { workflowCompletionLines } from "./agent-completion.ts";
 import {
   countStates,
   formatElapsed,
@@ -156,6 +157,7 @@ export function buildWorkflowResultMessage(
       );
     }
   }
+  lines.push("", ...workflowCompletionLines(details.runId, details.agents));
   if (details.result !== undefined)
     lines.push("", "Result:", resultJson(details.result));
   return sanitizeTerminalText(lines.join("\n"));
@@ -328,6 +330,7 @@ export function buildWorkflowStatusSummary(
     details.currentPhase ? `Current phase: ${details.currentPhase}` : undefined,
     details.delivery ? `Delivery: ${details.delivery.state}.` : undefined,
     `Artifacts: ${shortenHome(runDir)}`,
+    ...workflowCompletionLines(details.runId, details.agents),
   ]
     .filter(Boolean)
     .join("\n");

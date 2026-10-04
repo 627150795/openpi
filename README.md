@@ -714,6 +714,10 @@ Capability discovery 默认是 `explicit`：普通父 Session 不常驻任何 Op
 
 需要机器可验证的 review findings、research evidence 或 test matrix 时，可为 `subagent_spawn` 提供可选 `output_schema`。该次 Direct Subagent 只会额外获得 terminating `structured_output`，未提交匹配结果会明确失败；验证后的 JSON 会有界回传并写入私有 content-addressed artifact。省略 schema 的普通文本路径不会加载该 child tool 或 structured instruction。
 
+Direct 的 check/wait/自动回传，以及 Workflow 的 status/等待结果/自动回传，共享有界 `completion` 投影（[#652](https://github.com/openpi-dev/openpi/issues/652)）：运行事实、模型声明引用、持久化状态与工作目录归因分开。Direct 的执行身份包含 Session 内递增的 run generation；Workflow 沿用 callId 与现有制品引用，Replay 不启动新执行，并保留原始执行引用（旧 journal 为 unknown）。投影不改变 Workflow `agent()` 的 IPC 结果形状或执行/交付判定。
+
+这不是验收收据：工具返回成功不等于进程 exit 0，模型说“测试通过”不等于运行了测试。规范化 transcript 的工具观察最多展示 16 项、coverage 始终为 partial；命令/退出码与测试验证为 unknown，投影自身的自动验证为 not-run。共享 cwd 的变更 attribution 为 unknown；Worktree 证据最多归因到 checkout，不证明每次写入的独占作者。详细记录仍由原有 Child Session / Workflow artifacts 持有；模型文本每个 Workflow 最多列出 16 个 child 投影，省略项通过原有制品定位。不会自动测试、追加模型调用、要求提交问卷或扩大权限。
+
 </details>
 
 <details>

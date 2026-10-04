@@ -13,6 +13,7 @@ import {
   type WorkflowStatus,
 } from "./model.ts";
 import { safeStringify } from "./serialization.ts";
+import { workflowCompletionLines } from "./agent-completion.ts";
 
 const MAX_DISPLAY_ENTRIES = 64;
 const MAX_DISPLAY_BYTES = 64 * 1024;
@@ -247,6 +248,7 @@ function buildOperatorReport(
       );
     }
   }
+  lines.push("", ...workflowCompletionLines(details.runId, details.agents));
   if (details.result !== undefined) {
     lines.push("", "Result:", resultJson(details.result));
   }

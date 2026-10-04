@@ -102,7 +102,12 @@ interface MutableSnapshot {
   cwd: string;
   status: SubagentStatus;
   outcome?: SubagentSnapshot["outcome"];
+  executionUncertain?: boolean;
   worktreeBranch?: string;
+  worktreeBaseSha?: string;
+  requestedCwd?: string;
+  runGeneration: number;
+  runTranscriptStart: number;
   createdAt: number;
   settledAt?: number;
   errorText?: string;
@@ -354,11 +359,14 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
         // A cancel can clear a queued restart before RunStarted reaches the
         // manager. Its RunSettled still belongs to the new run, not the old
         // settled snapshot, so promote the lifecycle before applying it.
+        s.runGeneration++;
+        s.runTranscriptStart = s.transcriptVersion;
         s.status = "running";
         s.settledAt = undefined;
         s.errorText = undefined;
       }
       s.settledAt = Date.now();
+      s.executionUncertain = !releaseAdmission;
       switch (outcome._tag) {
         case "Completed":
           s.status = "done";
@@ -413,9 +421,14 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
       const s = entry.snapshot;
       switch (event._tag) {
         case "RunStarted":
+          if (s.status !== "running") {
+            s.runGeneration++;
+            s.runTranscriptStart = s.transcriptVersion;
+          }
           entry.restarting = false;
           s.status = "running";
           s.outcome = undefined;
+          s.executionUncertain = undefined;
           s.settledAt = undefined;
           s.errorText = undefined;
           s.structuredResult = undefined;
@@ -593,9 +606,15 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
               title: task.title,
               prompt: task.prompt,
               cwd: task.cwd,
+              requestedCwd: task.worktree?.repoCwd ?? task.cwd,
+              runGeneration: 1,
+              runTranscriptStart: 0,
               status: "running",
               ...(task.worktree
-                ? { worktreeBranch: task.worktree.branch }
+                ? {
+                    worktreeBranch: task.worktree.branch,
+                    worktreeBaseSha: task.worktree.baseSha,
+                  }
                 : {}),
               createdAt: Date.now(),
               meta,

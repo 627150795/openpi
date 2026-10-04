@@ -10,7 +10,7 @@
 
 ## 已证实的边界
 
-本轮遵循 README 的 runtime provenance 流程。`pi list` 仅报告一个 OpenPI 来源 `/Users/tushaokun/work/openpi-main-runtime`，该 checkout HEAD 为 `d36b58b67f87d24b4926521b965bdccfff7719e4`。这与候选 worktree 不同；未安装、reload 或修改正在运行的 Session。安装宿主 package 为 Pi coding-agent / TUI `1.0.2`；源码调查针对磁盘 package，不证明当前内存实例已加载同一字节。
+本轮遵循 README 的 runtime provenance 流程。`pi list` 仅报告一个 OpenPI 来源 `~/work/openpi-main-runtime`，该 checkout HEAD 为 `d36b58b67f87d24b4926521b965bdccfff7719e4`。这与候选 worktree 不同；未安装、reload 或修改正在运行的 Session。安装宿主 package 为 Pi coding-agent / TUI `1.0.2`；源码调查针对磁盘 package，不证明当前内存实例已加载同一字节。
 
 安装宿主与锁定 SDK 的公开 `compositeTuiLine` 都在 image base line 上直接返回原行。因此纯文字 fullscreen overlay 仍保留图片 anchor。安装 `TuiAltScreen.doRender` 已拥有 Kitty placement/cache 生命周期：最终帧中 image anchor 消失时，renderer 删除旧 placement；关闭后同一 image ID 可以用缓存的 placement-only `a=p` 恢复。OpenPI 不需要增加独立 graphics 删除系统。
 
@@ -37,7 +37,7 @@ const coversViewport =
 
 本地 review patch：`/tmp/openpi-657-upstream-candidate/opaque-fullscreen-overlay.patch`。其源自安装 Pi `1.0.2` `tui.js.map` 的 `sourcesContent`，没有修改安装 package。隔离副本只为验证同一最小源码逻辑生成对应 JS 改动。
 
-OpenPI 当前 Dashboard 默认高度为 terminal rows 减一，因此还需要上游修复后的局部 adoption：在 fullscreen `showOverlay` 边界用转发组件将 Dashboard/child page 的输出裁到 viewport 并补齐空行，保证真实 rectangle 完整覆盖 viewport。焦点、按键、invalidate 和关闭仍由原 Dashboard 与既有 overlay handle 管理。此 candidate 位于 `openpi-adoption-after-pi-fix.patch`；它尚未应用或验证为生产实现。
+OpenPI 当前 Dashboard 默认高度为 terminal rows 减一，因此还需要上游修复后的局部 adoption：在 fullscreen `showOverlay` 边界用转发组件将 Dashboard/child page 的输出裁到 viewport 并补齐空行，保证真实 rectangle 完整覆盖 viewport。焦点、按键、normalized mouse、invalidate、key-release preference 和关闭仍由原 Dashboard 与既有 overlay handle 管理。独立候选审查发现初版 padding wrapper 漏掉 `handleMouse`（P2），会中断 fullscreen transcript wheel；已在本地 candidate 补齐 `Component` 的事件转发，外层保持唯一 dispose owner，避免 double disposal。此 candidate 位于 `openpi-adoption-after-pi-fix.patch`；它尚未应用或验证为生产实现。
 
 ## 实际验证与消融
 
@@ -47,10 +47,10 @@ OpenPI 当前 Dashboard 默认高度为 terminal rows 减一，因此还需要�
 | --- | --- | --- |
 | 原仓库 native Dashboard fixture | 4/4，通过，18.84s | 现有 regular 排除/恢复与 fullscreen 导航/handle cleanup；未断言 fullscreen 图片已解决 |
 | native editor replacement 消融 | regular 2/2；fullscreen 0/2，28.40s | fullscreen 管理入口被宿主布局裁掉；候选不可直接复用 regular 路径 |
-| 原装 Pi TUI 1.0.2，同一 owner fixture | 1/2，通过，0.82s | 整屏 overlay 进入时未触发旧 placement 删除；partial 对照通过 |
-| 隔离的 Pi owner candidate | 2/2，通过，1.33s | 整屏进入时 owner 删除 placement；隐藏时不发送 image upload/placement；关闭恢复两张 cached placement |
+| 原装 Pi TUI 1.0.2，同一 owner fixture | 2/5，通过，0.16s；3 项预期失败 | 整屏进入未触发旧 placement 删除；stacked 恢复和 overlay 自己的图片断言失败；partial 和鼠标转发对照通过 |
+| 隔离的 Pi owner candidate | 5/5，通过，0.19s | 整屏隐藏/恢复、partial、真实 native wheel dispatch、stacked 和 overlay 自己的图片均通过协议断言 |
 
-owner fixture 覆盖三次重复开关、两张图片、打开时多次刷新、44×14/100×24/80×18 resize、关闭后滚动再返回，以及 partial overlay 保持旧行为。候选没有通过重新上传来冒充恢复；断言关闭帧包含 SDK 针对两张原图生成的 placement-only sequence。transcript render 数据前后保持相同。
+owner fixture 覆盖三次重复开关、两张图片、打开时多次刷新、44×14/100×24/80×18 resize、关闭后滚动再返回，以及 partial overlay 保持旧行为。新增 native `Terminal.start` 输入回调接收真实 SGR wheel，确认 padding wrapper 把 normalized wheelDelta 传给 source 并保留键盘、焦点、invalidate 和 key-release preference。两层 full-viewport overlays 的上层关闭不会恢复聊天 placement，最后一层关闭才恢复；overlay 自己的第 3 张图片仍可绘制，关闭后恢复底层两图。候选没有通过重新上传来冒充恢复；断言关闭帧包含 SDK 针对两张原图生成的 placement-only sequence。transcript render 数据前后保持相同。
 
 冻结本地 evidence identity：
 
@@ -59,16 +59,16 @@ owner fixture 覆盖三次重复开关、两张图片、打开时多次刷新、
 | `tui.ts.original` | `92dcb7f5f9a3a9575421d8de366be5cc78890be8df38d86c4ed3c0d77c7f88a4` |
 | `tui.ts.candidate` | `e5425b29255ebc02674aa894408f664e8e0b6c5b43630863c085ae60585af486` |
 | `opaque-fullscreen-overlay.patch` | `717445eab499cd24a30f871794a088d5e2997c43d6d53b9ccb7958222e440b2b` |
-| `openpi-adoption-after-pi-fix.patch` | `6663607fb73141e0357f718e28ba4015d5e20cd50789fcdd0204a17a718cb70f` |
-| `fullscreen-overlay.test.mjs` | `829f8c5e72b36ca892563320400b675a826058bbff3f42440dafd8ca54e2f326` |
+| `openpi-adoption-after-pi-fix.patch` | `8d0269fc59fc19c0995bf35cb0775d15f4eb1c9c9231b8b163d358ce8c690085` |
+| `fullscreen-overlay.test.mjs` | `cc63ee4121caa27e9f94e86d4d068040a4d302ff2c41fc9ce7b7529496c3ea34` |
 | `fixture.png` | `a539cd72867e775cd1b0220f3d972f161d133c2c9255fef8612d7fda84fe06da` |
 
 这些小型本地 artifact 在该目录可检索；没有公开归档第三方完整源码，也不能把 hash 当作公开可获取证据。上游提交时应将最小源码 diff 与可移植 fixture 一并纳入 Pi 仓库测试。
 
 ## 未完成的验收与兼容风险
 
-这不是 shipped fix。Pi owner candidate 未在上游 source tree 编译、执行完整上游测试或独立审核。OpenPI adoption 未完成实际 native-custom 管理路径验证；更没有真实终端 pixels 验收。原先 Ghostty computer-use 的安全拒绝没有被绕过。#657 应继续保持打开。
+这不是 shipped fix。Pi owner candidate 已接受局部独立审查并修正上述鼠标转发缺陷，但未在上游 source tree 编译或执行完整上游测试，也没有上游维护者的接收审核。OpenPI adoption 未完成实际 native-custom 管理路径验证；更没有真实终端 pixels 验收。原先 Ghostty computer-use 的安全拒绝没有被绕过。#657 应继续保持打开。
 
 fullscreen 的 SDK 自身会暂时禁用 iTerm image capability；本轮 Kitty protocol fixture 不能证明 fullscreen iTerm 像素兼容。需要在支持图片的真实终端固定版本/capability，验收 regular/fullscreen、两图、滚动、resize、取消和关闭后的原聊天图片位置，观察是否有闪烁或残留。
 
-上游必须审核其他全屏 overlays 是否有依赖底层图片保留的行为，以及 cache eviction 与 stacked overlays 的恢复。不能仅将 OpenPI SDK 依赖从 0.99.1 升到 1.0.2：安装 1.0.2 仍有原缺陷，升级还涉及其余宿主 API 合同。应等待含该修复的 Pi release，再独立 review SDK 升级和 OpenPI adoption。若上游选择明确 opaque option 而非全覆盖自动推导，OpenPI 必须遵循发布的 public contract，不能 monkey-patch host methods 或依赖不存在的 option。
+上游必须审核其他全屏 overlays 是否有依赖底层图片保留的行为，以及 cache eviction 的恢复。stacked full-viewport 与 overlay 自己的图片已有本地协议对照，但不能据此排除其他 overlay 组合或真实终端差异。不能仅将 OpenPI SDK 依赖从 0.99.1 升到 1.0.2：安装 1.0.2 仍有原缺陷，升级还涉及其余宿主 API 合同。应等待含该修复的 Pi release，再独立 review SDK 升级和 OpenPI adoption。若上游选择明确 opaque option 而非全覆盖自动推导，OpenPI 必须遵循发布的 public contract，不能 monkey-patch host methods 或依赖不存在的 option。

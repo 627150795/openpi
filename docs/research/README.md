@@ -12,6 +12,8 @@ Research records preserve sourced investigation and distinguish observations, in
 
 ## Validated investigations
 
+- [`WORKTREE_VALIDATION_663.md`](WORKTREE_VALIDATION_663.md) — source-controlled inside/outside Git validation, React-domain activation and test-only Vite ancestor-path denial ([#663](https://github.com/openpi-dev/openpi/issues/663)); local evidence and parent review boundary recorded.
+
 - [`CHILD_TOOL_PREFLIGHT_2026-10-04.md`](CHILD_TOOL_PREFLIGHT_2026-10-04.md) — inherited versus explicit child tool requirements, native SDK factories, and fail-closed replay identities ([#637](https://github.com/openpi-dev/openpi/issues/637), [PR #638](https://github.com/openpi-dev/openpi/pull/638)).
 
 - [`PI_0_99_COMPATIBILITY_2026-09-30.md`](PI_0_99_COMPATIBILITY_2026-09-30.md) — native transcript and prompt admission migration, nested child authority regressions, and local Pi CLI verification ([#635](https://github.com/openpi-dev/openpi/issues/635)).

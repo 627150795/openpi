@@ -4,6 +4,12 @@
  */
 
 import * as os from "node:os";
+import type {
+  DelegationCompletion,
+  DelegationOutcome,
+  DelegationReplayOrigin,
+} from "../shared/delegation-completion.ts";
+import { workflowAgentCompletion } from "./agent-completion.ts";
 import {
   type ExtensionContext,
   truncateHead,
@@ -103,6 +109,17 @@ export interface TranscriptEntry {
 
 export interface AgentRecord {
   index: number;
+  /** Additive owner facts for the shared completion projection. */
+  executionOutcome?: DelegationOutcome;
+  resultPersistence?: "saved" | "failed";
+  resultHasText?: boolean;
+  resultHasStructured?: boolean;
+  requestedCwd?: string;
+  effectiveCwd?: string;
+  isolation?: "shared" | "worktree";
+  replayOrigin?: DelegationReplayOrigin | "unknown";
+  /** Read-only tool projection; canonical facts remain in this owner record. */
+  completion?: DelegationCompletion;
   /** Stable identity and independent intent/admission/execution status planes. */
   callId?: string;
   invocation?: InvocationRecord;
@@ -215,7 +232,11 @@ export function compactWorkflowToolDetails(
           ),
         }
       : {}),
-    agents: details.agents.map((agent) => ({ ...agent, transcript: [] })),
+    agents: details.agents.map((agent) => ({
+      ...agent,
+      completion: workflowAgentCompletion(details.runId, agent),
+      transcript: [],
+    })),
   };
 }
 

@@ -65,6 +65,7 @@ import {
 import { onSetupApply } from "../shared/setup-apply.ts";
 import { contextPercent } from "../shared/context-utilization.ts";
 import { completionOwnerFor } from "../shared/completion-inbox.ts";
+import { workflowAgentCompletion } from "./agent-completion.ts";
 import {
   registerEditorLayer,
   removeEditorLayer,
@@ -1570,6 +1571,9 @@ export default function workflows(
 
         const fail = (error: string): ScriptAgentResult => {
           if (record.state === "running" && !runSettled) {
+            record.executionOutcome = controller.signal.aborted
+              ? "cancelled"
+              : "failure";
             const at = Date.now();
             if (
               record.invocation?.admissionState === "pending" &&
@@ -1707,6 +1711,8 @@ export default function workflows(
           ctx.cwd,
           typeof opts.working_dir === "string" ? opts.working_dir : ".",
         );
+        record.requestedCwd = requestedCwd;
+        if (opts.isolation === undefined) record.isolation = "shared";
         try {
           if (!fs.statSync(requestedCwd).isDirectory())
             throw new Error("not a directory");
@@ -1884,6 +1890,9 @@ export default function workflows(
         const cached =
           callKey && replayLease.canReplay ? replay?.take(callKey) : undefined;
         if (cached) {
+          record.executionOutcome = "replayed";
+          record.replayOrigin = cached.origin ?? "unknown";
+          record.effectiveCwd = replayIdentity?.cwd ?? requestedCwd;
           const finishedAt = Date.now();
           record.finishedAt = finishedAt;
           record.preview = sanitizeWorkflowDisplayText(
@@ -1925,6 +1934,7 @@ export default function workflows(
               : {}),
           });
           if (!persisted.ok) {
+            record.resultPersistence = "failed";
             record.invocation = transitionInvocation(record.invocation!, {
               status: "rejected",
               at: finishedAt,
@@ -1943,6 +1953,9 @@ export default function workflows(
               error: persisted.error,
             };
           }
+          record.resultPersistence = "saved";
+          record.resultHasText = cached.output.length > 0;
+          record.resultHasStructured = cached.structured !== undefined;
           record.invocation = transitionInvocation(record.invocation!, {
             status: "replayed",
             at: finishedAt,
@@ -2025,6 +2038,8 @@ export default function workflows(
               if (!runSettled) record.worktreeBranch = worktree.branch;
             }
             const agentCwd = worktree?.path ?? requestedCwd;
+            record.effectiveCwd = replayIdentity?.cwd ?? agentCwd;
+            record.isolation = worktree ? "worktree" : "shared";
 
             // Inside the try, not before it: building resources can throw
             // (bad settings, an unreadable skills dir), and a throw out here
@@ -2132,6 +2147,13 @@ export default function workflows(
                   ...admissionLeaseReceipt(outcome),
                 };
               }
+              record.executionOutcome = outcome.retainAdmissionLease
+                ? "uncertain"
+                : outcome.aborted
+                  ? "cancelled"
+                  : outcome.ok
+                    ? "success"
+                    : "failure";
               record.usage = outcome.usage;
               record.model = outcome.model ?? record.model;
               record.contextWindow =
@@ -2159,8 +2181,15 @@ export default function workflows(
                     ? { structured: outcome.structured }
                     : {}),
                 });
-                if (persisted.ok) record.resultArtifact = persisted.artifact;
-                else artifactError = persisted.error;
+                if (persisted.ok) {
+                  record.resultArtifact = persisted.artifact;
+                  record.resultPersistence = "saved";
+                  record.resultHasText = outcome.output.length > 0;
+                  record.resultHasStructured = outcome.structured !== undefined;
+                } else {
+                  record.resultPersistence = "failed";
+                  artifactError = persisted.error;
+                }
               }
               const outcomeOk = judged.ok && artifactError === undefined;
               record.invocation = transitionInvocation(record.invocation!, {
@@ -2218,6 +2247,10 @@ export default function workflows(
                 journal.append({
                   key: completedKey,
                   output: outcome.output,
+                  origin: {
+                    executionId: callId,
+                    evidenceRef: `${details.runId}/${record.resultArtifact}`,
+                  },
                   ...(outcome.structured !== undefined
                     ? { structured: outcome.structured }
                     : {}),
@@ -2619,6 +2652,10 @@ export default function workflows(
           ],
           details: {
             runs: [summarize(details)],
+            completions: details.agents
+              .slice(0, 16)
+              .map((agent) => workflowAgentCompletion(details.runId, agent)),
+            completionsOmitted: Math.max(0, details.agents.length - 16),
             retention,
             settledRunsEvicted: retention.settledRunsEvicted,
           },

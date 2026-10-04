@@ -112,6 +112,7 @@ export interface AgentRecord {
   /** Additive owner facts for the shared completion projection. */
   executionOutcome?: DelegationOutcome;
   resultPersistence?: "saved" | "failed";
+  resultHasText?: boolean;
   resultHasStructured?: boolean;
   requestedCwd?: string;
   effectiveCwd?: string;

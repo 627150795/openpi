@@ -433,6 +433,9 @@ export function normalizePersistedWorkflowDetails(
       ...(a.resultPersistence === "saved" || a.resultPersistence === "failed"
         ? { resultPersistence: a.resultPersistence }
         : {}),
+      ...(typeof a.resultHasText === "boolean"
+        ? { resultHasText: a.resultHasText }
+        : {}),
       ...(a.resultHasStructured === true ? { resultHasStructured: true } : {}),
       ...(typeof a.requestedCwd === "string" && a.requestedCwd.length <= 4096
         ? { requestedCwd: a.requestedCwd }

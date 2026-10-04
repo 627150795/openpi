@@ -5,9 +5,15 @@ import type { SubagentSnapshot } from "./domain.ts";
 // Fingerprints correlate evidence across projections without disclosing host paths.
 // Canonical paths stay with the Pi session / structured-result owner; these are
 // identifiers, not filesystem locators or grants of access to private evidence.
-function evidenceReference(kind: "session" | "artifact", filePath?: string) {
+function evidenceReference(
+  kind: "session" | "artifact",
+  generation: number,
+  filePath?: string,
+) {
   return filePath
-    ? `pi-${kind}:${createHash("sha256").update(filePath).digest("hex")}`
+    ? `pi-${kind}:${createHash("sha256")
+        .update(JSON.stringify([filePath, generation]))
+        .digest("hex")}`
     : undefined;
 }
 
@@ -19,7 +25,16 @@ export function subagentCompletion(snap: SubagentSnapshot) {
       : snap.transcript.slice(
           Math.max(0, snap.runTranscriptStart - retainedStart),
         );
-  const evidenceRef = evidenceReference("session", snap.meta.sessionFilePath);
+  const generation =
+    snap.status !== "running" &&
+    snap.runGeneration !== undefined &&
+    snap.completionGeneration === snap.runGeneration
+      ? snap.runGeneration
+      : undefined;
+  const evidenceRef =
+    generation === undefined
+      ? undefined
+      : evidenceReference("session", generation, snap.meta.sessionFilePath);
   return projectDelegationCompletion({
     owner: "direct",
     executionId:
@@ -38,6 +53,7 @@ export function subagentCompletion(snap: SubagentSnapshot) {
               ? "cancelled"
               : "uncertain",
     evidenceRef,
+    referenceKind: "fingerprint",
     tools: runTranscript.flatMap((item) =>
       item.kind === "toolResult"
         ? [{ callId: item.toolId, name: item.name, isError: item.isError }]
@@ -45,11 +61,16 @@ export function subagentCompletion(snap: SubagentSnapshot) {
     ),
     textRef:
       snap.status !== "running" && snap.finalText ? evidenceRef : undefined,
-    structuredRef: evidenceReference(
-      "artifact",
-      snap.structuredResult?.artifactPath,
-    ),
-    persistence: snap.structuredResult ? "saved" : "unknown",
+    structuredRef:
+      generation === undefined
+        ? undefined
+        : evidenceReference(
+            "artifact",
+            generation,
+            snap.structuredResult?.artifactPath,
+          ),
+    persistence:
+      generation !== undefined && snap.structuredResult ? "saved" : "unknown",
     effectiveCwd: snap.cwd,
     requestedCwd: snap.requestedCwd,
     isolation: snap.worktreeBranch ? "worktree" : "shared",

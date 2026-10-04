@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { projectDelegationCompletion } from "../../../extensions/shared/delegation-completion.ts";
+import {
+  delegationCompletionText,
+  projectDelegationCompletion,
+} from "../../../extensions/shared/delegation-completion.ts";
 
 const facts = {
   owner: "direct" as const,
@@ -75,6 +78,65 @@ test("oversized references become unavailable, not fabricated truncated paths", 
   assert.equal(receipt.modelClaimed.status, "unknown");
   assert.equal(receipt.replay?.origin, "unknown");
   assert.ok(Buffer.byteLength(JSON.stringify(receipt), "utf8") < 16 * 1024);
+});
+
+test("completion has an aggregate UTF-8 budget even with near-limit references", () => {
+  const ref = "x".repeat(4096);
+  const input = {
+    ...facts,
+    executionId: ref,
+    evidenceRef: ref,
+    toolEvidenceRef: ref,
+    textRef: ref,
+    structuredRef: ref,
+    handoffRef: ref,
+    requestedCwd: ref,
+    effectiveCwd: ref,
+    tools: Array.from({ length: 40 }, () => ({
+      callId: "y".repeat(512),
+      name: "\u0000".repeat(128),
+    })),
+    replay: { origin: { executionId: ref, evidenceRef: ref } },
+  };
+  const receipt = projectDelegationCompletion(input);
+  assert.ok(Buffer.byteLength(JSON.stringify(receipt)) <= 16 * 1024);
+  assert.ok(Buffer.byteLength(delegationCompletionText(receipt)) <= 16 * 1024);
+  assert.equal(
+    receipt.observed.tools.items.length + receipt.observed.tools.omitted,
+    40,
+  );
+  assert.deepEqual(projectDelegationCompletion(input), receipt);
+  assert.equal(input.tools.length, 40);
+  assert.equal(input.textRef, ref);
+  const escaped = projectDelegationCompletion({
+    ...input,
+    executionId: "\u0000".repeat(4096),
+    evidenceRef: "\u0000".repeat(4096),
+    textRef: "\u0000".repeat(4096),
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(escaped)) <= 16 * 1024);
+  assert.equal(escaped.identity.executionId, "unknown");
+});
+
+test("cwd identifiers disclose neither host paths nor sensitive components", () => {
+  for (const cwd of [
+    "/Users/private-host/sensitive-project",
+    "C:\\Users\\private-host\\sensitive-project",
+  ]) {
+    const receipt = projectDelegationCompletion({
+      ...facts,
+      requestedCwd: cwd,
+      effectiveCwd: cwd,
+    });
+    const text = JSON.stringify(receipt) + delegationCompletionText(receipt);
+    for (const sensitive of [cwd, "private-host", "sensitive-project"])
+      assert.equal(text.includes(sensitive), false);
+    assert.match(receipt.workspace.effectiveCwd ?? "", /^cwd:[a-f0-9]{64}$/);
+    assert.equal(
+      receipt.workspace.effectiveCwd,
+      receipt.workspace.requestedCwd,
+    );
+  }
 });
 
 for (const outcome of ["failure", "cancelled", "uncertain"] as const) {

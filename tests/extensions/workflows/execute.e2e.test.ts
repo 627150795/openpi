@@ -1022,6 +1022,20 @@ test("agent calls run through the injected session factory and resume replays th
       first.details.agents[0]?.completion,
     );
     const firstDir = runDirFor(firstRunId);
+    const textRef = first.details.agents[0]?.completion?.modelClaimed.textRef;
+    assert.equal(textRef, `${firstRunId}/agent-results/agent-0001.json`);
+    // Resolve through the existing workflow run owner, not a new registry.
+    const savedResult = JSON.parse(
+      readFileSync(
+        join(firstDir, textRef.slice(firstRunId.length + 1)),
+        "utf8",
+      ),
+    );
+    assert.equal(savedResult.output, "injected agent output");
+    assert.equal(
+      JSON.stringify(first.details.agents[0]?.completion).includes(firstDir),
+      false,
+    );
     // A replay-safe read-only agent call is journaled on success.
     const journal = JSON.parse(
       readFileSync(join(firstDir, "journal.json"), "utf8"),

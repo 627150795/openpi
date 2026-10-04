@@ -1954,6 +1954,7 @@ export default function workflows(
             };
           }
           record.resultPersistence = "saved";
+          record.resultHasText = cached.output.length > 0;
           record.resultHasStructured = cached.structured !== undefined;
           record.invocation = transitionInvocation(record.invocation!, {
             status: "replayed",
@@ -2183,6 +2184,7 @@ export default function workflows(
                 if (persisted.ok) {
                   record.resultArtifact = persisted.artifact;
                   record.resultPersistence = "saved";
+                  record.resultHasText = outcome.output.length > 0;
                   record.resultHasStructured = outcome.structured !== undefined;
                 } else {
                   record.resultPersistence = "failed";

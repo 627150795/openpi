@@ -107,6 +107,7 @@ interface MutableSnapshot {
   worktreeBaseSha?: string;
   requestedCwd?: string;
   runGeneration: number;
+  completionGeneration?: number;
   runTranscriptStart: number;
   createdAt: number;
   settledAt?: number;
@@ -366,6 +367,7 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
         s.errorText = undefined;
       }
       s.settledAt = Date.now();
+      s.completionGeneration = s.runGeneration;
       s.executionUncertain = !releaseAdmission;
       switch (outcome._tag) {
         case "Completed":
@@ -431,6 +433,8 @@ const makeManager = (config: SubagentManagerConfig = {}) =>
           s.executionUncertain = undefined;
           s.settledAt = undefined;
           s.errorText = undefined;
+          s.finalText = "";
+          s.completionGeneration = undefined;
           s.structuredResult = undefined;
           break;
         case "RunSettled":

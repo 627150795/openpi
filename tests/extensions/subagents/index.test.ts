@@ -77,6 +77,7 @@ test("subagent results render before the hidden wake-up message", () => {
 
   const completion = projectDelegationCompletion({
     owner: "direct",
+    referenceKind: "fingerprint",
     outcome: "uncertain",
     effectiveCwd: process.cwd(),
     isolation: "shared",

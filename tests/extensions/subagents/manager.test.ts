@@ -670,10 +670,15 @@ test("send steers an idle subagent into another turn", async () => {
       "start the second turn",
       (status) => status === "running",
     );
+    const running = manager.view.get(snap.id)!;
+    assert.equal(running.finalText, "");
+    assert.equal(subagentCompletion(running).observed.evidenceRef, undefined);
+    assert.equal(subagentCompletion(running).modelClaimed.status, "unknown");
     await runTool(runtime, manager.waitFor([snap.id]));
     const afterSecond = manager.view.get(snap.id);
     assert.equal(afterSecond?.status, "done");
     assert.equal(afterSecond?.runGeneration, 2);
+    assert.equal(afterSecond?.completionGeneration, 2);
     assert.notEqual(
       subagentCompletion(afterSecond!).identity.executionId,
       firstCompletion.identity.executionId,

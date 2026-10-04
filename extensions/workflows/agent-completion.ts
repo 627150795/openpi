@@ -8,6 +8,12 @@ export function workflowAgentCompletion(runId: string, agent: AgentRecord) {
   if (agent.completion) return agent.completion;
   const evidenceRef = `${runId}/workflow.json`;
   const transcriptRef = `${runId}/transcripts.json#/${agent.index}`;
+  const resultRef =
+    agent.state !== "running" &&
+    agent.resultPersistence === "saved" &&
+    agent.resultArtifact
+      ? `${runId}/${agent.resultArtifact}`
+      : undefined;
   return projectDelegationCompletion({
     owner: "workflow",
     executionId: agent.callId,
@@ -36,13 +42,8 @@ export function workflowAgentCompletion(runId: string, agent: AgentRecord) {
           ]
         : [],
     ),
-    textRef: agent.resultArtifact
-      ? `${runId}/${agent.resultArtifact}`
-      : transcriptRef,
-    structuredRef:
-      agent.resultHasStructured && agent.resultArtifact
-        ? `${runId}/${agent.resultArtifact}`
-        : undefined,
+    textRef: agent.resultHasText ? resultRef : undefined,
+    structuredRef: agent.resultHasStructured ? resultRef : undefined,
     persistence: agent.resultPersistence ?? "unknown",
     requestedCwd: agent.requestedCwd,
     effectiveCwd: agent.effectiveCwd,

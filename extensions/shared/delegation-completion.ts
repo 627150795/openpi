@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /** A presentation-only join of existing owner facts, never acceptance authority. */
 export type DelegationOutcome =
   | "running"
@@ -24,6 +26,8 @@ export interface DelegationCompletionFacts {
   readonly executionId?: string;
   readonly outcome: DelegationOutcome;
   readonly evidenceRef?: string;
+  /** Fingerprints correlate only; they cannot be resolved as evidence locators. */
+  readonly referenceKind?: "fingerprint" | "owner-locator";
   readonly tools?: readonly DelegationToolFact[];
   readonly toolEvidenceRef?: string;
   readonly textRef?: string;
@@ -64,24 +68,36 @@ export function decodeDelegationReplayOrigin(value: unknown) {
   return executionId && evidenceRef ? { executionId, evidenceRef } : undefined;
 }
 
+export const COMPLETION_MAX_BYTES = 16 * 1024;
+
+function cwdIdentifier(value: string | undefined) {
+  return value
+    ? `cwd:${createHash("sha256").update(value).digest("hex")}`
+    : undefined;
+}
+
 export function projectDelegationCompletion(input: DelegationCompletionFacts) {
   const facts = {
-    ...input,
+    owner: input.owner,
+    outcome: input.outcome,
+    isolation: input.isolation,
+    persistence: input.persistence,
+    replay: input.replay,
     executionId: boundedReference(input.executionId),
     evidenceRef: boundedReference(input.evidenceRef),
     toolEvidenceRef: boundedReference(input.toolEvidenceRef),
     textRef: boundedReference(input.textRef),
     structuredRef: boundedReference(input.structuredRef),
-    requestedCwd: boundedReference(input.requestedCwd),
-    effectiveCwd: boundedReference(input.effectiveCwd),
+    requestedCwd: cwdIdentifier(input.requestedCwd),
+    effectiveCwd: cwdIdentifier(input.effectiveCwd),
     branch: boundedReference(input.branch, 512),
     baseSha: boundedReference(input.baseSha, 128),
     handoffRef: boundedReference(input.handoffRef),
   };
-  const tools = facts.tools ?? [];
+  const tools = input.tools ?? [];
   const replayOrigin =
     decodeDelegationReplayOrigin(input.replay?.origin) ?? ("unknown" as const);
-  return {
+  const projection = {
     version: 1 as const,
     identity: {
       owner: facts.owner,
@@ -89,6 +105,7 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
     },
     observed: {
       outcome: facts.outcome,
+      referenceKind: input.referenceKind ?? "owner-locator",
       ...(facts.evidenceRef ? { evidenceRef: facts.evidenceRef } : {}),
       tools: {
         // Normalized owner transcripts are bounded, not complete audit logs.
@@ -117,6 +134,7 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
       },
     },
     modelClaimed: {
+      referenceKind: input.referenceKind ?? "owner-locator",
       status:
         facts.textRef || facts.structuredRef
           ? ("referenced" as const)
@@ -148,6 +166,29 @@ export function projectDelegationCompletion(input: DelegationCompletionFacts) {
         }
       : {}),
   };
+
+  // At most 16 tool items and a fixed number of reference fields are examined.
+  // Drop whole optional references, never fabricate a truncated locator. The
+  // canonical owner record is not mutated. JSON escaping counts toward budget.
+  const overBudget = () =>
+    Buffer.byteLength(JSON.stringify(projection), "utf8") >
+    COMPLETION_MAX_BYTES;
+  while (overBudget() && projection.observed.tools.items.length) {
+    projection.observed.tools.items.pop();
+    projection.observed.tools.omitted++;
+  }
+  if (overBudget()) delete projection.workspace.handoffRef;
+  if (overBudget()) delete projection.observed.tools.evidenceRef;
+  if (overBudget() && projection.replay) projection.replay.origin = "unknown";
+  if (overBudget()) delete projection.modelClaimed.structuredRef;
+  if (overBudget()) delete projection.modelClaimed.textRef;
+  if (overBudget()) delete projection.observed.evidenceRef;
+  if (overBudget()) projection.identity.executionId = "unknown";
+  projection.modelClaimed.status =
+    projection.modelClaimed.textRef || projection.modelClaimed.structuredRef
+      ? "referenced"
+      : "unknown";
+  return projection;
 }
 
 export type DelegationCompletion = ReturnType<
@@ -160,9 +201,11 @@ export function delegationCompletionText(completion: DelegationCompletion) {
     `Completion evidence (not acceptance): ${completion.identity.owner}/${completion.identity.executionId}`,
     `observed=${completion.observed.outcome}`,
     ...(completion.observed.evidenceRef
-      ? [`evidence=${completion.observed.evidenceRef}`]
+      ? [
+          `${completion.observed.referenceKind === "fingerprint" ? "evidence-fingerprint" : "evidence"}=${completion.observed.evidenceRef}`,
+        ]
       : []),
-    `model-claims=${completion.modelClaimed.structuredRef ?? completion.modelClaimed.textRef ?? "unknown"}`,
+    `${completion.modelClaimed.referenceKind === "fingerprint" ? "model-claim-fingerprint" : "model-claims"}=${completion.modelClaimed.structuredRef ?? completion.modelClaimed.textRef ?? "unknown"}`,
     "verification=unknown; auto=not-run; exit/command=unknown",
     `workspace=${completion.workspace.isolation}/${completion.workspace.attribution}`,
     `persistence=${completion.persistence.status}`,

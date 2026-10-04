@@ -37,6 +37,7 @@ const direct: SubagentSnapshot = {
   usage: {},
   transcriptVersion: 3,
   runGeneration: 2,
+  completionGeneration: 2,
   runTranscriptStart: 2,
   transcript: [
     { kind: "toolResult", toolId: "old", name: "bash", isError: false },
@@ -126,6 +127,36 @@ test("Direct completion references do not disclose canonical private evidence pa
   assert.equal(missing.modelClaimed.textRef, undefined);
 });
 
+test("Direct evidence and claims require current-generation settlement provenance", () => {
+  const previous = subagentCompletion(direct);
+  for (const snap of [
+    { ...direct, status: "running" as const },
+    { ...direct, runGeneration: 3 },
+    { ...direct, completionGeneration: undefined },
+  ]) {
+    const receipt = subagentCompletion({
+      ...snap,
+      structuredResult: {
+        value: { verdict: "pass" },
+        json: '{"verdict":"pass"}',
+        byteLength: 18,
+        artifactPath: "/private/old-result.json",
+      },
+    });
+    assert.equal(receipt.observed.evidenceRef, undefined);
+    assert.equal(receipt.modelClaimed.status, "unknown");
+  }
+  const next = subagentCompletion({
+    ...direct,
+    runGeneration: 3,
+    completionGeneration: 3,
+  });
+  assert.notEqual(next.observed.evidenceRef, previous.observed.evidenceRef);
+  assert.equal(next.observed.referenceKind, "fingerprint");
+  assert.equal(next.modelClaimed.referenceKind, "fingerprint");
+  assert.match(delegationCompletionText(next), /evidence-fingerprint=/);
+});
+
 const agent: AgentRecord = {
   index: 1,
   callId: "wf-1:call:1",
@@ -134,6 +165,7 @@ const agent: AgentRecord = {
   startedAt: 0,
   executionOutcome: "success",
   resultPersistence: "saved",
+  resultHasText: true,
   isolation: "shared",
   requestedCwd: "/shared",
   effectiveCwd: "/shared",
@@ -150,6 +182,36 @@ const agent: AgentRecord = {
     },
   ],
 };
+test("Workflow transcript evidence is never a saved model result", () => {
+  for (const record of [
+    { ...agent, state: "running" as const },
+    { ...agent, resultPersistence: "failed" as const },
+    { ...agent, resultArtifact: undefined },
+    { ...agent, resultPersistence: undefined },
+    { ...agent, resultHasText: undefined },
+    { ...agent, resultHasText: false },
+  ]) {
+    const receipt = workflowAgentCompletion("wf-1", record);
+    assert.equal(receipt.modelClaimed.status, "unknown");
+    assert.equal(receipt.modelClaimed.textRef, undefined);
+    assert.equal(receipt.modelClaimed.structuredRef, undefined);
+    assert.equal(
+      receipt.observed.tools.evidenceRef,
+      "wf-1/transcripts.json#/1",
+    );
+  }
+  const structured = workflowAgentCompletion("wf-1", {
+    ...agent,
+    resultHasText: false,
+    resultHasStructured: true,
+  });
+  assert.equal(structured.modelClaimed.textRef, undefined);
+  assert.equal(
+    structured.modelClaimed.structuredRef,
+    "wf-1/agent-results/agent-0001.json",
+  );
+});
+
 const workflow: WorkflowDetails = {
   runId: "wf-1",
   background: false,
@@ -225,6 +287,7 @@ test("Workflow execution success is distinct from persistence failure and cancel
   });
   assert.equal(failedSave.observed.outcome, "success");
   assert.equal(failedSave.persistence.status, "failed");
+  assert.equal(failedSave.modelClaimed.status, "unknown");
   const cancelled = workflowAgentCompletion("wf-1", {
     ...agent,
     state: "error",

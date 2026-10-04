@@ -236,6 +236,8 @@ export interface SubagentSnapshot {
   readonly requestedCwd?: string;
   /** Session-local execution generation; absent on legacy snapshots. */
   readonly runGeneration?: number;
+  /** Generation that supplied the settled output/evidence; legacy data is unknown. */
+  readonly completionGeneration?: number;
   /** Absolute transcript item offset at the start of this execution. */
   readonly runTranscriptStart?: number;
   readonly createdAt: number;

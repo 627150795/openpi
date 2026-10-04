@@ -219,7 +219,7 @@
 .model-search-options {
   overflow-y: auto;
 }
-.model-provider-heading { padding: 10px 9px 3px; color: var(--muted); font-size: 11px; line-height: 16px; letter-spacing: .01em; }
+.model-provider-heading { position: sticky; top: 0; z-index: 1; padding: 8px 9px 4px; background: var(--page); color: var(--muted); font-size: 10.5px; font-weight: 650; line-height: 16px; letter-spacing: .06em; text-transform: uppercase; }
 .model-search-option .model-menu-item-label { font-size: 13px; }
 .astryx-complex-selector-popup:has(.thinking-controls) { width: min(280px, calc(100vw - 24px)); border: 1px solid var(--border) !important; border-radius: 20px !important; background: var(--page) !important; padding: 0 !important; color: var(--text); box-shadow: 0 8px 30px #00000012 !important; }
 .astryx-complex-selector-popup:has(.thinking-controls) > div { padding: 0; }
@@ -267,19 +267,22 @@
   gap: 8px;
   width: 100%;
   margin-top: 8px;
-  padding: 9px;
+  padding: 10px 9px 6px;
   border: 0;
   border-top: 1px solid var(--border);
+  border-radius: 6px;
   background: transparent;
-  color: var(--text);
+  color: var(--muted);
   text-align: left;
   font: inherit;
+  font-size: 13px;
   cursor: pointer;
 }
 
 .model-settings-command:hover,
 .model-settings-command:focus-visible {
   background: var(--sidebar-hover);
+  color: var(--text);
 }
 
 .model-settings-command svg {

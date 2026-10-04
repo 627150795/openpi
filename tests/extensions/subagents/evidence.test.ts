@@ -201,6 +201,82 @@ test("denied, oversized, mismatched and failed persistence are unavailable witho
   }
 });
 
+test("parseable malformed Session entries are unavailable before indexing or final selection", async () => {
+  const malformed: unknown[] = [
+    null,
+    false,
+    42,
+    "entry",
+    [],
+    { type: "custom", parentId: null },
+    { type: "custom", id: null, parentId: null },
+    { type: "custom", id: 42, parentId: null },
+    { type: "custom", id: "", parentId: null },
+    { type: "custom", id: "end" },
+    { type: "custom", id: "end", parentId: {} },
+    { id: "end", parentId: "start" },
+    ...[
+      undefined,
+      null,
+      false,
+      "assistant",
+      {},
+      { role: "assistant" },
+      { role: "assistant", content: null },
+      { role: "assistant", content: "text" },
+      { role: "assistant", content: [null] },
+      { role: "assistant", content: [{ type: "text", text: 42 }] },
+      { role: "assistant", content: [{ type: "thinking" }] },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call", name: "read" }],
+      },
+    ].map((message) => ({
+      type: "message",
+      id: "end",
+      parentId: "start",
+      message,
+    })),
+  ];
+  for (const entry of malformed) {
+    for (const evidence of ["transcript", "final", "structured"] as const) {
+      const f = fixture();
+      f.setSource(
+        [f.header, f.entries[0], entry]
+          .map((value) => JSON.stringify(value))
+          .join("\n"),
+      );
+      const result = await queryDirectEvidence(f.ctx, { id: "sa-1", evidence });
+      assert.deepEqual(
+        result,
+        { status: "unavailable", reason: "invalid-session" },
+        JSON.stringify(entry),
+      );
+      assert.deepEqual(f.reads, [f.binding.sessionPath]);
+    }
+  }
+});
+
+test("corrupt evidence validation does not swallow read cancellation", async () => {
+  const f = fixture();
+  f.setSource([JSON.stringify(f.header), "null"].join("\n"));
+  const controller = new AbortController();
+  const read = f.ctx.executeTool;
+  f.ctx.executeTool = async (name, args, options) => {
+    const result = await read(name, args, options);
+    controller.abort();
+    return result;
+  };
+  await assert.rejects(
+    queryDirectEvidence(
+      f.ctx,
+      { id: "sa-1", evidence: "final" },
+      controller.signal,
+    ),
+    { name: "AbortError" },
+  );
+});
+
 test("pagination is lossless and counts escaped bytes, not just characters", async () => {
   const f = fixture();
   f.entries[1].message!.content[0].text = "\u0000😀".repeat(2000);

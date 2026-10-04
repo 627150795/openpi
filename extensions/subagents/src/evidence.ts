@@ -44,6 +44,51 @@ function unavailable(reason: string) {
   return { status: "unavailable" as const, reason };
 }
 
+// Validate only the structure consumed by indexing, ancestry and final selection.
+function isEvidenceEntry(value: unknown): value is SessionEntry {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Record<string, unknown>;
+  if (
+    typeof entry.id !== "string" ||
+    !entry.id ||
+    typeof entry.type !== "string" ||
+    !entry.type ||
+    (entry.parentId !== null &&
+      (typeof entry.parentId !== "string" || !entry.parentId))
+  )
+    return false;
+  if (entry.type !== "message") return true;
+  if (!entry.message || typeof entry.message !== "object") return false;
+  const message = entry.message as Record<string, unknown>;
+  if (typeof message.role !== "string" || !message.role) return false;
+  if (message.role !== "assistant") return true;
+  return (
+    Array.isArray(message.content) &&
+    message.content.every((value: unknown) => {
+      if (!value || typeof value !== "object") return false;
+      const part = value as Record<string, unknown>;
+      switch (part.type) {
+        case "text":
+          return typeof part.text === "string";
+        case "thinking":
+          return typeof part.thinking === "string";
+        case "toolCall":
+          return (
+            typeof part.id === "string" &&
+            !!part.id &&
+            typeof part.name === "string" &&
+            !!part.name &&
+            !!part.arguments &&
+            typeof part.arguments === "object" &&
+            !Array.isArray(part.arguments)
+          );
+        default:
+          return false;
+      }
+    })
+  );
+}
+
 /** Resolve only owner records on the active parent branch; never open a Session bypassing tools. */
 export async function queryDirectEvidence(
   ctx: ExtensionToolContext,
@@ -124,7 +169,9 @@ export async function queryDirectEvidence(
       .map((line) => JSON.parse(line));
     if (lines[0]?.type !== "session" || lines[0].id !== binding.sessionId)
       return unavailable("session-identity-mismatch");
-    entries = lines.slice(1);
+    const parsed: unknown[] = lines.slice(1);
+    if (!parsed.every(isEvidenceEntry)) return unavailable("invalid-session");
+    entries = parsed;
   } catch {
     return unavailable("invalid-or-oversized-session");
   }

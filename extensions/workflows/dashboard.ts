@@ -1406,6 +1406,15 @@ export class WorkflowDashboard {
     const height = this.pageRows
       ? this.pageRows(width)
       : Math.max(MIN_HEIGHT, this.tui.terminal.rows - 1);
+    if (height < 4) {
+      return [
+        truncateToWidth(
+          `${this.keys("tui.select.cancel")} close · Workflows · ${this.entries.length} runs`,
+          width,
+          "",
+        ),
+      ];
+    }
     let lines: string[];
     if (this.view === "detail" && this.current) {
       lines = this.renderDetail(this.current.details, width, height);
@@ -1871,8 +1880,35 @@ export async function showWorkflowDashboard(
         onAbort,
         getRetained,
         ctx.ui.getToolsExpanded(),
-        (width) => dashboardPageRows(tui, dashboard, width),
+        tui.mode === "regular"
+          ? (width) => dashboardPageRows(tui, dashboard, width)
+          : undefined,
       );
+      if (tui.mode === "fullscreen") {
+        // Fullscreen's native editor dock reserves transcript rows. Keep the
+        // existing overlay boundary; its graphics compositing remains a Pi
+        // owner issue. The empty editor slot avoids duplicate page rendering.
+        const overlay = tui.showOverlay(dashboard, {
+          anchor: "top-left",
+          width: "100%",
+          maxHeight: "100%",
+        });
+        return {
+          get focused() {
+            return dashboard.focused;
+          },
+          set focused(value: boolean) {
+            dashboard.focused = value;
+          },
+          render: () => [],
+          invalidate: () => dashboard.invalidate(),
+          handleInput: (data: string) => dashboard.handleInput(data),
+          dispose: () => {
+            overlay.hide();
+            dashboard.dispose();
+          },
+        };
+      }
       return dashboard;
     },
     {

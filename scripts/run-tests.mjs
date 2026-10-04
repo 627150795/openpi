@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { availableParallelism } from "node:os";
 import { discoverTestFiles } from "./discover-tests.mjs";
 import {
   partitionNodeTestsByPlatform,
@@ -63,14 +64,20 @@ if (suite !== "ui") {
       );
     }
   }
-  const parallelNodeResult = runNodeTests(nodeTestGroups.parallel);
+  // A file can itself launch several real Pi/Git/sandbox processes. Bound
+  // file-level overlap so cold loaders do not fight every other fixture on
+  // machines with many cores; smaller CI hosts keep Node's default budget.
+  const concurrency = Math.max(1, Math.min(4, availableParallelism() - 1));
+  const parallelNodeResult = runNodeTests(nodeTestGroups.parallel, [
+    `--test-concurrency=${concurrency}`,
+  ]);
   if (parallelNodeResult !== 0) {
     process.exit(parallelNodeResult);
   }
 
   // Windows process-tree and real-host subprocess tests must not overlap
   // unrelated Node test files.
-  // Keep the rest of the suite on Node's default file-level concurrency.
+  // The rest of the suite retains bounded file-level concurrency.
   const serialNodeResult = runNodeTests(nodeTestGroups.serial, [
     "--test-concurrency=1",
   ]);

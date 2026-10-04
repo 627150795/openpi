@@ -72,6 +72,10 @@ writeFileSync(
   join(agentDir, "agents", "bounded-reviewer.md"),
   "---\nname: bounded-reviewer\ndescription: Replay fixture\ntools: [read]\n---\nInspect the repository without modifications.\n",
 );
+writeFileSync(
+  join(agentDir, "agents", "explicit-parent-fixture.md"),
+  "---\nname: explicit-parent-fixture\ndescription: Requires a parent fixture\ntools: [read, parent_fixture]\n---\nUse parent_fixture to verify the result.\n",
+);
 
 const {
   default: workflows,
@@ -1815,6 +1819,66 @@ test("built-in Workflow children inherit active shell/network tools in the selec
       );
     }
     assert.equal(calls.length, 2, "invalid cwd must not create child sessions");
+  } finally {
+    activeTools = previousTools;
+    __setWorkflowTestAgentSessionFactory(undefined);
+  }
+});
+
+test("Workflow entry tolerates inherited misses but rejects a missing explicit role tool before prompting", async () => {
+  const previousTools = [...activeTools];
+  activeTools = [...activeTools, "parent_fixture"];
+  let prompts = 0;
+  __setWorkflowTestAgentSessionFactory(async (options) => {
+    assert.deepEqual(options?.tools, ["read", "parent_fixture"]);
+    const session = fakeAgentSession(
+      "inherited surface narrowed",
+      undefined,
+      () => {
+        prompts++;
+      },
+    );
+    session.getActiveToolNames = () => ["read"];
+    session.getAllTools = () =>
+      [{ name: "read" }] as ReturnType<AgentSession["getAllTools"]>;
+    return { session };
+  });
+  try {
+    const inherited = (await workflow.execute(
+      "inherited-miss",
+      { script: 'return await agent("inspect");', wait: true },
+      undefined,
+      undefined,
+      ctx,
+    )) as { details: { runId: string } };
+    const inheritedRun = readWorkflowJson(inherited.details.runId);
+    assert.equal(
+      (inheritedRun.agents as { state: string }[])[0]?.state,
+      "done",
+    );
+    assert.equal(prompts, 1);
+
+    const explicit = (await workflow.execute(
+      "explicit-miss",
+      {
+        script:
+          'return await agent("inspect", { agent_type: "explicit-parent-fixture" });',
+        wait: true,
+      },
+      undefined,
+      undefined,
+      ctx,
+    )) as { details: { runId: string } };
+    const explicitRun = readWorkflowJson(explicit.details.runId);
+    const agent = (
+      explicitRun.agents as { state: string; error?: string }[]
+    )[0];
+    assert.equal(agent?.state, "error");
+    assert.match(
+      agent?.error ?? "",
+      /Child tool preflight failed: requested tool "parent_fixture" is unavailable/,
+    );
+    assert.equal(prompts, 1, "an explicit miss must fail before prompting");
   } finally {
     activeTools = previousTools;
     __setWorkflowTestAgentSessionFactory(undefined);

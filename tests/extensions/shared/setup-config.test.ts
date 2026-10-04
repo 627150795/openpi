@@ -504,6 +504,10 @@ process.stdout.write(JSON.stringify({ result: "success", ms: Date.now() - starte
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    // Subscribe at spawn time: recovery can finish before the holder's exit
+    // is observed, so a later once(waiter, "exit") could miss it entirely.
+    const exited = once(child, "exit");
+    void exited.catch(() => {});
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     let stdout = "";
@@ -531,7 +535,7 @@ process.stdout.write(JSON.stringify({ result: "success", ms: Date.now() - starte
             );
         });
       });
-    return { child, waitFor, output: () => ({ stdout, stderr }) };
+    return { child, exited, waitFor, output: () => ({ stdout, stderr }) };
   };
 
   const holder = start(holderSource);
@@ -540,11 +544,10 @@ process.stdout.write(JSON.stringify({ result: "success", ms: Date.now() - starte
     await holder.waitFor("holding\n");
     waiter = start(waiterSource);
     await waiter.waitFor("watching\n");
-    const exited = once(holder.child, "exit");
     holder.child.kill("SIGKILL");
-    await exited;
+    await holder.exited;
 
-    await once(waiter.child, "exit");
+    await waiter.exited;
     const { stdout, stderr } = waiter.output();
     assert.equal(stderr, "");
     const result = JSON.parse(stdout.split("\n").at(-2) ?? "");
@@ -558,9 +561,8 @@ process.stdout.write(JSON.stringify({ result: "success", ms: Date.now() - starte
       if (!process) continue;
       const { child } = process;
       if (child.exitCode === null && child.signalCode === null) {
-        const exited = once(child, "exit");
         child.kill("SIGKILL");
-        await exited;
+        await process.exited;
       }
     }
     removeLockArtifacts();

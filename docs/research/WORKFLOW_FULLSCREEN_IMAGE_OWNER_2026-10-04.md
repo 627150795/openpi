@@ -67,6 +67,8 @@ owner fixture 覆盖三次重复开关、两张图片、打开时多次刷新、
 
 ## 未完成的验收与兼容风险
 
+用户本轮明确选择提交 Pi 上游修复、暂缓 OpenPI adoption。候选不进入当前 OpenPI runtime 或本地安装；上游贡献门禁、完整验证和发布接入分别追踪。
+
 这不是 shipped fix。Pi owner candidate 已接受局部独立审查并修正上述鼠标转发缺陷，但未在上游 source tree 编译或执行完整上游测试，也没有上游维护者的接收审核。OpenPI adoption 未完成实际 native-custom 管理路径验证；更没有真实终端 pixels 验收。原先 Ghostty computer-use 的安全拒绝没有被绕过。#657 应继续保持打开。
 
 fullscreen 的 SDK 自身会暂时禁用 iTerm image capability；本轮 Kitty protocol fixture 不能证明 fullscreen iTerm 像素兼容。需要在支持图片的真实终端固定版本/capability，验收 regular/fullscreen、两图、滚动、resize、取消和关闭后的原聊天图片位置，观察是否有闪烁或残留。

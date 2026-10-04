@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -154,6 +154,40 @@ test("snapshot separates configured/selected/disk/loaded and never serializes pr
   assert.equal(next.loaded.registrationEpoch, 456);
 });
 
+test("active tool omissions count only truncated allowlisted names", async () => {
+  const f = fixture();
+  const snapshot = await collectRuntimeSnapshot(
+    f.pi,
+    f.ctx,
+    123,
+    f.dependencies,
+  );
+  assert.equal(snapshot.toolBoundary.availability, "available");
+  assert.deepEqual(snapshot.toolBoundary.active.names, [
+    "read",
+    "runtime_snapshot",
+  ]);
+  assert.equal(snapshot.toolBoundary.active.omitted, 0);
+
+  f.pi.getActiveTools = () => [
+    ...Array.from({ length: 70 }, () => "read"),
+    "unsafe-private-tool",
+  ];
+  const truncated = await collectRuntimeSnapshot(
+    f.pi,
+    f.ctx,
+    123,
+    f.dependencies,
+  );
+  assert.equal(truncated.toolBoundary.availability, "available");
+  assert.equal(truncated.toolBoundary.active.names.length, 64);
+  assert.equal(truncated.toolBoundary.active.omitted, 6);
+  assert.equal(
+    JSON.stringify(truncated).includes("unsafe-private-tool"),
+    false,
+  );
+});
+
 test("existing owner samples are bounded and redacted; absent is not empty", async () => {
   const f = fixture();
   const unregister = registerWebCapability(f.scope, {
@@ -224,7 +258,7 @@ test("owner/config/context errors are explicit unavailable, never raw exceptions
   }
 });
 
-test("disk sampling tracks edits without claiming loaded revision and handles non-Git cwd", async () => {
+test("disk sampling describes the containing worktree from nested cwd, excluding ignored files", async () => {
   const directory = mkdtempSync(join(tmpdir(), "openpi-snapshot-test-"));
   try {
     assert.equal(
@@ -232,6 +266,9 @@ test("disk sampling tracks edits without claiming loaded revision and handles no
       "unavailable",
     );
     execFileSync("git", ["init", "-q", directory]);
+    writeFileSync(join(directory, ".gitignore"), "ignored.txt\n");
+    writeFileSync(join(directory, "tracked.txt"), "base");
+    execFileSync("git", ["-C", directory, "add", ".gitignore", "tracked.txt"]);
     execFileSync("git", [
       "-C",
       directory,
@@ -240,22 +277,91 @@ test("disk sampling tracks edits without claiming loaded revision and handles no
       "-c",
       "user.email=test@example.invalid",
       "commit",
-      "--allow-empty",
       "-qm",
       "base",
     ]);
     const clean = await readDiskSnapshot(directory);
     assert.equal(clean.availability, "available");
     assert.equal(clean.dirty, false);
+    const nested = join(directory, "nested", "project");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(directory, "ignored.txt"), "ignored");
+    const ignoredOnly = await readDiskSnapshot(nested);
+    assert.equal(ignoredOnly.availability, "available");
+    assert.equal(ignoredOnly.head, clean.head);
+    assert.equal(ignoredOnly.dirty, false);
+    writeFileSync(join(directory, "tracked.txt"), "edited outside nested cwd");
+    const trackedDirty = await readDiskSnapshot(nested);
+    assert.equal(trackedDirty.availability, "available");
+    assert.equal(trackedDirty.head, clean.head);
+    assert.equal(trackedDirty.dirty, true);
+    writeFileSync(join(directory, "tracked.txt"), "base");
     writeFileSync(join(directory, "new.txt"), "untracked");
     const dirty = await readDiskSnapshot(directory);
     assert.equal(dirty.availability, "available");
     assert.equal(dirty.dirty, true);
+    const nestedDirty = await readDiskSnapshot(nested);
+    assert.equal(nestedDirty.availability, "available");
+    assert.equal(nestedDirty.head, dirty.head);
+    assert.equal(nestedDirty.dirty, true);
+    assert.equal(JSON.stringify(nestedDirty).includes(directory), false);
     const aborted = new AbortController();
     aborted.abort();
     await assert.rejects(readDiskSnapshot(directory, aborted.signal));
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("large collector inputs produce a complete result within the byte budget", async () => {
+  const f = fixture();
+  f.pi.getActiveTools = () =>
+    Array.from({ length: 96 }, () => "configure_my_pi_setup");
+  const metadata = "private-metadata".repeat(MAX_SNAPSHOT_BYTES);
+  const unregister = (
+    ["subagents", "workflows", "background-terminals"] as const
+  ).map((kind) =>
+    registerWebCapability(f.scope, {
+      kind,
+      snapshot: () => ({
+        items: Array.from({ length: 64 }, () => ({
+          id: metadata,
+          title: metadata,
+          status: "timed_out" as const,
+          createdAt: Number.MAX_SAFE_INTEGER,
+        })),
+        omitted: 100_000,
+        truncated: true,
+      }),
+    }),
+  );
+  try {
+    const snapshot = await collectRuntimeSnapshot(
+      f.pi,
+      f.ctx,
+      123,
+      f.dependencies,
+    );
+    assert.equal(snapshot.toolBoundary.availability, "available");
+    assert.equal(snapshot.toolBoundary.active.names.length, 64);
+    assert.equal(snapshot.toolBoundary.active.omitted, 32);
+    assert.equal(snapshot.resources.subagents.items.length, 32);
+    assert.equal(snapshot.resources.subagents.omitted, 100_032);
+    assert.equal(snapshot.resources.workflows.omitted, 100_064);
+    assert.equal(snapshot.resources.background.omitted, 100_064);
+    const result = snapshotToolResult(snapshot);
+    assert.equal(
+      result.details,
+      snapshot,
+      "complete projection, not output-bound fallback",
+    );
+    assert.deepEqual(JSON.parse(result.content[0].text), snapshot);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_SNAPSHOT_BYTES,
+    );
+    assert.equal(JSON.stringify(result).includes("private-metadata"), false);
+  } finally {
+    for (const dispose of unregister) dispose();
   }
 });
 

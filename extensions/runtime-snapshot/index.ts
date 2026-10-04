@@ -97,7 +97,11 @@ async function gitRead(cwd: string, args: string[], signal?: AbortSignal) {
   });
 }
 
-/** Disk facts only. No branch/path/remote names, locks, refresh, or cleanup. */
+/**
+ * Facts for cwd's containing Git worktree, including changes outside nested cwd.
+ * Dirty covers tracked and normal untracked status, not ignored files.
+ * No branch/path/remote names, locks, refresh, or cleanup.
+ */
 export async function readDiskSnapshot(cwd: string, signal?: AbortSignal) {
   abortIfNeeded(signal);
   try {
@@ -234,7 +238,7 @@ export async function collectRuntimeSnapshot(
       source: "pi-active-tools" as const,
       active: {
         names: allowlisted.slice(0, MAX_TOOL_NAMES),
-        omitted: active.length - Math.min(allowlisted.length, MAX_TOOL_NAMES),
+        omitted: Math.max(0, allowlisted.length - MAX_TOOL_NAMES),
       },
       roleRestrictions: "unavailable" as const,
     };

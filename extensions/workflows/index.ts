@@ -48,10 +48,7 @@ import {
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
-import {
-  createStatusWriter,
-  formatActivityStatus,
-} from "../shared/activity-status.ts";
+import { createStatusWriter } from "../shared/activity-status.ts";
 import { fitNavigationSides } from "../shared/below-editor-navigation.ts";
 import {
   sessionChildExecutionAdmission,
@@ -177,6 +174,7 @@ import {
   WorkflowStripState,
   WorkflowStripWidget,
   workflowStripEntryKey,
+  workflowActivityFooter,
 } from "./navigation.ts";
 import {
   normalizeWorkflowOperatorKey,
@@ -1025,17 +1023,22 @@ export default function workflows(
     if (!ctx) return;
     try {
       const running = activeRuns.size;
+      updateWorkflowWidget();
+      // The below-editor strip owns TUI identity/navigation; do not repeat
+      // ordinary activity in the footer. Keep failures from other runs visible.
+      const stripOwnsActivity = ctx.mode === "tui" && widgetVisible;
       statusWriter.write(
         ctx.ui,
-        running === 0 && completedRuns === 0 && failedRuns === 0
-          ? undefined
-          : formatActivityStatus(ctx.ui.theme, "workflows", {
-              running,
-              done: completedRuns,
-              failed: failedRuns,
-            }),
+        workflowActivityFooter(
+          ctx.ui.theme,
+          {
+            running,
+            done: completedRuns,
+            failed: failedRuns,
+          },
+          stripOwnsActivity,
+        ),
       );
-      updateWorkflowWidget();
     } catch {
       // UI may be unavailable.
     }
@@ -2753,7 +2756,11 @@ export default function workflows(
             );
             for (const alert of workflowCompletionAlerts(entry)) {
               rows.push(
-                truncateToWidth(`  ${theme.fg("error", alert)}`, width, "…"),
+                truncateToWidth(
+                  `  ${theme.fg(alert.severity === "info" ? "muted" : alert.severity, `[${alert.severity}] ${alert.text}`)}`,
+                  width,
+                  "…",
+                ),
               );
             }
             const result = workflowCompletionResultPreview(entry);

@@ -228,16 +228,21 @@ export function decodeExecutionTimingSummary(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     return undefined;
   const raw = value as Record<string, unknown>;
+  const outcome = raw.outcome;
+  const coverage = raw.coverage;
   if (
     raw.version !== 1 ||
     raw.provenance !== "execution" ||
     raw.clock !== "monotonic-elapsed" ||
-    !["success", "failure", "cancelled", "uncertain"].includes(
-      String(raw.outcome),
-    ) ||
-    !["unobserved", "complete-tool-events", "partial-tool-events"].includes(
-      String(raw.coverage),
-    )
+    typeof outcome !== "string" ||
+    (outcome !== "success" &&
+      outcome !== "failure" &&
+      outcome !== "cancelled" &&
+      outcome !== "uncertain") ||
+    typeof coverage !== "string" ||
+    (coverage !== "unobserved" &&
+      coverage !== "complete-tool-events" &&
+      coverage !== "partial-tool-events")
   )
     return undefined;
   const finite = (number: unknown) =>
@@ -310,7 +315,7 @@ export function decodeExecutionTimingSummary(value: unknown) {
     startedAt: Number(raw.startedAt),
     observedTo: Number(raw.observedTo),
     elapsedMs: Number(raw.elapsedMs),
-    outcome: raw.outcome as ExecutionTimingSummary["outcome"],
+    outcome,
     toolDurationMs: Number(raw.toolDurationMs),
     toolWallMs: Number(raw.toolWallMs),
     unattributedMs: Number(raw.unattributedMs),
@@ -318,7 +323,7 @@ export function decodeExecutionTimingSummary(value: unknown) {
       toolKeys.map((key) => [key, Number(tools[key])]),
     ) as ExecutionTimingSummary["tools"],
     retries: { started: Number(retries.started), ended: Number(retries.ended) },
-    coverage: raw.coverage as ExecutionTimingSummary["coverage"],
+    coverage,
   };
   for (const key of optionalKeys)
     if (raw[key] !== undefined) result[key] = Number(raw[key]);

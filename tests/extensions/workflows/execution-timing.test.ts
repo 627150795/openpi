@@ -272,3 +272,29 @@ test("no installed event observer is unobserved, not complete zero timing", () =
   ledger.eventsEnded();
   assert.equal(ledger.snapshot("failure").summary.coverage, "unobserved");
 });
+
+test("malformed persisted JSON timing fields reject without enum or numeric coercion", () => {
+  const { ledger } = clockFixture();
+  const summary = ledger.snapshot("success").summary;
+  for (const malformed of [
+    { outcome: ["success"] },
+    { coverage: ["unobserved"] },
+    { outcome: { toString: null } },
+    { coverage: { toString: null } },
+    { outcome: null },
+    { coverage: false },
+    { elapsedMs: { toString: null } },
+    { elapsedMs: [0] },
+    { tools: [] },
+    { tools: { ...summary.tools, started: { toString: null } } },
+    { retries: [] },
+    { retries: { started: [0], ended: 0 } },
+  ]) {
+    const raw: unknown = JSON.parse(
+      JSON.stringify({ ...summary, ...malformed }),
+    );
+    assert.doesNotThrow(() => {
+      assert.equal(decodeExecutionTimingSummary(raw), undefined);
+    });
+  }
+});

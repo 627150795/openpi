@@ -53,13 +53,18 @@ The feature adds no tools, runtime permissions or setup preferences, and does
 not add timing text to ordinary model-facing completion content. The explicit
 saved workflow report includes summary coverage and the artifact reference.
 
-Artifacts reuse the existing run directory, atomic file writer, and run-folder
-retention policy. They are additional bounded per-call files, not a new Session
-store or unlimited trace. Persistence failure is marked
-`timingArtifactState: failed` without rewriting the execution outcome; the
-numeric summary remains available when the workflow manifest persists. The
-32 KiB artifact budget is per call, subject to the existing workflow call and
-run retention limits; it is not a new unlimited run budget.
+Artifacts reuse the existing run directory and atomic file writer. They are
+additional bounded per-call files, not a new Session store or unlimited trace.
+Persistence failure is marked `timingArtifactState: failed` without rewriting
+the execution outcome; the numeric summary remains available when the workflow
+manifest persists. The 32 KiB artifact budget is per call; the existing agent-call
+limit bounds the number of such files within a run when configured.
+
+Canonical run files have the existing indefinite disk lifetime and require
+manual deletion. Session-memory retention and dashboard projections do not delete
+these files. There is no aggregate disk quota or automatic retention across runs,
+so timing artifacts can accumulate with the canonical run directories. This
+change does not introduce a new storage or retention subsystem.
 
 Reload only retains validated numeric fields and fixed relative artifact paths.
 It never replays events or makes model calls. A journal replay writes invocation
@@ -92,8 +97,9 @@ bounded transcript timing map and 7.590 ms with the added diagnostic ledger:
 all 20,000 pairs were counted and 19,968 detail omissions were explicit.
 
 This is a local synthetic engineering check, not a formal model Benchmark.
-It measures event processing and bounded diagnostic snapshots, excludes session
-creation, provider/model behavior, renderer cost and artifact disk latency, and
+It measures event processing only; the timer stops before the diagnostic
+snapshot. Snapshot construction, session creation, provider/model behavior,
+renderer cost and artifact disk latency are excluded. The measurement
 is sensitive to JIT and host scheduling. Full repository gates and independent
 review remain the integrating delivery receipt's responsibility. No installed
 Pi package or user configuration was changed, and no installed/UI smoke result

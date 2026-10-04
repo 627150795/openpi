@@ -1956,3 +1956,43 @@ test("persisted timing survives reload and report inspection without making repl
   });
   assert.equal(replay?.agents[0]?.timing, undefined);
 });
+
+test("malformed timing enums in persisted JSON cannot break workflow reload", () => {
+  const timing = new ExecutionTimingLedger(1, () => 0).snapshot(
+    "failure",
+  ).summary;
+  for (const malformed of [
+    { outcome: ["success"] },
+    { coverage: ["unobserved"] },
+    { outcome: { toString: null } },
+    { coverage: { toString: null } },
+  ]) {
+    const raw: unknown = JSON.parse(
+      JSON.stringify({
+        background: false,
+        status: "completed",
+        startedAt: 1,
+        phases: [],
+        agents: [
+          {
+            index: 1,
+            label: "fixture",
+            state: "done",
+            startedAt: 1,
+            usage: {},
+            transcript: [],
+            timing: { ...timing, ...malformed },
+          },
+        ],
+      }),
+    );
+    assert.doesNotThrow(() => {
+      const restored = normalizePersistedWorkflowDetails(
+        "wf_malformed_timing",
+        raw,
+      );
+      assert.equal(restored?.agents.length, 1);
+      assert.equal(restored?.agents[0]?.timing, undefined);
+    });
+  }
+});

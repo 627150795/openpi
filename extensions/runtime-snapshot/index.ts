@@ -76,6 +76,26 @@ function abortIfNeeded(signal?: AbortSignal) {
 }
 
 async function gitRead(cwd: string, args: string[], signal?: AbortSignal) {
+  // -C does not override repository-selection environment. Copy, never mutate
+  // the parent's environment; retain unrelated Git/user configuration.
+  const env = { ...process.env };
+  for (const name of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  ]) {
+    delete env[name];
+  }
   return new Promise<string>((resolve, reject) => {
     execFile(
       "git",
@@ -91,6 +111,7 @@ async function gitRead(cwd: string, args: string[], signal?: AbortSignal) {
       ],
       {
         encoding: "utf8",
+        env,
         timeout: 1_000,
         maxBuffer: 8 * 1024,
         signal,
@@ -257,6 +278,8 @@ export async function collectRuntimeSnapshot(
     return {
       source: "pi-active-tools" as const,
       active: {
+        scope: "allowlisted-projection" as const,
+        completeness: "unknown" as const,
         names: allowlisted.slice(0, MAX_TOOL_NAMES),
         omitted: Math.max(0, allowlisted.length - MAX_TOOL_NAMES),
       },

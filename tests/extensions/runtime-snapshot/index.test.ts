@@ -304,6 +304,37 @@ test("active tool omissions count only truncated allowlisted names", async () =>
   );
 });
 
+test("active tools declare an allowlisted projection without revealing filtered inventory", async () => {
+  const f = fixture();
+  f.pi.getActiveTools = () => ["read", "web_search"];
+  const snapshot = await collectRuntimeSnapshot(
+    f.pi,
+    f.ctx,
+    123,
+    f.dependencies,
+  );
+  assert.equal(snapshot.toolBoundary.availability, "available");
+  assert.deepEqual(snapshot.toolBoundary.active, {
+    scope: "allowlisted-projection",
+    completeness: "unknown",
+    names: ["read"],
+    omitted: 0,
+  });
+  assert.equal(
+    JSON.stringify(snapshotToolResult(snapshot)).includes("web_search"),
+    false,
+  );
+  f.pi.getActiveTools = () => ["read"];
+  const safeOnly = await collectRuntimeSnapshot(
+    f.pi,
+    f.ctx,
+    123,
+    f.dependencies,
+  );
+  assert.equal(safeOnly.toolBoundary.availability, "available");
+  assert.deepEqual(safeOnly.toolBoundary.active, snapshot.toolBoundary.active);
+});
+
 test("existing owner samples are bounded and redacted; absent is not empty", async () => {
   const f = fixture();
   const unregister = registerWebCapability(f.scope, {
@@ -570,6 +601,77 @@ test("disk sampling describes the containing worktree from nested cwd, excluding
     aborted.abort();
     await assert.rejects(readDiskSnapshot(directory, aborted.signal));
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("disk samples explicit cwd despite foreign repository environment and leaves env untouched", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "openpi-snapshot-env-test-"));
+  const original = { ...process.env };
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync(
+      "git",
+      [
+        "-C",
+        cwd,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        ...args,
+      ],
+      { encoding: "utf8", stdio: "pipe" },
+    );
+  const project = join(directory, "project");
+  const foreign = join(directory, "foreign");
+  const outside = join(directory, "outside");
+  const nested = join(project, "nested");
+  const overrides = {
+    GIT_DIR: join(foreign, ".git"),
+    GIT_WORK_TREE: foreign,
+    GIT_COMMON_DIR: join(foreign, ".git"),
+    GIT_INDEX_FILE: join(foreign, ".git", "index"),
+    GIT_OBJECT_DIRECTORY: join(foreign, ".git", "objects"),
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: join(foreign, ".git", "objects"),
+    GIT_CEILING_DIRECTORIES: project,
+    GIT_DISCOVERY_ACROSS_FILESYSTEM: "0",
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+  try {
+    for (const repo of [project, foreign]) {
+      mkdirSync(repo);
+      git(repo, "init", "-q");
+      writeFileSync(
+        join(repo, "tracked.txt"),
+        repo === project ? "project" : "foreign",
+      );
+      git(repo, "add", ".");
+      git(repo, "commit", "-qm", "fixture");
+    }
+    mkdirSync(nested);
+    mkdirSync(outside);
+    const projectHead = git(project, "rev-parse", "HEAD").trim();
+    const foreignHead = git(foreign, "rev-parse", "HEAD").trim();
+    assert.notEqual(projectHead, foreignHead);
+    writeFileSync(join(project, "tracked.txt"), "dirty project");
+    Object.assign(process.env, overrides);
+    const contaminated = { ...process.env };
+    // Counterexample: -C alone still selects the foreign repository, even outside Git.
+    assert.equal(git(nested, "rev-parse", "HEAD").trim(), foreignHead);
+    assert.equal(git(outside, "rev-parse", "HEAD").trim(), foreignHead);
+    const snapshot = await readDiskSnapshot(nested);
+    assert.equal(snapshot.availability, "available");
+    assert.equal(snapshot.head, projectHead);
+    assert.equal(snapshot.dirty, true);
+    const absent = await readDiskSnapshot(outside);
+    assert.equal(absent.availability, "unavailable");
+    assert.deepEqual({ ...process.env }, contaminated);
+    assert.equal(JSON.stringify(snapshot).includes(directory), false);
+  } finally {
+    for (const name of Object.keys(overrides)) {
+      if (original[name] === undefined) delete process.env[name];
+      else process.env[name] = original[name];
+    }
     rmSync(directory, { recursive: true, force: true });
   }
 });

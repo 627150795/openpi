@@ -157,11 +157,14 @@ test("large ignored dependency inventory retains the patch and preserves the che
     assert.match(prepared.manifest.patch.content, /\+deliverable/);
     assert.deepEqual(prepared.manifest.ignored, ["ignored/"]);
     assert.deepEqual(prepared.manifest.inventoryCoverage, {
-      untracked: "complete-files",
+      // Git enumerates a Windows junction as a directory, unlike a Unix
+      // symlink. The inventory must disclose that extra summary honestly.
+      untracked:
+        process.platform === "win32" ? "directory-summary" : "complete-files",
       ignored: "directory-summary",
     });
     assert.deepEqual(prepared.manifest.untracked, [
-      "dependency-link",
+      process.platform === "win32" ? "dependency-link/" : "dependency-link",
       looseName,
     ]);
     assert.ok(fs.statSync(prepared.absolutePath).size < 1024 * 1024);

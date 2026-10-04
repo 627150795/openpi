@@ -80,6 +80,8 @@ Research records preserve sourced investigation and distinguish observations, in
 
 - [`CACHE_USAGE_CONTRACT_2026-09-11.md`](CACHE_USAGE_CONTRACT_2026-09-11.md) — source-scoped Pi usage field matrix and synthetic cache-diagnostic replay boundaries; real comparative Session evidence remains open ([#156](https://github.com/openpi-dev/openpi/issues/156)).
 
+- [`COMPLETION_RETRY_CONSUMPTION_2026-10-03.md`](COMPLETION_RETRY_CONSUMPTION_2026-10-03.md) — invalidated completion claims, late transport retries, and producer-adapter regression evidence ([#647](https://github.com/openpi-dev/openpi/issues/647)).
+
 - [`CURSOR_NATIVE_RECOVERY_2026-09-08.md`](CURSOR_NATIVE_RECOVERY_2026-09-08.md) — bounded in-band native execution rejection, Pi-owned tools, cancellation identity, and actual child acceptance ([#234](https://github.com/openpi-dev/openpi/issues/234)).
 
 - [`WEB_STARTUP_2026-09-07.md`](WEB_STARTUP_2026-09-07.md) — terminal startup feedback, browser-launch waiting, and exploratory timing limits ([#450](https://github.com/openpi-dev/openpi/issues/450)).

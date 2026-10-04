@@ -40,6 +40,9 @@ async function fixture(
   const runDir = path.join(root, "run");
   fs.mkdirSync(repo);
   git(repo, "init", "--quiet", "--initial-branch=main", ".");
+  // These test-owned inventories deliberately cross MAX_PATH on Windows.
+  // Configure only the disposable repository, never the user's Git settings.
+  git(repo, "config", "core.longpaths", "true");
   fs.writeFileSync(path.join(repo, "a.txt"), "base\n");
   fs.writeFileSync(path.join(repo, ".gitignore"), "ignored/\n");
   git(repo, "add", "-A");
@@ -133,8 +136,14 @@ test("large ignored dependency inventory retains the patch and preserves the che
       { cwd, maxBuffer: 4 * 1024 * 1024 },
     );
     assert.ok(expanded.length > 1024 * 1024);
-    fs.writeFileSync(path.join(cwd, "loose-�\n.txt"), "keep\n");
-    fs.symlinkSync(ignored, path.join(cwd, "dependency-link"));
+    const looseName =
+      process.platform === "win32" ? "loose-�.txt" : "loose-�\n.txt";
+    fs.writeFileSync(path.join(cwd, looseName), "keep\n");
+    fs.symlinkSync(
+      ignored,
+      path.join(cwd, "dependency-link"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
     const prepared = prepareWorktreeHandoff({
       runDir,
       runId: "wf_large",
@@ -153,7 +162,7 @@ test("large ignored dependency inventory retains the patch and preserves the che
     });
     assert.deepEqual(prepared.manifest.untracked, [
       "dependency-link",
-      "loose-�\n.txt",
+      looseName,
     ]);
     assert.ok(fs.statSync(prepared.absolutePath).size < 1024 * 1024);
     const cleanup = await reclaimWorktree(repo, worktree.worktree);
@@ -231,7 +240,8 @@ for (const kind of ["untracked", "ignored"] as const) {
 
 test("large untracked directory uses explicit directory coverage", async () => {
   await fixture(async ({ repo, runDir, worktree }) => {
-    const loose = path.join(worktree.worktree.path, "loose-�\n");
+    const looseName = process.platform === "win32" ? "loose-�" : "loose-�\n";
+    const loose = path.join(worktree.worktree.path, looseName);
     fs.mkdirSync(loose);
     for (let i = 0; i < 3100; i++)
       fs.writeFileSync(path.join(loose, `${"x".repeat(200)}-${i}`), "keep\n");
@@ -245,7 +255,7 @@ test("large untracked directory uses explicit directory coverage", async () => {
     });
     assert.ok(prepared.ok, prepared.ok ? "" : prepared.reason);
     if (!prepared.ok) return;
-    assert.deepEqual(prepared.manifest.untracked, ["loose-�\n/"]);
+    assert.deepEqual(prepared.manifest.untracked, [`${looseName}/`]);
     assert.deepEqual(prepared.manifest.inventoryCoverage, {
       untracked: "directory-summary",
       ignored: "complete-files",
@@ -260,7 +270,11 @@ test("large untracked directory uses explicit directory coverage", async () => {
 test("handoff path ownership rejects a symlink escaping the Git directory", async () => {
   await fixture(async ({ repo, runDir, worktree }) => {
     const link = path.join(path.dirname(worktree.worktree.path), "escape");
-    fs.symlinkSync(repo, link);
+    fs.symlinkSync(
+      repo,
+      link,
+      process.platform === "win32" ? "junction" : "dir",
+    );
     const prepared = prepareWorktreeHandoff({
       runDir,
       runId: "wf_escape",

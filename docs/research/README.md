@@ -92,6 +92,8 @@ Research records preserve sourced investigation and distinguish observations, in
 
 - [`CHILD_ACQUISITION_AND_PROGRESS_2026-09-07.md`](CHILD_ACQUISITION_AND_PROGRESS_2026-09-07.md) — cancelled child/worktree acquisitions and stale progress evidence under output pressure ([#428](https://github.com/openpi-dev/openpi/issues/428)).
 
+- [`CHILD_TOOL_CANCELLATION_2026-10-03.md`](CHILD_TOOL_CANCELLATION_2026-10-03.md) — already-aborted child tool dispatch, false success and the shared execution-boundary repair ([#645](https://github.com/openpi-dev/openpi/issues/645)).
+
 - [`WORKFLOW_CHILD_FAILURES_2026-09-07.md`](WORKFLOW_CHILD_FAILURES_2026-09-07.md) — child tool transport, cwd and timeout failure mechanisms, intended capability inheritance, and acceptance limits ([#424](https://github.com/openpi-dev/openpi/issues/424)).
 
 - [`WORKFLOW_DASHBOARD_REFRESH_2026-09-07.md`](WORKFLOW_DASHBOARD_REFRESH_2026-09-07.md) — repeated synchronous history loading on dashboard animation ticks, its regression boundary, and measurement limits ([#420](https://github.com/openpi-dev/openpi/issues/420)).

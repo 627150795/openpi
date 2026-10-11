@@ -301,6 +301,9 @@ function compileCodec<T extends ProtoMessage>(
       const tag = reader.uint32();
       const fieldNumber = tag >>> 3;
       const wireType = tag & 7;
+      if (fieldNumber === 0) {
+        throw new Error(`Invalid protobuf field number 0 at byte ${reader.pos}`);
+      }
       if (!isWireType(wireType)) {
         throw new Error(
           `Unsupported protobuf wire type ${wireType} at byte ${reader.pos}`,

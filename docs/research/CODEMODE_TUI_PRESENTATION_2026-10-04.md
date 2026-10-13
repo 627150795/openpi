@@ -34,3 +34,15 @@ Focused tests passed 13/13 in 1.72 seconds, including actual locked SDK 0.99.1 r
 The local repository check passed. One complete local test run passed 2,283 Node tests (9 skipped; 128.75 seconds) and 1,158 UI tests (32.13 seconds). The candidate was under a narrow cancellation-display correction during that run; final focused tests and exact-head CI must separately cover the frozen correction. No timeout increase, disabled assertion, executor replacement or installed-host edit was used.
 
 Real terminal pixels, keyboard expansion in the user's actual Session and package reload remain unverified. Installation was not changed.
+
+## 2026-10-05: background continuity after truncation
+
+- Status: validated at the ANSI renderer and isolated native SDK boundaries; live terminal pixels after reload remain unverified.
+- Source boundary: main `214fac3786f80107e22d5bd2b53b472461ef16b2` plus the repair linked from [#683](https://github.com/openpi-dev/openpi/issues/683).
+- Created / verified: 2026-10-05. This supplements the earlier observations without replacing their evidence.
+
+A new user screenshot showed the card background ending immediately after a truncated Bash preview. Pi's public `truncateToWidth` inserts SGR `ESC[0m`, resetting background as well as foreground. Wrapping the complete padded row once with `theme.bg` does not restore the background after that embedded reset. The regression reproduced an unpainted ellipsis and trailing space before the fix.
+
+The OpenPI frame now applies its owning background independently to each segment separated by the native full-style reset. The original reset is retained between segments, preserving foreground/style termination. Displayed text, width, truncation budgets, execution and result evidence are unchanged. This repair applies to main and child presentations through their shared Code Mode renderer.
+
+The regression checks ANSI background state for every visible character, including padding, at 40/120/240 columns in collapsed and expanded views with a long Chinese-containing Bash preview. It deliberately retains escape sequences; a stripped-text comparison could not detect this defect. Focused renderer/native tests pass 21/21 on locked Pi 0.99.1 and installed Pi 1.0.2, without model calls. Full repository checks and independent review are reported on the repair PR. The installed dirty source checkout was preserved; no assertion here proves that a running Session reloaded the repair.

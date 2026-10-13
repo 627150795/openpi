@@ -431,8 +431,15 @@ export function ModelPicker(props: ModelPickerProps) {
                           optionRefs.current[moveTo]?.focus();
                         }}
                       >
-                        <span className="model-menu-item-label">
-                          {model.name || model.id}
+                        <span className="model-menu-item-text">
+                          <span className="model-menu-item-label">
+                            {model.name || model.id}
+                          </span>
+                          {model.name && model.name !== model.id && (
+                            <span className="model-menu-item-sub">
+                              {model.id}
+                            </span>
+                          )}
                         </span>
                         {isSelected && <Check aria-hidden="true" />}
                       </button>

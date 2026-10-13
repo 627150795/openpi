@@ -975,6 +975,7 @@ export function App() {
               >
                 <div className="landing-welcome">
                   <OpenPiLogo animated />
+                  <p className="landing-tagline">{t("landingTagline")}</p>
                 </div>
               </section>
             ) : state.snapshot ? (

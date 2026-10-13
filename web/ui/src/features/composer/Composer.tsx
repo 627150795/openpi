@@ -1725,6 +1725,12 @@ export function Composer(props: ComposerProps) {
           />
         )}
         {!props.selectedWorkspace && (
+          <div className="composer-dormant-cta" aria-hidden="true">
+            <Folder />
+            <span>{placeholder}</span>
+          </div>
+        )}
+        {!props.selectedWorkspace && (
           <button
             className="dormant-overlay"
             type="button"

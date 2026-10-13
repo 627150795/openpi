@@ -25,7 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Cause, Scope } from "effect";
 import { Effect, Queue, Stream } from "effect";
-import { AgentToolRenderLedger } from "../../../shared/agent-tool-renderer.ts";
+import { createAgentToolRenderLedger } from "../../../shared/agent-tool-renderer.ts";
 import {
   bindChildSessionExtensions,
   CHILD_SHUTDOWN_TIMEOUT_MS,
@@ -326,7 +326,7 @@ const makePiSession = (
 
     const toolTimeout = createToolCallTimeoutGuard();
     toolTimeout.apply(session);
-    const toolRenderer = new AgentToolRenderLedger();
+    const toolRenderer = createAgentToolRenderLedger(session);
 
     const activeModel = (): Model<any> | undefined => {
       const sessionModel = session.model;

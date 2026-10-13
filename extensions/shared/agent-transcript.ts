@@ -8,7 +8,10 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Text, TruncatedText } from "@earendil-works/pi-tui";
-import type { AgentToolRenderer } from "./agent-tool-renderer.ts";
+import type {
+  AgentMessagePresentation,
+  AgentToolRenderer,
+} from "./agent-tool-renderer.ts";
 import { sanitizeTerminalText } from "./terminal-text.ts";
 import {
   parseToolArgsPreview,
@@ -141,21 +144,41 @@ function assistantMessage(
   };
 }
 
-function renderUserText(text: string, width: number) {
+function messageTheme(presentation?: AgentMessagePresentation) {
+  return {
+    ...getMarkdownTheme(),
+    ...(presentation ? { codeBlockIndent: presentation.codeBlockIndent } : {}),
+  };
+}
+
+function renderUserText(
+  text: string,
+  width: number,
+  presentation?: AgentMessagePresentation,
+) {
   const clean = sanitizeText(text).trim();
   if (!clean) return [];
-  return new UserMessageComponent(clean, getMarkdownTheme()).render(width);
+  return new UserMessageComponent(
+    clean,
+    messageTheme(presentation),
+    presentation?.outputPad,
+    presentation?.markdownTransformers,
+  ).render(width);
 }
 
 function renderAssistantParts(
   parts: ReadonlyArray<AgentTranscriptPart>,
   width: number,
   streaming = false,
+  presentation?: AgentMessagePresentation,
 ) {
   const component = new AssistantMessageComponent(
     assistantMessage(parts),
-    false,
-    getMarkdownTheme(),
+    presentation?.hideThinking ?? false,
+    messageTheme(presentation),
+    undefined,
+    presentation?.outputPad,
+    presentation?.markdownTransformers,
   );
   if (streaming) component.updateContent(assistantMessage(parts), true);
   return component.render(width);
@@ -231,7 +254,12 @@ function renderAssistantItem(
   toolRenderer?: AgentToolRenderer,
   expanded = false,
 ) {
-  const out = renderAssistantParts(item.parts, width);
+  const out = renderAssistantParts(
+    item.parts,
+    width,
+    false,
+    toolRenderer?.messagePresentation,
+  );
   for (const part of item.parts) {
     if (part.type === "toolCall") {
       const state = tools.get(part.toolId) ?? { phase: "pending" };
@@ -335,7 +363,8 @@ function renderTranscriptItem(
   toolRenderer?: AgentToolRenderer,
   expanded = false,
 ) {
-  if (item.kind === "user") return renderUserText(item.text, width);
+  if (item.kind === "user")
+    return renderUserText(item.text, width, toolRenderer?.messagePresentation);
   if (item.kind === "assistant") {
     return renderAssistantItem(
       theme,
@@ -471,6 +500,7 @@ export class AgentTranscriptRenderer {
     const out: string[] = [];
     const now = options?.now ?? Date.now();
     const expanded = options?.expanded === true;
+    const presentation = document.toolRenderer?.messagePresentation;
     const liveTools = document.liveTools ?? [];
     if (document.toolRenderer) this.toolRenderers.add(document.toolRenderer);
     const liveIds = new Set(liveTools.map((tool) => tool.toolId));
@@ -485,8 +515,13 @@ export class AgentTranscriptRenderer {
         context.token,
         document.cwd,
         itemHasTool(item) && expanded,
+        presentation?.hideThinking,
+        presentation?.outputPad,
+        presentation?.codeBlockIndent,
       ]);
-      const cacheable = !document.toolRenderer || !itemHasTool(item);
+      const cacheable =
+        !document.toolRenderer ||
+        (!itemHasTool(item) && !presentation?.markdownTransformers.length);
       const cached = cacheable ? this.itemCache.get(item)?.get(key) : undefined;
       const lines =
         cached ??
@@ -521,7 +556,7 @@ export class AgentTranscriptRenderer {
       const parts: AgentTranscriptPart[] = [];
       if (thinking.trim()) parts.push({ type: "thinking", text: thinking });
       if (text.trim()) parts.push({ type: "text", text });
-      out.push(...renderAssistantParts(parts, width, true));
+      out.push(...renderAssistantParts(parts, width, true, presentation));
     }
 
     // Live tool executions. The manager drops a live entry when its ToolEnd

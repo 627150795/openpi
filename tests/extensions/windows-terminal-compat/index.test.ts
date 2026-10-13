@@ -228,6 +228,55 @@ test("applies the resolved native setting through the session-start bootstrap", 
   assert.equal(clearOnShrink, true);
 });
 
+test("does not install a compatibility layer after its session shuts down during settings loading", async () => {
+  const eventHandlers = new Map<
+    string,
+    Array<(event: unknown, ctx: unknown) => unknown>
+  >();
+  const emitted: string[] = [];
+  let resolveSettings:
+    | ((value: {
+        getGlobalSettings(): Record<string, never>;
+        getProjectSettings(): Record<string, never>;
+      }) => void)
+    | undefined;
+  const pi = {
+    on(event: string, handler: (value: unknown, ctx: unknown) => unknown) {
+      eventHandlers.set(event, [...(eventHandlers.get(event) ?? []), handler]);
+    },
+    events: {
+      on() {},
+      emit(event: string) {
+        emitted.push(event);
+      },
+    },
+  } as unknown as ExtensionAPI;
+  const ctx = {
+    mode: "tui",
+    cwd: "/repo",
+    ui: {
+      onTerminalInput: () => () => {},
+    },
+  } as unknown as ExtensionContext;
+
+  registerWindowsTerminalCompatibility(pi, {
+    platform: "win32",
+    settingsReaderFactory: () =>
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+  });
+  const starting = eventHandlers.get("session_start")?.[0]?.({}, ctx);
+  await eventHandlers.get("session_shutdown")?.[0]?.({}, ctx);
+  resolveSettings?.({
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
+  });
+  await starting;
+
+  assert.equal(emitted.includes("openpi:editor-layers:register"), false);
+});
+
 test("reapplies compatibility after renderer replacement", () => {
   let listener: ((data: string) => unknown) | undefined;
   const remove = (value: (data: string) => unknown) => {

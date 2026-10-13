@@ -92,6 +92,7 @@ async function install(
   ctx: ExtensionContext,
   pi: ExtensionAPI,
   options: WindowsTerminalCompatibilityRuntime,
+  isCurrent: () => boolean,
 ) {
   if (ctx.mode !== "tui") {
     return;
@@ -103,6 +104,7 @@ async function install(
     cwd: ctx.cwd,
     settingsReaderFactory: options.settingsReaderFactory,
   });
+  if (!isCurrent()) return;
   let currentTui: CompatibleTui | undefined;
   let lastMode: CompatibleTui["mode"] | undefined;
   const removeInputListener = ctx.ui.onTerminalInput(() => {
@@ -142,6 +144,7 @@ export function registerWindowsTerminalCompatibility(
   pi: ExtensionAPI,
   options: WindowsTerminalCompatibilityOptions = {},
 ) {
+  let generation = 0;
   const settingsReaderFactory =
     options.settingsReaderFactory ??
     (async (cwd) => {
@@ -157,8 +160,12 @@ export function registerWindowsTerminalCompatibility(
     settingsReaderFactory,
   };
 
-  pi.on("session_start", async (_event, ctx) => install(ctx, pi, runtime));
+  pi.on("session_start", async (_event, ctx) => {
+    const currentGeneration = ++generation;
+    await install(ctx, pi, runtime, () => generation === currentGeneration);
+  });
   pi.on("session_shutdown", () => {
+    generation += 1;
     removeEditorLayer(pi, WINDOWS_TERMINAL_COMPAT_LAYER);
   });
 }

@@ -234,6 +234,7 @@ test("does not install a compatibility layer after its session shuts down during
     Array<(event: unknown, ctx: unknown) => unknown>
   >();
   const emitted: string[] = [];
+  let terminalInputRegistrations = 0;
   let resolveSettings:
     | ((value: {
         getGlobalSettings(): Record<string, never>;
@@ -255,7 +256,10 @@ test("does not install a compatibility layer after its session shuts down during
     mode: "tui",
     cwd: "/repo",
     ui: {
-      onTerminalInput: () => () => {},
+      onTerminalInput: () => {
+        terminalInputRegistrations++;
+        return () => {};
+      },
     },
   } as unknown as ExtensionContext;
 
@@ -275,6 +279,7 @@ test("does not install a compatibility layer after its session shuts down during
   await starting;
 
   assert.equal(emitted.includes("openpi:editor-layers:register"), false);
+  assert.equal(terminalInputRegistrations, 0);
 });
 
 test("reapplies compatibility after renderer replacement", () => {

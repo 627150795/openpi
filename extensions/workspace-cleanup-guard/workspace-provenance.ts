@@ -4,6 +4,7 @@ import path from "node:path";
 type Origin = "baseline" | "session_created";
 
 interface PendingEffects {
+  generation: number;
   creations: Array<{
     path: string;
     existed: boolean;
@@ -593,10 +594,12 @@ export function createWorkspaceCleanupGuard(
     cwd: string,
     candidate: string,
     observeOnCommandError: boolean,
+    generation: number,
   ) => {
     const contained = containedPath(cwd, candidate);
     if (!contained) return undefined;
     const existed = await exists(contained.absolute);
+    if (generation !== modeGeneration) return undefined;
     if (existed && !origins.has(contained.absolute)) {
       origins.set(contained.absolute, "baseline");
     }
@@ -621,9 +624,15 @@ export function createWorkspaceCleanupGuard(
     async beforeWrite(attempt: WriteAttempt) {
       const generation = modeGeneration;
       if (mode === "off") return;
-      const creation = await prepareCreation(attempt.cwd, attempt.path, false);
+      const creation = await prepareCreation(
+        attempt.cwd,
+        attempt.path,
+        false,
+        generation,
+      );
       if (generation !== modeGeneration) return;
       pending.set(attempt.id, {
+        generation,
         creations: creation ? [creation] : [],
         removals: [],
       });
@@ -651,7 +660,13 @@ export function createWorkspaceCleanupGuard(
 
       const creations: PendingEffects["creations"] = [];
       for (const candidate of inspected.creations) {
-        const creation = await prepareCreation(attempt.cwd, candidate, true);
+        const creation = await prepareCreation(
+          attempt.cwd,
+          candidate,
+          true,
+          generation,
+        );
+        if (generation !== modeGeneration) return changedModeCleanup();
         if (creation) creations.push(creation);
       }
 
@@ -659,10 +674,10 @@ export function createWorkspaceCleanupGuard(
       const protectedPaths: string[] = [];
       for (const contained of containedRemovals) {
         if (!contained) continue;
-        const origin = origins.get(contained.absolute);
         const present = await exists(contained.absolute);
         if (generation !== modeGeneration) return changedModeCleanup();
-        if (present && !origin) origins.set(contained.absolute, "baseline");
+        if (present && !origins.has(contained.absolute))
+          origins.set(contained.absolute, "baseline");
         if (present && origins.get(contained.absolute) !== "session_created") {
           protectedPaths.push(contained.relative);
         }
@@ -681,35 +696,42 @@ export function createWorkspaceCleanupGuard(
         }
       }
 
-      pending.set(attempt.id, { creations, removals });
+      if (generation !== modeGeneration) return changedModeCleanup();
+      pending.set(attempt.id, { generation, creations, removals });
       return { kind: "allow" as const };
     },
 
     async after(result: { id: string; isError: boolean }) {
+      const generation = modeGeneration;
       const effects = pending.get(result.id);
+      if (!effects || effects.generation !== generation) return;
       pending.delete(result.id);
-      if (!effects) return;
       for (const creation of effects.creations) {
         if (
-          !creation.existed &&
-          (!result.isError || creation.observeOnCommandError) &&
-          !origins.has(creation.path) &&
-          (await exists(creation.path))
+          creation.existed ||
+          (result.isError && !creation.observeOnCommandError) ||
+          origins.has(creation.path)
         ) {
+          continue;
+        }
+        const present = await exists(creation.path);
+        if (generation !== modeGeneration) return;
+        if (present && !origins.has(creation.path)) {
           origins.set(creation.path, "session_created");
         }
       }
       for (const removed of effects.removals) {
-        if (
-          origins.get(removed) === "session_created" &&
-          !(await exists(removed))
-        ) {
+        if (origins.get(removed) !== "session_created") continue;
+        const present = await exists(removed);
+        if (generation !== modeGeneration) return;
+        if (!present && origins.get(removed) === "session_created") {
           origins.delete(removed);
         }
       }
     },
 
     reset() {
+      modeGeneration += 1;
       origins.clear();
       pending.clear();
     },

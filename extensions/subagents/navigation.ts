@@ -19,13 +19,20 @@ export interface SubagentStripEntry {
   counts: ActivityCounts;
 }
 
+/** Changes only when the strip needs an immediate lifecycle repaint. */
+export function subagentStripEntryKey(entry: SubagentStripEntry | undefined) {
+  return entry ? `${entry.snapshot.id}:${entry.snapshot.status}` : undefined;
+}
+
 function cleanLine(value: string) {
   return sanitizeTerminalText(value).replace(/\s+/g, " ").trim();
 }
 
 /** Normalize every title before it enters snapshots, artifacts, or the TUI. */
 export function normalizeSubagentTitle(value: string, fallback = "subagent") {
-  return cleanLine(value).slice(0, 160) || fallback;
+  // Bound on code points: `slice` measures UTF-16 units and can end on the high
+  // half of a surrogate pair, which then reaches snapshots and the TUI broken.
+  return [...cleanLine(value)].slice(0, 160).join("") || fallback;
 }
 
 /** Prefer the newest running child, then the newest unread settled child. */
@@ -71,9 +78,11 @@ function statusGlyph(snapshot: SubagentSnapshot, theme: Theme, now: number) {
   return theme.fg("error", "✗");
 }
 
+const SUBAGENT_STRIP_INTERVAL_MS = 500;
+
 /** One-line subagent manager entry with the same affordance as Workflow. */
 export class SubagentStripWidget {
-  private readonly timer: ReturnType<typeof setInterval>;
+  private timer: ReturnType<typeof setInterval> | undefined;
   private readonly tui: TUI;
   private readonly theme: Theme;
   private readonly strip: BelowEditorStripState;
@@ -89,17 +98,39 @@ export class SubagentStripWidget {
     this.theme = theme;
     this.strip = strip;
     this.getEntry = getEntry;
-    this.timer = setInterval(() => this.tui.requestRender(), 500);
-    this.timer.unref?.();
+    this.syncSpinner();
   }
 
   dispose() {
-    clearInterval(this.timer);
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
   }
 
-  invalidate() {}
+  invalidate() {
+    this.syncSpinner();
+  }
+
+  private syncSpinner() {
+    if (this.getEntry()?.snapshot.status === "running") {
+      if (this.timer) return;
+      const timer = setInterval(() => {
+        if (this.timer !== timer) return;
+        if (this.getEntry()?.snapshot.status !== "running") {
+          clearInterval(timer);
+          this.timer = undefined;
+        }
+        this.tui.requestRender();
+      }, SUBAGENT_STRIP_INTERVAL_MS);
+      this.timer = timer;
+      timer.unref?.();
+      return;
+    }
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
 
   render(width: number) {
+    this.syncSpinner();
     const entry = this.getEntry();
     if (!entry || width <= 0) return [];
     const { snapshot, counts } = entry;

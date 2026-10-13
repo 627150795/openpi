@@ -1,14 +1,17 @@
 /** Shared Pi-native operator-facing agent transcript rendering. */
 
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject } from "@earendil-works/pi-ai";
 import {
   AssistantMessageComponent,
   getMarkdownTheme,
   UserMessageComponent,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { TruncatedText } from "@earendil-works/pi-tui";
-import type { AgentToolRenderer } from "./agent-tool-renderer.ts";
+import { Text, TruncatedText } from "@earendil-works/pi-tui";
+import type {
+  AgentMessagePresentation,
+  AgentToolRenderer,
+} from "./agent-tool-renderer.ts";
 import { sanitizeTerminalText } from "./terminal-text.ts";
 import {
   parseToolArgsPreview,
@@ -46,6 +49,8 @@ export type AgentTranscriptItem =
 
 export interface AgentTranscriptDocument {
   readonly items: ReadonlyArray<AgentTranscriptItem>;
+  /** Pairing index built by the document producer; render falls back to building it. */
+  readonly pairing?: PairingIndex;
   readonly cwd?: string;
   /** Ephemeral native renderer for the live child; never persisted. */
   readonly toolRenderer?: AgentToolRenderer;
@@ -65,6 +70,22 @@ export interface AgentTranscriptDocument {
 }
 
 const MAX_CACHED_WIDTHS_PER_ITEM = 2;
+const MAX_EXPANDED_PREVIEW_CHARACTERS = 4096;
+const MAX_EXPANDED_PREVIEW_LINES = 24;
+
+/** Presentation-only bound; the source preview never becomes full evidence. */
+function boundedToolPreview(value: string) {
+  const points = Array.from(sanitizeText(value));
+  const text = points.slice(0, MAX_EXPANDED_PREVIEW_CHARACTERS).join("");
+  const lines = text.split("\n");
+  const truncated =
+    points.length > MAX_EXPANDED_PREVIEW_CHARACTERS ||
+    lines.length > MAX_EXPANDED_PREVIEW_LINES;
+  return (
+    lines.slice(0, MAX_EXPANDED_PREVIEW_LINES).join("\n") +
+    (truncated ? "\n[preview truncated]" : "")
+  );
+}
 
 /**
  * Strip raw ANSI codes, expand tabs, and drop control chars. Terminal-expanded
@@ -108,7 +129,7 @@ function assistantMessage(
         name: part.name,
         arguments:
           args !== null && typeof args === "object" && !Array.isArray(args)
-            ? args
+            ? (args as JsonObject)
             : {},
       };
     }),
@@ -123,21 +144,41 @@ function assistantMessage(
   };
 }
 
-function renderUserText(text: string, width: number) {
+function messageTheme(presentation?: AgentMessagePresentation) {
+  return {
+    ...getMarkdownTheme(),
+    ...(presentation ? { codeBlockIndent: presentation.codeBlockIndent } : {}),
+  };
+}
+
+function renderUserText(
+  text: string,
+  width: number,
+  presentation?: AgentMessagePresentation,
+) {
   const clean = sanitizeText(text).trim();
   if (!clean) return [];
-  return new UserMessageComponent(clean, getMarkdownTheme()).render(width);
+  return new UserMessageComponent(
+    clean,
+    messageTheme(presentation),
+    presentation?.outputPad,
+    presentation?.markdownTransformers,
+  ).render(width);
 }
 
 function renderAssistantParts(
   parts: ReadonlyArray<AgentTranscriptPart>,
   width: number,
   streaming = false,
+  presentation?: AgentMessagePresentation,
 ) {
   const component = new AssistantMessageComponent(
     assistantMessage(parts),
-    false,
-    getMarkdownTheme(),
+    presentation?.hideThinking ?? false,
+    messageTheme(presentation),
+    undefined,
+    presentation?.outputPad,
+    presentation?.markdownTransformers,
   );
   if (streaming) component.updateContent(assistantMessage(parts), true);
   return component.render(width);
@@ -162,11 +203,15 @@ function renderToolBlock(
   now: number,
   cwd?: string,
   toolRenderer?: AgentToolRenderer,
+  expanded = false,
 ) {
-  const native = toolRenderer?.renderTool({ toolId, name, cwd }, width);
+  const native = toolRenderer?.renderTool(
+    { toolId, name, cwd, expanded },
+    width,
+  );
   if (native) return native;
   const { args, fallback } = parseToolArgsPreview(argsPreview);
-  return [
+  const lines = [
     "",
     renderPaddedToolActivityLine(
       {
@@ -182,6 +227,21 @@ function renderToolBlock(
       now,
     ),
   ];
+  if (expanded) {
+    // Historical adapters retain previews, not the original definition/result.
+    // Do not reconstruct a native tool (or a diff/exit code) from that text.
+    const details = [
+      "Bounded tool preview · native details unavailable",
+      argsPreview === undefined
+        ? "Arguments preview unavailable"
+        : `Arguments preview:\n${boundedToolPreview(argsPreview)}`,
+      outputPreview === undefined
+        ? "Output preview unavailable"
+        : `Output preview:\n${boundedToolPreview(outputPreview)}`,
+    ].join("\n");
+    lines.push(...new Text(theme.fg("dim", details), 1, 0).render(width));
+  }
+  return lines;
 }
 
 function renderAssistantItem(
@@ -192,8 +252,14 @@ function renderAssistantItem(
   now: number,
   cwd?: string,
   toolRenderer?: AgentToolRenderer,
+  expanded = false,
 ) {
-  const out = renderAssistantParts(item.parts, width);
+  const out = renderAssistantParts(
+    item.parts,
+    width,
+    false,
+    toolRenderer?.messagePresentation,
+  );
   for (const part of item.parts) {
     if (part.type === "toolCall") {
       const state = tools.get(part.toolId) ?? { phase: "pending" };
@@ -213,6 +279,7 @@ function renderAssistantItem(
           now,
           cwd,
           toolRenderer,
+          expanded,
         ),
       );
     }
@@ -228,6 +295,7 @@ function renderToolResultItem(
   now: number,
   cwd?: string,
   toolRenderer?: AgentToolRenderer,
+  expanded = false,
 ) {
   if (paired) return [];
   return renderToolBlock(
@@ -241,26 +309,48 @@ function renderToolResultItem(
     now,
     cwd,
     toolRenderer,
+    expanded,
   );
 }
 
-function hasEarlierToolCall(
+/** Tool-call/tool-result pairing lookups, precomputed in one forward pass. */
+export interface PairingIndex {
+  /** Earliest call index per tool id; a result only needs "is any call earlier?". */
+  readonly firstCallAt: ReadonlyMap<string, number>;
+  /** Ascending result indices per tool id; calls pair with the first result AFTER them. */
+  readonly resultsById: ReadonlyMap<string, ReadonlyArray<number>>;
+}
+
+export function buildPairingIndex(
   transcript: ReadonlyArray<AgentTranscriptItem>,
+): PairingIndex {
+  const firstCallAt = new Map<string, number>();
+  const resultsById = new Map<string, number[]>();
+  for (let index = 0; index < transcript.length; index++) {
+    const item = transcript[index]!;
+    if (item.kind === "assistant") {
+      for (const part of item.parts) {
+        if (part.type !== "toolCall") continue;
+        if (!firstCallAt.has(part.toolId)) firstCallAt.set(part.toolId, index);
+      }
+      continue;
+    }
+    if (item.kind !== "toolResult") continue;
+    const seen = resultsById.get(item.toolId);
+    if (seen) seen.push(index);
+    else resultsById.set(item.toolId, [index]);
+  }
+  return { firstCallAt, resultsById };
+}
+
+/** Whether any `toolCall` for this id appears before `resultIndex`. */
+function hasEarlierToolCall(
+  pairing: PairingIndex,
   resultIndex: number,
   toolId: string,
 ) {
-  for (let index = resultIndex - 1; index >= 0; index--) {
-    const candidate = transcript[index];
-    if (candidate?.kind !== "assistant") continue;
-    if (
-      candidate.parts.some(
-        (part) => part.type === "toolCall" && part.toolId === toolId,
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const firstCall = pairing.firstCallAt.get(toolId);
+  return firstCall !== undefined && firstCall < resultIndex;
 }
 
 function renderTranscriptItem(
@@ -271,8 +361,10 @@ function renderTranscriptItem(
   now: number,
   cwd?: string,
   toolRenderer?: AgentToolRenderer,
+  expanded = false,
 ) {
-  if (item.kind === "user") return renderUserText(item.text, width);
+  if (item.kind === "user")
+    return renderUserText(item.text, width, toolRenderer?.messagePresentation);
   if (item.kind === "assistant") {
     return renderAssistantItem(
       theme,
@@ -282,6 +374,7 @@ function renderTranscriptItem(
       now,
       cwd,
       toolRenderer,
+      expanded,
     );
   }
   return renderToolResultItem(
@@ -292,6 +385,7 @@ function renderTranscriptItem(
     now,
     cwd,
     toolRenderer,
+    expanded,
   );
 }
 
@@ -324,12 +418,13 @@ function itemContext(
   transcript: ReadonlyArray<AgentTranscriptItem>,
   index: number,
   liveIds: ReadonlySet<string>,
+  pairing: PairingIndex,
 ): ItemContext {
   const item = transcript[index]!;
   if (item.kind === "user")
     return { tools: new Map(), paired: false, token: "" };
   if (item.kind === "toolResult") {
-    const paired = hasEarlierToolCall(transcript, index, item.toolId);
+    const paired = hasEarlierToolCall(pairing, index, item.toolId);
     return { tools: new Map(), paired, token: paired ? "p" : "o" };
   }
 
@@ -340,7 +435,7 @@ function itemContext(
       tools.set(part.toolId, { phase: "live" });
       continue;
     }
-    const result = findResult(transcript, index, part.toolId);
+    const result = findResult(transcript, pairing, index, part.toolId);
     tools.set(
       part.toolId,
       result
@@ -351,27 +446,44 @@ function itemContext(
   return {
     tools,
     paired: false,
-    token: [...tools].map(([id, state]) => `${id}:${state.phase}`).join(","),
+    token: JSON.stringify(
+      [...tools].map(([id, state]) => [
+        id,
+        state.phase,
+        state.result?.outputPreview,
+      ]),
+    ),
   };
 }
 
 /** The result for a call, if it has already landed later in the transcript. */
 function findResult(
   transcript: ReadonlyArray<AgentTranscriptItem>,
+  pairing: PairingIndex,
   callIndex: number,
   toolId: string,
 ) {
-  for (let index = callIndex + 1; index < transcript.length; index++) {
-    const candidate = transcript[index];
-    if (candidate?.kind === "toolResult" && candidate.toolId === toolId) {
-      return candidate;
-    }
+  const indices = pairing.resultsById.get(toolId);
+  if (!indices) return undefined;
+  // Ascending by construction, so binary search the first entry past the call.
+  // Reused ids can have many results; bound each lookup to O(log results).
+  // Distinct ids (including parallel calls) already have constant-size indices,
+  // so this does not claim a speedup for that common case.
+  let low = 0;
+  let high = indices.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (indices[middle]! <= callIndex) low = middle + 1;
+    else high = middle;
   }
-  return undefined;
+  const index = indices[low];
+  if (index === undefined) return undefined;
+  const candidate = transcript[index];
+  return candidate?.kind === "toolResult" ? candidate : undefined;
 }
 
 /**
- * Caches finalized transcript items by identity and width. Live state remains
+ * Caches finalized transcript items by identity, width, and cwd. Live state remains
  * uncached because it changes on every stream tick; callers clear this cache
  * from their component's invalidate() when Pi changes theme.
  */
@@ -383,19 +495,33 @@ export class AgentTranscriptRenderer {
     document: AgentTranscriptDocument,
     width: number,
     theme: Theme,
-    options?: { readonly now?: number },
+    options?: { readonly now?: number; readonly expanded?: boolean },
   ) {
     const out: string[] = [];
     const now = options?.now ?? Date.now();
+    const expanded = options?.expanded === true;
+    const presentation = document.toolRenderer?.messagePresentation;
     const liveTools = document.liveTools ?? [];
     if (document.toolRenderer) this.toolRenderers.add(document.toolRenderer);
     const liveIds = new Set(liveTools.map((tool) => tool.toolId));
+    const pairing = document.pairing ?? buildPairingIndex(document.items);
 
     for (let index = 0; index < document.items.length; index++) {
       const item = document.items[index];
-      const context = itemContext(document.items, index, liveIds);
-      const key = `${width}|${context.token}`;
-      const cacheable = !document.toolRenderer || !itemHasTool(item);
+      const context = itemContext(document.items, index, liveIds, pairing);
+      // Fallback tool rows relativize paths against the document's cwd.
+      const key = JSON.stringify([
+        width,
+        context.token,
+        document.cwd,
+        itemHasTool(item) && expanded,
+        presentation?.hideThinking,
+        presentation?.outputPad,
+        presentation?.codeBlockIndent,
+      ]);
+      const cacheable =
+        !document.toolRenderer ||
+        (!itemHasTool(item) && !presentation?.markdownTransformers.length);
       const cached = cacheable ? this.itemCache.get(item)?.get(key) : undefined;
       const lines =
         cached ??
@@ -407,6 +533,7 @@ export class AgentTranscriptRenderer {
           now,
           document.cwd,
           document.toolRenderer,
+          expanded,
         );
       if (!cached && cacheable) {
         const widths = this.itemCache.get(item) ?? new Map<string, string[]>();
@@ -429,7 +556,7 @@ export class AgentTranscriptRenderer {
       const parts: AgentTranscriptPart[] = [];
       if (thinking.trim()) parts.push({ type: "thinking", text: thinking });
       if (text.trim()) parts.push({ type: "text", text });
-      out.push(...renderAssistantParts(parts, width, true));
+      out.push(...renderAssistantParts(parts, width, true, presentation));
     }
 
     // Live tool executions. The manager drops a live entry when its ToolEnd
@@ -453,6 +580,7 @@ export class AgentTranscriptRenderer {
           now,
           document.cwd,
           document.toolRenderer,
+          expanded,
         ),
       );
     }

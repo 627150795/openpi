@@ -16,33 +16,37 @@ import {
   type AgentSessionEventListener,
   createAgentSession,
   DefaultResourceLoader,
-  defineTool,
   type ExtensionAPI,
   type ExtensionContext,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
-import { AgentToolRenderLedger } from "../shared/agent-tool-renderer.ts";
+import { createAgentToolRenderLedger } from "../shared/agent-tool-renderer.ts";
 import {
   bindChildSessionExtensions,
   childToolPolicy,
   createChildResources,
   shutdownAndDisposeChildSession,
 } from "../shared/child-session.ts";
-import { createToolCallTimeoutGuard } from "../shared/tool-call-timeout.ts";
-import { type AgentUsage, emptyUsage, type TranscriptEntry } from "./model.ts";
 import {
-  buildWorkflowAgentPrompt,
+  childToolsWithStructuredOutput,
+  createStructuredOutputTool,
   STRUCTURED_OUTPUT_SYSTEM_INSTRUCTION,
-  STRUCTURED_OUTPUT_TOOL_DESCRIPTION,
-} from "./prompt.ts";
+} from "../shared/structured-output.ts";
+import { createToolCallTimeoutGuard } from "../shared/tool-call-timeout.ts";
+import {
+  ExecutionTimingLedger,
+  type ExecutionTimingSummary,
+  TIMING_ACTIVE_LIMIT,
+} from "./execution-timing.ts";
+import { type AgentUsage, emptyUsage, type TranscriptEntry } from "./model.ts";
 import {
   AgentProgressProjection,
   type ProgressAssistantMessage,
   transcriptFromMessages,
 } from "./progress-projection.ts";
+import { buildWorkflowAgentPrompt } from "./prompt.ts";
 import {
   createReplayFilesystemBoundary,
   type ReplayFilesystemBoundaryOptions,
@@ -51,7 +55,6 @@ import { truncateUtf8 } from "./serialization.ts";
 import { bindWorkflowToolRenderer } from "./tool-renderer.ts";
 
 const AGENT_OUTPUT_MAX_BYTES = 64 * 1024;
-export const MODEL_PROGRESS_TIMEOUT_MS = 45_000;
 
 export type WorkflowModel = NonNullable<ExtensionContext["model"]>;
 export type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
@@ -79,6 +82,9 @@ export interface AgentOutcome {
   model?: string;
   contextWindow?: number;
   transcript: TranscriptEntry[];
+  timing?: ReturnType<ExecutionTimingLedger["snapshot"]>;
+  /** Set when child shutdown did not provide trustworthy terminal evidence. */
+  retainAdmissionLease?: true;
 }
 
 export interface AgentProgress {
@@ -106,14 +112,17 @@ export interface RunAgentOptions {
   modelRegistry: ExtensionContext["modelRegistry"];
   /** Agent Type allowlist; childToolPolicy can only narrow capabilities. */
   tools?: readonly string[];
+  /**
+   * True when `tools` was projected from the parent's live surface. A name the
+   * child cannot expose then narrows the child instead of failing the run.
+   */
+  inheritedTools?: boolean;
   signal?: AbortSignal;
   onProgress?: (progress: AgentProgress) => void;
   /** Canonical repository boundary required before this call can be journaled. */
   replayFilesystemBoundary?: ReplayFilesystemBoundaryOptions;
   /** Test-only override for the per-tool execution timeout. */
   toolCallTimeoutMs?: number;
-  /** Test-only override for the per-provider-turn model-progress timeout. */
-  modelProgressTimeoutMs?: number;
   /** Test-only override for the end-to-end abort/shutdown deadline. */
   shutdownTimeoutMs?: number;
   /** Test seam for lifecycle races; production always uses createAgentSession. */
@@ -142,9 +151,7 @@ export function workflowChildTools(
   tools: readonly string[] | undefined,
   structured: boolean,
 ) {
-  return tools
-    ? [...new Set([...tools, ...(structured ? ["structured_output"] : [])])]
-    : undefined;
+  return childToolsWithStructuredOutput(tools, structured);
 }
 
 interface WorkflowToolSession {
@@ -161,11 +168,14 @@ export function guardWorkflowChildTools(
   session: WorkflowToolSession,
   timeoutMs?: number,
   replayFilesystemBoundary?: ReplayFilesystemBoundaryOptions,
+  timing?: ExecutionTimingLedger,
 ) {
   const boundary = replayFilesystemBoundary
     ? createReplayFilesystemBoundary(replayFilesystemBoundary)
     : undefined;
-  const timeout = createToolCallTimeoutGuard(timeoutMs);
+  const timeout = createToolCallTimeoutGuard(timeoutMs, (id, outcome) =>
+    timing?.toolBoundary(id, outcome),
+  );
   const apply = () => {
     // Keep the replay boundary outermost: if the timeout rejects before a
     // cooperative tool finishes aborting, path revalidation still completes
@@ -176,68 +186,6 @@ export function guardWorkflowChildTools(
   apply();
   return session.subscribe((event) => {
     if (event.type === "agent_start") apply();
-  });
-}
-
-function isJsonSchema(value: unknown): value is TSchema {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const seen = new WeakSet<object>();
-  let nodes = 0;
-  const validate = (current: unknown, depth: number): boolean => {
-    if (++nodes > 10_000 || depth > 24) return false;
-    if (
-      current === null ||
-      typeof current === "string" ||
-      typeof current === "boolean"
-    ) {
-      return true;
-    }
-    if (typeof current === "number") return Number.isFinite(current);
-    if (Array.isArray(current)) {
-      return current.every((item) => validate(item, depth + 1));
-    }
-    if (typeof current !== "object") return false;
-    if (seen.has(current)) return false;
-    seen.add(current);
-    return Object.keys(current).every((key) => {
-      if (key === "__proto__" || key === "constructor" || key === "prototype") {
-        return false;
-      }
-      return validate((current as Record<string, unknown>)[key], depth + 1);
-    });
-  };
-  return validate(value, 0);
-}
-
-/** Preserve the caller's full JSON Schema instead of lossy keyword conversion. */
-function jsonSchemaToTypebox(schema: unknown): TSchema {
-  if (!isJsonSchema(schema)) {
-    throw new Error("structured output schema must be a bounded JSON object");
-  }
-  return Type.Unsafe(schema);
-}
-
-/**
- * One-shot terminating tool injected when a schema is supplied: the subagent
- * calls it as its final action and we capture the validated object.
- */
-function makeStructuredOutputTool(
-  schema: unknown,
-  capture: (value: unknown) => void,
-): ToolDefinition {
-  return defineTool({
-    name: "structured_output",
-    label: "Structured Output",
-    description: STRUCTURED_OUTPUT_TOOL_DESCRIPTION,
-    parameters: jsonSchemaToTypebox(schema),
-    async execute(_toolCallId, params) {
-      capture(params);
-      return {
-        content: [{ type: "text", text: "Recorded structured result." }],
-        details: params,
-        terminate: true,
-      };
-    },
   });
 }
 
@@ -285,7 +233,12 @@ export function recordToolExecutionTiming(
   event: ToolTimingEvent,
   observedAt = Date.now(),
 ) {
+  if (Buffer.byteLength(event.toolCallId) > 256) return;
   const previous = timings.get(event.toolCallId);
+  if (!previous && timings.size >= TIMING_ACTIVE_LIMIT) {
+    const oldest = timings.keys().next().value;
+    if (oldest !== undefined) timings.delete(oldest);
+  }
   if (event.type === "tool_execution_start") {
     if (previous?.startedAt !== undefined) return;
     timings.set(event.toolCallId, { ...previous, startedAt: observedAt });
@@ -310,130 +263,18 @@ function errorText(error: unknown): string {
   );
 }
 
-function formatTimeout(timeoutMs: number) {
-  return timeoutMs % 1_000 === 0
-    ? `${timeoutMs / 1_000} seconds`
-    : `${timeoutMs} ms`;
-}
-
-export function resolveModelProgressTimeoutMs(
-  settingsManager: SettingsManager,
-  override?: number,
-) {
-  if (override !== undefined) return override;
-  const configured =
-    settingsManager.getProjectSettings().httpIdleTimeoutMs ??
-    settingsManager.getGlobalSettings().httpIdleTimeoutMs;
-  return typeof configured === "number" && Number.isFinite(configured)
-    ? Math.max(MODEL_PROGRESS_TIMEOUT_MS, Math.floor(configured))
-    : MODEL_PROGRESS_TIMEOUT_MS;
-}
-
-/** Abort any provider turn that stops producing model-visible progress. */
-export function createModelProgressWatchdog(
-  onTimeout: (error: Error) => Promise<unknown>,
-  options: { timeoutMs?: number; model?: string } = {},
-) {
-  const timeoutMs = options.timeoutMs ?? MODEL_PROGRESS_TIMEOUT_MS;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let activeTurn = false;
-  let closed = false;
-  let rejectTimeout!: (error: Error) => void;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    rejectTimeout = reject;
-  });
-
-  const clear = () => {
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-  };
-  const schedule = () => {
-    clear();
-    if (!activeTurn || closed) return;
-    // This timer owns the awaited watchdog outcome. Keep it referenced so a
-    // short-lived Node 22 process cannot exit with the promise still pending.
-    timer = setTimeout(() => {
-      timer = undefined;
-      activeTurn = false;
-      closed = true;
-      const model = options.model ? ` for ${options.model}` : "";
-      const error = new Error(
-        `Agent provider turn${model} produced no model-visible progress for ${formatTimeout(timeoutMs)}; the provider request may be stalled. Retry the workflow.`,
-      );
-      rejectTimeout(error);
-      try {
-        void onTimeout(error).catch(() => {});
-      } catch {
-        // The timeout result remains authoritative even if abort throws before
-        // returning its promise; bounded shutdown below gets another chance.
-      }
-    }, timeoutMs);
-  };
-  const armTurn = () => {
-    if (closed) return;
-    activeTurn = true;
-    schedule();
-  };
-  const markProgress = () => {
-    if (!activeTurn || closed) return;
-    schedule();
-  };
-  const completeTurn = () => {
-    activeTurn = false;
-    clear();
-  };
-  const cancel = () => {
-    closed = true;
-    activeTurn = false;
-    clear();
-  };
-
-  return {
-    armTurn,
-    markProgress,
-    completeTurn,
-    cancel,
-    async waitFor<T>(operation: Promise<T>) {
-      try {
-        return await Promise.race([operation, timeout]);
-      } finally {
-        cancel();
-      }
-    },
-  };
-}
-
-function isModelVisibleProgress(event: AgentSessionEvent) {
-  if (event.type !== "message_update" || event.message.role !== "assistant") {
-    return false;
-  }
-  // Raw transport heartbeats never become AgentSession events. Empty stream,
-  // text, and thinking starts likewise cannot keep a provider turn alive.
-  const update = event.assistantMessageEvent;
-  if (
-    update.type === "text_delta" ||
-    update.type === "thinking_delta" ||
-    update.type === "toolcall_delta"
-  ) {
-    return update.delta.length > 0;
-  }
-  if (update.type === "text_end" || update.type === "thinking_end") {
-    return update.content.length > 0;
-  }
-  return update.type === "toolcall_start" || update.type === "toolcall_end";
-}
-
 export async function runAgent(
   options: RunAgentOptions,
 ): Promise<AgentOutcome> {
+  const timing = new ExecutionTimingLedger();
+  const timingOutcome = (outcome: ExecutionTimingSummary["outcome"]) =>
+    timing.snapshot(outcome);
   let structured: unknown;
   let settled = false;
   let customTools: ToolDefinition[] | undefined;
   let session: AgentSession | undefined;
   let unsubscribeToolGuards: (() => void) | undefined;
   let aborted = false;
-  let terminalCause: "abort" | "model-progress-timeout" | undefined;
-  let modelProgressTimeoutMessage: string | undefined;
   let abortOperation: Promise<unknown> | undefined;
   let rejectForAbort: ((error: Error) => void) | undefined;
   let rejectForProjectionFailure: ((error: Error) => void) | undefined;
@@ -454,7 +295,6 @@ export async function runAgent(
   const onAbort = () => {
     if (aborted) return;
     aborted = true;
-    terminalCause ??= "abort";
     if (session) {
       try {
         abortOperation ??= session.abort();
@@ -475,7 +315,7 @@ export async function runAgent(
     customTools =
       options.schema !== undefined
         ? [
-            makeStructuredOutputTool(options.schema, (value) => {
+            createStructuredOutputTool(options.schema, (value) => {
               if (!settled) structured = value;
             }),
           ]
@@ -515,7 +355,9 @@ export async function runAgent(
     ({ session } = await Promise.race([sessionCreation, abortRace]));
     if (aborted) throw abortError();
     await Promise.race([
-      bindChildSessionExtensions(session, childTools),
+      bindChildSessionExtensions(session, childTools, {
+        tolerateInheritedMisses: options.inheritedTools === true,
+      }),
       abortRace,
     ]);
     if (aborted) throw abortError();
@@ -523,11 +365,13 @@ export async function runAgent(
       session,
       options.toolCallTimeoutMs,
       options.replayFilesystemBoundary,
+      timing,
     );
   } catch (error) {
     settled = true;
     unsubscribeToolGuards?.();
     options.signal?.removeEventListener("abort", onAbort);
+    timing.eventsEnded();
     const cleanup = session
       ? await shutdownAndDisposeChildSession(session, {
           abort: true,
@@ -536,6 +380,8 @@ export async function runAgent(
         })
       : undefined;
     const cleanupError = cleanup?.errors.join("; ");
+    const retainAdmissionLease =
+      cleanup !== undefined && (!cleanup.ok || cleanup.timedOut);
     if (aborted) {
       return {
         ok: false,
@@ -548,6 +394,8 @@ export async function runAgent(
         model: options.model?.id,
         contextWindow: options.model?.contextWindow,
         transcript: [],
+        timing: timingOutcome(retainAdmissionLease ? "uncertain" : "cancelled"),
+        ...(retainAdmissionLease ? { retainAdmissionLease: true } : {}),
       };
     }
     return {
@@ -559,11 +407,13 @@ export async function runAgent(
       model: options.model?.id,
       contextWindow: options.model?.contextWindow,
       transcript: [],
+      timing: timingOutcome(retainAdmissionLease ? "uncertain" : "failure"),
+      ...(retainAdmissionLease ? { retainAdmissionLease: true } : {}),
     };
   }
 
   const childSession = session;
-  const toolRenderer = new AgentToolRenderLedger();
+  const toolRenderer = createAgentToolRenderLedger(childSession);
   let usage = emptyUsage();
   let modelId = childSession.model?.id ?? options.model?.id;
   let contextWindow = childSession.model?.contextWindow;
@@ -659,10 +509,6 @@ export async function runAgent(
     });
   };
 
-  let armModelProgress = () => {};
-  let markModelProgress = () => {};
-  let completeModelTurn = () => {};
-  let cancelModelProgressWatchdog = () => {};
   let compactionReconcileQueued = false;
   const queueCompactionReconcile = () => {
     if (compactionReconcileQueued) return;
@@ -688,10 +534,11 @@ export async function runAgent(
       }
     });
   };
+  timing.eventsStarted();
   const unsubscribe = childSession.subscribe((event) => {
     if (settled) return;
-    if (event.type === "turn_start") armModelProgress();
     if (event.type === "tool_execution_start") {
+      timing.toolStart(event.toolCallId, event.toolName);
       toolRenderer.start(
         event.toolCallId,
         event.toolName,
@@ -706,6 +553,7 @@ export async function runAgent(
         event.partialResult,
       );
     } else if (event.type === "tool_execution_end") {
+      timing.toolEnd(event.toolCallId, event.toolName, event.isError);
       toolRenderer.end(
         event.toolCallId,
         event.toolName,
@@ -713,10 +561,8 @@ export async function runAgent(
         event.isError,
       );
     }
-    if (isModelVisibleProgress(event)) markModelProgress();
-    if (event.type === "message_end" && event.message.role === "assistant") {
-      completeModelTurn();
-    }
+    if (event.type === "auto_retry_start" || event.type === "auto_retry_end")
+      timing.retry(event.type);
     if (event.type === "message_end") {
       assistantSettlement = observeAssistantSettlement(
         assistantSettlement,
@@ -744,6 +590,7 @@ export async function runAgent(
   let output = "";
   let transcript: TranscriptEntry[] = [];
   let cleanupErrors: string[] = [];
+  let retainAdmissionLease = false;
   try {
     // Operator reuse may restore messages before this activation subscribes.
     // Hydrate both bounded projections once; ordinary progress never rescans it.
@@ -751,32 +598,20 @@ export async function runAgent(
     captureToolRenderData(childSession.messages);
     snapshotProjection();
     if (!aborted) {
-      const watchdog = createModelProgressWatchdog(
-        (error) => {
-          terminalCause ??= "model-progress-timeout";
-          if (terminalCause === "model-progress-timeout") {
-            modelProgressTimeoutMessage ??= error.message;
-          }
-          abortOperation ??= childSession.abort();
-          void abortOperation.catch(() => {});
-          return abortOperation;
-        },
-        {
-          timeoutMs: resolveModelProgressTimeoutMs(
-            options.settingsManager,
-            options.modelProgressTimeoutMs,
-          ),
-          model: modelId,
-        },
-      );
-      armModelProgress = watchdog.armTurn;
-      markModelProgress = watchdog.markProgress;
-      completeModelTurn = watchdog.completeTurn;
-      cancelModelProgressWatchdog = watchdog.cancel;
+      timing.promptStarted();
+      // Pi owns transport liveness and retries. Quiet model output is not
+      // evidence of a stalled request (thinking and retry backoff can be silent).
       await Promise.race([
-        watchdog.waitFor(
-          childSession.prompt(buildWorkflowAgentPrompt(options.prompt)),
-        ),
+        childSession.prompt(buildWorkflowAgentPrompt(options.prompt), {
+          preflightResult: (accepted) => {
+            if (accepted && aborted) {
+              // Pi invokes this immediately before entering the provider loop.
+              // Throwing here prevents a prompt whose preflight raced with
+              // cancellation from reviving after the abort race has settled.
+              throw abortError();
+            }
+          },
+        }),
         abortRace,
         projectionFailureRace,
       ]);
@@ -784,9 +619,9 @@ export async function runAgent(
   } catch (error) {
     promptErrorMessage ??= errorText(error);
   } finally {
-    cancelModelProgressWatchdog();
     options.signal?.removeEventListener("abort", onAbort);
     settled = true;
+    timing.eventsEnded();
     unsubscribe();
     unsubscribeToolGuards?.();
     try {
@@ -816,6 +651,7 @@ export async function runAgent(
       timeoutMs: options.shutdownTimeoutMs,
     });
     cleanupErrors = cleanup.errors;
+    retainAdmissionLease = !cleanup.ok || cleanup.timedOut;
   }
 
   const cleanupError =
@@ -823,11 +659,7 @@ export async function runAgent(
       ? `Cleanup failed: ${cleanupErrors.join("; ")}`
       : undefined;
 
-  if (
-    terminalCause === "abort" ||
-    (terminalCause === undefined &&
-      assistantSettlement?.stopReason === "aborted")
-  ) {
+  if (aborted || assistantSettlement?.stopReason === "aborted") {
     return {
       ok: false,
       output,
@@ -840,13 +672,13 @@ export async function runAgent(
       model: modelId,
       contextWindow,
       transcript,
+      timing: timingOutcome(retainAdmissionLease ? "uncertain" : "cancelled"),
+      ...(retainAdmissionLease ? { retainAdmissionLease: true } : {}),
     };
   }
 
   const failureMessage =
-    (terminalCause === "model-progress-timeout"
-      ? modelProgressTimeoutMessage
-      : agentFailureMessage(assistantSettlement, promptErrorMessage)) ??
+    agentFailureMessage(assistantSettlement, promptErrorMessage) ??
     cleanupError;
   if (failureMessage !== undefined) {
     return {
@@ -859,6 +691,8 @@ export async function runAgent(
       model: modelId,
       contextWindow,
       transcript,
+      timing: timingOutcome(retainAdmissionLease ? "uncertain" : "failure"),
+      ...(retainAdmissionLease ? { retainAdmissionLease: true } : {}),
     };
   }
 
@@ -873,6 +707,8 @@ export async function runAgent(
       model: modelId,
       contextWindow,
       transcript,
+      timing: timingOutcome(retainAdmissionLease ? "uncertain" : "failure"),
+      ...(retainAdmissionLease ? { retainAdmissionLease: true } : {}),
     };
   }
 
@@ -887,6 +723,8 @@ export async function runAgent(
       model: modelId,
       contextWindow,
       transcript,
+      timing: timingOutcome(retainAdmissionLease ? "uncertain" : "failure"),
+      ...(retainAdmissionLease ? { retainAdmissionLease: true } : {}),
     };
   }
 
@@ -899,5 +737,6 @@ export async function runAgent(
     model: modelId,
     contextWindow,
     transcript,
+    timing: timingOutcome("success"),
   };
 }

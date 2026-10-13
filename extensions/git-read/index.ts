@@ -13,15 +13,13 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
   ExtensionAPI,
-  ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Cause, Effect, Exit } from "effect";
-import { type Static, Type } from "typebox";
+import { Type } from "typebox";
 import { formatCapturedOutput } from "../file-search/src/output.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import {
@@ -157,6 +155,14 @@ function displayRevision(value: string | undefined, fallback = "HEAD") {
   return value === undefined || value.trim() === "" ? fallback : value.trim();
 }
 
+function renderCallLine(text: string) {
+  return new Text(
+    sanitizeTerminalText(text).replace(/\s+/gu, " ").trim(),
+    0,
+    0,
+  );
+}
+
 export default function gitReadTools(pi: ExtensionAPI) {
   const resultDirectories = new Set<string>();
   const rememberOutput = (outcome: GitOutcome) => {
@@ -204,10 +210,18 @@ export default function gitReadTools(pi: ExtensionAPI) {
     },
 
     renderCall(args) {
-      return new Text(`git show ${displayRevision(args.revision)}`, 0, 0);
+      return renderCallLine(`git show ${displayRevision(args.revision)}`);
     },
 
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, { expanded }, theme, context) {
+      if (context.isError) {
+        return new Text(
+          theme.fg("error", "git show failed") +
+            expandedResultPreview(result, undefined, theme),
+          0,
+          0,
+        );
+      }
       const details = result.details;
       let text = details?.command
         ? `showed ${details.lineCount ?? 0} lines`
@@ -249,10 +263,18 @@ export default function gitReadTools(pi: ExtensionAPI) {
       let text = `git diff ${from} → ${to}`;
       if (args.stat) text += " (stat)";
       if (args.path) text += ` ${args.path}`;
-      return new Text(text, 0, 0);
+      return renderCallLine(text);
     },
 
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, { expanded }, theme, context) {
+      if (context.isError) {
+        return new Text(
+          theme.fg("error", "git diff failed") +
+            expandedResultPreview(result, undefined, theme),
+          0,
+          0,
+        );
+      }
       const details = result.details;
       let text = details?.command
         ? `${details.lineCount ?? 0} diff lines`
@@ -289,10 +311,18 @@ export default function gitReadTools(pi: ExtensionAPI) {
       let text = `git log ${displayRevision(args.revision)}`;
       if (args.file) text += ` -- ${args.file}`;
       if (args.limit !== undefined) text += ` -n ${args.limit}`;
-      return new Text(text, 0, 0);
+      return renderCallLine(text);
     },
 
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, { expanded }, theme, context) {
+      if (context.isError) {
+        return new Text(
+          theme.fg("error", "git log failed") +
+            expandedResultPreview(result, undefined, theme),
+          0,
+          0,
+        );
+      }
       const details = result.details;
       let text = details?.command
         ? `${details.lineCount ?? 0} output lines`

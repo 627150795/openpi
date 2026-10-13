@@ -2,7 +2,12 @@ import type {
   KeybindingsManager,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
+import type {
+  Component,
+  Focusable,
+  TUI,
+  TuiMouseEvent,
+} from "@earendil-works/pi-tui";
 import {
   Key,
   matchesKey,
@@ -36,6 +41,11 @@ export interface AgentSessionPageSource {
   getState(): AgentSessionPageState | undefined;
   close(): void;
   abort?(): void;
+}
+
+export interface AgentSessionPageOptions {
+  /** Inherited from the parent UI when the child page opens. */
+  readonly toolsExpanded?: boolean;
 }
 
 function safeLine(value: string) {
@@ -76,6 +86,16 @@ export class AgentSessionPage implements Component, Focusable {
   private viewport = new TranscriptViewport();
   private rowCount = 0;
   private viewportSize = 1;
+  private toolsExpanded: boolean;
+  private availableRows?: (width: number) => number;
+  /**
+   * Whether the opening anchor has been decided. A page opens on a transcript
+   * that already exists, so the first render is the only moment that can tell
+   * "output produced before I looked" from "output arriving while I watch".
+   */
+  private anchored = false;
+  private mouseReporting = false;
+  private disposed = false;
 
   private _focused = false;
   get focused() {
@@ -83,6 +103,16 @@ export class AgentSessionPage implements Component, Focusable {
   }
   set focused(value: boolean) {
     this._focused = value;
+    // In regular mode the terminal otherwise scrolls its own history, exposing
+    // the parent above a partially visible child page. Fullscreen Pi already
+    // owns mouse reporting and dispatches normalized events to handleMouse.
+    const capture = value && !this.disposed && this.tui.mode === "regular";
+    if (capture !== this.mouseReporting) {
+      this.mouseReporting = capture;
+      this.tui.terminal.write(
+        capture ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1000l\x1b[?1006l",
+      );
+    }
   }
 
   constructor(
@@ -90,15 +120,33 @@ export class AgentSessionPage implements Component, Focusable {
     theme: Theme,
     keybindings: KeybindingsManager,
     source: AgentSessionPageSource,
+    options?: AgentSessionPageOptions,
+    /** Native editor mounts may reserve rows for the host footer and widgets. */
+    availableRows?: (width: number) => number,
   ) {
     this.tui = tui;
     this.theme = theme;
     this.keybindings = keybindings;
     this.source = source;
+    this.toolsExpanded = options?.toolsExpanded === true;
+    this.availableRows = availableRows;
   }
 
   handleInput(data: string) {
+    const mouse = /^\x1b\[<(\d+);\d+;\d+([Mm])$/.exec(data);
+    if (mouse) {
+      const button = Number(mouse[1]);
+      if (mouse[2] === "M" && (button & 64) !== 0 && (button & 3) < 2) {
+        this.scroll((button & 1) === 0 ? -SCROLL_STEP : SCROLL_STEP);
+      }
+      return;
+    }
     const state = this.source.getState();
+    if (this.keybindings.matches(data, "app.tools.expand")) {
+      this.toolsExpanded = !this.toolsExpanded;
+      this.tui.requestRender();
+      return;
+    }
     if (
       this.source.abort &&
       state?.status === "running" &&
@@ -171,6 +219,22 @@ export class AgentSessionPage implements Component, Focusable {
     }
   }
 
+  private scroll(delta: number) {
+    this.viewport.scrollBy(delta, this.rowCount, this.viewportSize);
+    this.tui.requestRender();
+  }
+
+  handleMouse(event: TuiMouseEvent) {
+    if (event.type !== "wheel") return;
+    this.scroll(event.wheelDelta ?? 0);
+    return { handled: true };
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.focused = false;
+  }
+
   private rule(width: number, left = "", right = "") {
     const available = Math.max(1, width);
     const leftWidth = visibleWidth(left);
@@ -188,7 +252,30 @@ export class AgentSessionPage implements Component, Focusable {
 
   render(width: number) {
     const state = this.source.getState();
-    const height = Math.max(1, this.tui.terminal.rows || 30);
+    const height = Math.max(
+      1,
+      this.availableRows?.(width) ?? (this.tui.terminal.rows || 30),
+    );
+    if (height < 4) {
+      // A native editor can temporarily leave only one row after its widgets.
+      // Keep the exit binding visible without changing the transcript anchor;
+      // normal rendering will resume when the host gives us enough space.
+      const summary = state
+        ? `${state.status} · ${safeLine(state.title) || safeLine(state.id)}`
+        : "child is no longer tracked";
+      return [
+        this.theme.fg(
+          "dim",
+          `${configuredKeys(this.keybindings, "app.interrupt")} back · ${summary}`,
+        ),
+        this.theme.fg("dim", "Resize terminal to read transcript"),
+        state?.errorText
+          ? this.theme.fg("error", safeLine(state.errorText))
+          : "",
+      ]
+        .slice(0, height)
+        .map((line) => truncateToWidth(line, Math.max(1, width)));
+    }
     if (!state) {
       const border = this.theme.fg(
         "borderAccent",
@@ -229,9 +316,23 @@ export class AgentSessionPage implements Component, Focusable {
     const transcriptCapacity = Math.max(1, bodyHeight - errorRows);
     const transcript = this.renderer.render(state.document, width, this.theme, {
       now,
+      expanded: this.toolsExpanded,
     });
     this.rowCount = transcript.length;
     this.viewportSize = transcriptCapacity;
+    // Running children open at their latest output and keep following. Settled,
+    // failed, and uncertain history opens at the beginning so the question and
+    // first answer remain readable. Decide once: settlement must not move a
+    // reader who is already following or has deliberately paused.
+    if (!this.anchored) {
+      this.anchored = true;
+      if (
+        state.status !== "running" &&
+        transcript.length > transcriptCapacity
+      ) {
+        this.viewport.scrollToTop(transcript.length, transcriptCapacity);
+      }
+    }
     this.viewport.reconcile(transcript.length, transcriptCapacity);
 
     const lines = [
@@ -265,16 +366,32 @@ export class AgentSessionPage implements Component, Focusable {
     while (body.length < bodyHeight) body.push("");
     lines.push(...body.slice(0, bodyHeight));
 
+    const linesAbove = this.viewport.linesAbove(
+      transcript.length,
+      transcriptCapacity,
+    );
+    const linesBelow = this.viewport.linesBelow(
+      transcript.length,
+      transcriptCapacity,
+    );
+    // Both directions are reported so hidden output is discoverable whether
+    // the reader is at the opening, following new output, or paused between.
+    const overflowNote = [
+      state.status === "running"
+        ? this.viewport.followingEnd
+          ? "following"
+          : "paused · End/G to follow"
+        : "",
+      linesAbove > 0 ? `↑ ${linesAbove}` : "",
+      linesBelow > 0 ? `↓ ${linesBelow}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
     lines.push(
       this.rule(
         width,
         this.theme.fg("borderAccent", "─"),
-        this.viewport.followingEnd
-          ? ""
-          : this.theme.fg(
-              "dim",
-              `↓ ${this.viewport.linesBelow(transcript.length, transcriptCapacity)}`,
-            ),
+        overflowNote ? this.theme.fg("dim", overflowNote) : "",
       ),
     );
     const keys = (binding: Parameters<KeybindingsManager["getKeys"]>[0]) =>
@@ -282,6 +399,10 @@ export class AgentSessionPage implements Component, Focusable {
     const hints: ScreenHint[] = [];
     hints.push([keys("app.interrupt"), "back"]);
     if (this.source.abort) hints.push([keys("app.clear"), "abort run"]);
+    hints.push([
+      keys("app.tools.expand"),
+      this.toolsExpanded ? "collapse tools" : "expand tools",
+    ]);
     hints.push(
       [
         `${keys("tui.editor.cursorUp")}/${keys("tui.editor.cursorDown")}`,

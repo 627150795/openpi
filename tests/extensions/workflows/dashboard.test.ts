@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import {
+import { createHash } from "node:crypto";
+import fs, {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,11 +20,13 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import { SPINNER_INTERVAL_MS } from "../../../extensions/shared/spinner.ts";
+import { WORKFLOW_COMMIT_FILE } from "../../../extensions/workflows/artifacts.ts";
+import { ExecutionTimingLedger } from "../../../extensions/workflows/execution-timing.ts";
 import type {
   Theme,
   WorkflowDetails,
 } from "../../../extensions/workflows/model.ts";
-import { SPINNER_INTERVAL_MS } from "../../../extensions/shared/spinner.ts";
 import { safeStringify } from "../../../extensions/workflows/serialization.ts";
 
 // runsDir() resolves against getAgentDir(), which reads this env var.
@@ -31,13 +37,79 @@ initTheme("dark", false);
 const {
   buildWorkflowReport,
   loadRunEntries,
+  loadRunEntryProjection,
   normalizePersistedWorkflowDetails,
+  readPersistedWorkflowDetails,
   recoverStaleWorkflowDetails,
   workflowGraphSummary,
   WorkflowDashboard,
 } = await import("../../../extensions/workflows/dashboard.ts");
 
 const SESSION = "session-1";
+
+test("persisted reads recover a fully prepared terminal artifact commit", () => {
+  const runId = "wf_commit_read";
+  const dir = join(agentDir, "workflows", runId);
+  mkdirSync(dir, { recursive: true });
+  const manifest = JSON.stringify({
+    runId,
+    sessionId: SESSION,
+    background: true,
+    status: "completed",
+    startedAt: 1,
+    finishedAt: 2,
+    phases: [],
+    agents: [],
+    result: "[stored in result.json]",
+    resultArtifact: "result.json",
+    transcriptArtifact: "transcripts.json",
+  });
+  const result = JSON.stringify({ verdict: "complete" });
+  const transcripts = JSON.stringify({});
+  const artifact = (name: string, content: string) => ({
+    name,
+    bytes: Buffer.byteLength(content),
+    sha256: createHash("sha256").update(content).digest("hex"),
+  });
+  writeFileSync(
+    join(dir, "workflow.json"),
+    JSON.stringify({
+      runId,
+      sessionId: SESSION,
+      background: true,
+      status: "completed",
+      startedAt: 1,
+      finishedAt: 2,
+      phases: [],
+      agents: [],
+    }),
+  );
+  writeFileSync(join(dir, "result.json"), result);
+  writeFileSync(join(dir, "transcripts.json"), transcripts);
+  writeFileSync(
+    join(dir, WORKFLOW_COMMIT_FILE),
+    JSON.stringify({
+      version: 1,
+      runId,
+      manifest,
+      predecessorSha256: createHash("sha256")
+        .update(readFileSync(join(dir, "workflow.json")))
+        .digest("hex"),
+      artifacts: [
+        artifact("transcripts.json", transcripts),
+        artifact("result.json", result),
+      ],
+    }),
+  );
+
+  const restored = readPersistedWorkflowDetails(runId, {
+    hydrateArtifacts: true,
+  });
+  assert.equal(restored?.status, "completed");
+  assert.equal(restored?.resultArtifact, "result.json");
+  assert.deepEqual(restored?.result, { verdict: "complete" });
+  assert.equal(existsSync(join(dir, WORKFLOW_COMMIT_FILE)), false);
+});
 
 function writeRun(
   runId: string,
@@ -59,6 +131,20 @@ function writeRun(
       phases: [],
     }),
   );
+}
+
+function retainedRun(runId: string, startedAt: number): WorkflowDetails {
+  return {
+    runId,
+    sessionId: SESSION,
+    name: runId,
+    background: false,
+    status: "completed",
+    startedAt,
+    finishedAt: startedAt + 1_000,
+    agents: [],
+    phases: [],
+  };
 }
 
 test("persisted nonterminal invocation facts are projected as uncertain", () => {
@@ -264,6 +350,69 @@ test("stale pre-V2 runs gain a stable delivery identity while terminal legacy ru
   assert.equal(terminal.delivery, undefined);
 });
 
+test("opening a live run does not recover or mutate canonical details", () => {
+  const runId = "wf_deadface";
+  const startedAt = Date.now();
+  const details: WorkflowDetails = {
+    runId,
+    sessionId: SESSION,
+    name: "live run",
+    background: true,
+    status: "running",
+    startedAt,
+    phases: [{ title: "work" }],
+    currentPhase: "work",
+    agents: [
+      {
+        index: 1,
+        label: "worker",
+        phase: "work",
+        state: "running",
+        startedAt,
+        preview: "working",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          turns: 1,
+        },
+        transcript: [],
+      },
+    ],
+  };
+  const active = new Map([[runId, details]]);
+  const dashboard = new WorkflowDashboard(
+    { terminal: { rows: 20 }, requestRender() {} } as unknown as TUI,
+    {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme,
+    {
+      matches: () => false,
+      getKeys: () => ["esc"],
+    } as unknown as KeybindingsManager,
+    () => active,
+    SESSION,
+    new Set(),
+    startedAt,
+    () => {},
+  );
+
+  try {
+    dashboard.handleInput("l");
+    assert.equal(details.status, "running");
+    assert.equal(details.finishedAt, undefined);
+    assert.equal(details.error, undefined);
+    assert.equal(details.delivery, undefined);
+    assert.equal(details.agents[0]?.state, "running");
+    assert.equal(details.agents[0]?.finishedAt, undefined);
+  } finally {
+    dashboard.dispose();
+  }
+});
+
 test("persisted usage is normalized to finite nonnegative numbers", () => {
   const details = normalizePersistedWorkflowDetails("wf_usage", {
     status: "completed",
@@ -352,8 +501,585 @@ test("the dashboard reports the current request, not the session's history", () 
   );
 });
 
+test("dashboard list projection leaves side artifacts unloaded", () => {
+  const runId = "wf_face";
+  const startedAt = Date.now();
+  const dir = join(agentDir, "workflows", runId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "workflow.json"),
+    JSON.stringify({
+      runId,
+      sessionId: SESSION,
+      status: "completed",
+      startedAt,
+      finishedAt: startedAt + 1_000,
+      phases: [],
+      agents: [
+        {
+          index: 0,
+          label: "worker",
+          state: "done",
+          startedAt: 8_100,
+          finishedAt: 8_900,
+          preview: "compact preview",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            turns: 1,
+          },
+        },
+      ],
+      result: "[stored in result.json]",
+      resultArtifact: "result.json",
+      transcriptArtifact: "transcripts.json",
+    }),
+  );
+  writeFileSync(
+    join(dir, "result.json"),
+    JSON.stringify({ full: "result payload" }),
+  );
+  writeFileSync(
+    join(dir, "transcripts.json"),
+    JSON.stringify({ 0: [{ role: "assistant", text: "full transcript" }] }),
+  );
+
+  try {
+    const entry = loadRunEntries(new Map(), SESSION, new Set()).find(
+      (candidate) => candidate.runId === runId,
+    );
+    assert.equal(entry?.details.result, "[stored in result.json]");
+    assert.deepEqual(entry?.details.agents[0]?.transcript, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard list budget measures large inline history that is actually retained", () => {
+  const runId = "wf_1a11ce";
+  const startedAt = Date.now() + 10_000;
+  const dir = join(agentDir, "workflows", runId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "workflow.json"),
+    JSON.stringify({
+      runId,
+      sessionId: SESSION,
+      status: "completed",
+      startedAt,
+      finishedAt: startedAt + 1_000,
+      phases: [],
+      agents: [],
+      result: "x".repeat(8 * 1024 * 1024),
+    }),
+  );
+  try {
+    const projection = loadRunEntryProjection(
+      new Map(),
+      SESSION,
+      new Set(),
+      startedAt,
+    );
+    assert.deepEqual(projection.entries, []);
+    assert.equal(projection.omittedRuns, 1);
+    assert.ok(projection.omittedBytes > 2 * 1024 * 1024);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("hydrating a report does not inflate the compact list projection", () => {
+  const runId = "wf_1a11d0";
+  const startedAt = Date.now() + 15_000;
+  const dir = join(agentDir, "workflows", runId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "workflow.json"),
+    JSON.stringify({
+      runId,
+      sessionId: SESSION,
+      status: "completed",
+      startedAt,
+      finishedAt: startedAt + 1_000,
+      phases: [{ title: "work" }],
+      agents: [],
+      result: "[stored in result.json]",
+      resultArtifact: "result.json",
+    }),
+  );
+  const fullResult = {
+    values: Array.from({ length: 40 }, () => "x".repeat(60_000)),
+  };
+  writeFileSync(join(dir, "result.json"), JSON.stringify(fullResult));
+
+  const dashboard = new WorkflowDashboard(
+    { terminal: { rows: 20 }, requestRender() {} } as unknown as TUI,
+    {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme,
+    {
+      matches: () => false,
+      getKeys: () => ["esc"],
+    } as unknown as KeybindingsManager,
+    () => new Map(),
+    SESSION,
+    new Set(),
+    startedAt,
+    () => {},
+  );
+  try {
+    dashboard.handleInput("l");
+    dashboard.handleInput("s");
+    const state = dashboard as unknown as {
+      entries: Array<{ details: WorkflowDetails }>;
+      current?: { details: WorkflowDetails };
+    };
+    assert.equal(state.entries[0]?.details.result, "[stored in result.json]");
+    assert.deepEqual(state.current?.details.result, fullResult);
+  } finally {
+    dashboard.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard projection bounds unpinned history and keeps an explicit run", () => {
+  const oldest = "wf_a001";
+  const middle = "wf_b002";
+  const newest = "wf_c003";
+  const startedAt = Date.now() + 20_000;
+  writeRun(oldest, startedAt);
+  writeRun(middle, startedAt + 1_000);
+  writeRun(newest, startedAt + 2_000);
+
+  try {
+    const projection = loadRunEntryProjection(
+      new Map(),
+      SESSION,
+      new Set(),
+      startedAt,
+      new Map(),
+      { initialRunId: oldest, maxRuns: 1, maxBytes: 1024 * 1024 },
+    );
+
+    assert.deepEqual(
+      projection.entries.map((entry) => entry.runId),
+      [newest, oldest],
+    );
+    assert.equal(projection.omittedRuns, 1);
+    assert.ok(projection.omittedBytes > 0);
+  } finally {
+    for (const runId of [oldest, middle, newest])
+      rmSync(join(agentDir, "workflows", runId), {
+        recursive: true,
+        force: true,
+      });
+  }
+});
+
+test("dashboard target resolution includes omitted runs when a suffix is ambiguous", () => {
+  const startedAt = Date.now() + 40_000;
+  const runIds = ["wf_0000beef", "wf_ffffbeef"];
+  for (let index = 0; index < 31; index++) {
+    runIds.push(`wf_${(index + 1).toString(16).padStart(4, "0")}cafe`);
+  }
+  for (const [index, runId] of runIds.entries())
+    writeRun(runId, startedAt + index);
+
+  const dashboard = new WorkflowDashboard(
+    { terminal: { rows: 20 }, requestRender() {} } as unknown as TUI,
+    {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme,
+    {
+      matches: () => false,
+      getKeys: () => ["esc"],
+    } as unknown as KeybindingsManager,
+    () => new Map(),
+    SESSION,
+    new Set(),
+    startedAt,
+    () => {},
+    "beef",
+  );
+  try {
+    const rendered = dashboard.render(120).join("\n");
+    assert.match(rendered, /ambiguous/i);
+    assert.doesNotMatch(rendered, /Phases/);
+  } finally {
+    dashboard.dispose();
+    for (const runId of runIds)
+      rmSync(join(agentDir, "workflows", runId), {
+        recursive: true,
+        force: true,
+      });
+  }
+});
+
+test("referenced history still obeys the dashboard projection bound", () => {
+  const startedAt = Date.now() + 50_000;
+  const runIds = ["wf_f00a", "wf_f00b", "wf_f00c"];
+  for (const [index, runId] of runIds.entries())
+    writeRun(runId, startedAt + index);
+
+  try {
+    const projection = loadRunEntryProjection(
+      new Map(),
+      SESSION,
+      new Set(runIds),
+      startedAt,
+      new Map(),
+      { maxRuns: 1, maxBytes: 1024 * 1024 },
+    );
+    assert.equal(projection.entries.length, 1);
+    assert.equal(projection.omittedRuns, 2);
+  } finally {
+    for (const runId of runIds)
+      rmSync(join(agentDir, "workflows", runId), {
+        recursive: true,
+        force: true,
+      });
+  }
+});
+
+test("dashboard pinning retains only the exact canonical id across case collisions", () => {
+  const runId = "wf_ABCD";
+  const startedAt = Date.now() + 60_000;
+  // A retained projection can contain both identities on every platform;
+  // case-insensitive filesystems cannot store them as separate directories.
+  const retained = new Map([
+    [runId, retainedRun(runId, startedAt)],
+    ["wf_abcd", retainedRun("wf_abcd", startedAt)],
+  ]);
+  const projection = loadRunEntryProjection(
+    new Map(),
+    SESSION,
+    new Set(),
+    startedAt,
+    retained,
+    { initialRunId: runId, maxRuns: 0, maxBytes: 0 },
+  );
+  assert.deepEqual(
+    projection.entries.map((entry) => entry.runId),
+    [runId],
+  );
+  assert.equal(projection.omittedRuns, 1);
+});
+
+test("dashboard hydrates a persisted run only when its detail view opens", () => {
+  const runId = "wf_dada";
+  const startedAt = Date.now() + 20_000;
+  const dir = join(agentDir, "workflows", runId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "workflow.json"),
+    JSON.stringify({
+      runId,
+      sessionId: SESSION,
+      name: "lazy details",
+      status: "completed",
+      startedAt,
+      finishedAt: startedAt + 1_000,
+      phases: [{ title: "work" }],
+      agents: [
+        {
+          index: 0,
+          label: "worker",
+          phase: "work",
+          state: "done",
+          startedAt: startedAt + 100,
+          finishedAt: startedAt + 900,
+          preview: "compact preview",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            turns: 1,
+          },
+        },
+      ],
+      result: "[stored in result.json]",
+      resultArtifact: "result.json",
+      transcriptArtifact: "transcripts.json",
+    }),
+  );
+  writeFileSync(
+    join(dir, "result.json"),
+    JSON.stringify({ full: "result payload" }),
+  );
+  writeFileSync(
+    join(dir, "transcripts.json"),
+    JSON.stringify({ 0: [{ role: "assistant", text: "full transcript" }] }),
+  );
+
+  const dashboard = new WorkflowDashboard(
+    { terminal: { rows: 60 }, requestRender() {} } as unknown as TUI,
+    {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme,
+    {
+      matches: () => false,
+      getKeys: () => ["esc"],
+    } as unknown as KeybindingsManager,
+    () => new Map(),
+    SESSION,
+    new Set(),
+    startedAt,
+    () => {},
+  );
+  try {
+    const list = dashboard.render(120).join("\n");
+    assert.match(list, /lazy details/);
+    assert.doesNotMatch(list, /result payload|full transcript/);
+
+    dashboard.handleInput("l");
+    dashboard.handleInput("l");
+    dashboard.handleInput("l");
+    const transcript = dashboard.render(120).join("\n");
+    assert.match(transcript, /full transcript/);
+  } finally {
+    dashboard.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard exposes omitted history in its list projection", () => {
+  const startedAt = Date.now() + 30_000;
+  const runIds: string[] = [];
+  for (let index = 0; index < 33; index++) {
+    const runId = `wf_${(index + 1).toString(16).padStart(4, "0")}`;
+    runIds.push(runId);
+    writeRun(runId, startedAt + index);
+  }
+
+  const dashboard = new WorkflowDashboard(
+    { terminal: { rows: 20 }, requestRender() {} } as unknown as TUI,
+    {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme,
+    {
+      matches: () => false,
+      getKeys: () => ["esc"],
+    } as unknown as KeybindingsManager,
+    () => new Map(),
+    SESSION,
+    new Set(),
+    startedAt,
+    () => {},
+  );
+  try {
+    const rendered = dashboard.render(120).join("\n");
+    assert.match(rendered, /1 omitted/);
+    assert.match(rendered, /full artifacts remain on disk/);
+
+    const direct = new WorkflowDashboard(
+      { terminal: { rows: 20 }, requestRender() {} } as unknown as TUI,
+      {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+      } as unknown as Theme,
+      {
+        matches: () => false,
+        getKeys: () => ["esc"],
+      } as unknown as KeybindingsManager,
+      () => new Map(),
+      SESSION,
+      new Set(),
+      startedAt,
+      () => {},
+      runIds[0],
+    );
+    try {
+      assert.match(direct.render(120).join("\n"), new RegExp(runIds[0]));
+    } finally {
+      direct.dispose();
+    }
+  } finally {
+    dashboard.dispose();
+    for (const runId of runIds)
+      rmSync(join(agentDir, "workflows", runId), {
+        recursive: true,
+        force: true,
+      });
+  }
+});
+
+test("the open live detail stays pinned and hydrates after it settles", async () => {
+  const currentRunId = "wf_deadbeef";
+  const startedAt = Date.now() + 70_000;
+  const historyRunIds = Array.from(
+    { length: 32 },
+    (_, index) => `wf_${(index + 1).toString(16).padStart(8, "0")}`,
+  );
+  for (const [index, runId] of historyRunIds.entries())
+    writeRun(runId, startedAt + index + 1);
+
+  const liveDetails: WorkflowDetails = {
+    runId: currentRunId,
+    sessionId: SESSION,
+    name: "live current",
+    background: true,
+    status: "running",
+    startedAt,
+    phases: [{ title: "work" }],
+    currentPhase: "work",
+    agents: [
+      {
+        index: 1,
+        label: "worker",
+        phase: "work",
+        state: "running",
+        startedAt,
+        preview: "live preview",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          turns: 1,
+        },
+        transcript: [{ role: "assistant", text: "live transcript" }],
+      },
+    ],
+  };
+  const active = new Map([[currentRunId, liveDetails]]);
+  const dashboard = new WorkflowDashboard(
+    { terminal: { rows: 30 }, requestRender() {} } as unknown as TUI,
+    {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme,
+    {
+      matches: () => false,
+      getKeys: () => ["esc"],
+    } as unknown as KeybindingsManager,
+    () => active,
+    SESSION,
+    new Set(),
+    startedAt,
+    () => {},
+  );
+  const currentDir = join(agentDir, "workflows", currentRunId);
+
+  try {
+    dashboard.handleInput("G");
+    dashboard.handleInput("l");
+
+    active.delete(currentRunId);
+    mkdirSync(currentDir, { recursive: true });
+    writeFileSync(
+      join(currentDir, "workflow.json"),
+      JSON.stringify({
+        runId: currentRunId,
+        sessionId: SESSION,
+        name: "live current",
+        status: "completed",
+        startedAt,
+        finishedAt: startedAt + 1_000,
+        phases: [{ title: "work" }],
+        agents: [
+          {
+            index: 1,
+            label: "worker",
+            phase: "work",
+            state: "done",
+            startedAt,
+            finishedAt: startedAt + 900,
+            preview: "settled preview",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              turns: 1,
+            },
+          },
+        ],
+        transcriptArtifact: "transcripts.json",
+      }),
+    );
+    writeFileSync(
+      join(currentDir, "transcripts.json"),
+      JSON.stringify({
+        1: [{ role: "assistant", text: "hydrated transcript" }],
+      }),
+    );
+
+    // The live dashboard refresh timer observes the settlement. The current
+    // run is older than the 32 newer history entries and would otherwise be
+    // omitted from the bounded projection.
+    await new Promise((resolve) =>
+      setTimeout(resolve, SPINNER_INTERVAL_MS * 2 + 20),
+    );
+    dashboard.handleInput("l");
+    dashboard.handleInput("l");
+    const transcript = dashboard.render(120).join("\n");
+    assert.match(transcript, /hydrated transcript/);
+  } finally {
+    dashboard.dispose();
+    rmSync(currentDir, { recursive: true, force: true });
+    for (const runId of historyRunIds)
+      rmSync(join(agentDir, "workflows", runId), {
+        recursive: true,
+        force: true,
+      });
+  }
+});
+
+test("retained projections keep a settled run visible when disk state is unreadable", () => {
+  const runId = "wf_fa11bac";
+  const details = retainedRun(runId, 6_000);
+  writeRun(runId, details.startedAt, details.finishedAt);
+  writeFileSync(join(agentDir, "workflows", runId, "workflow.json"), "{");
+
+  const entry = loadRunEntries(
+    new Map(),
+    SESSION,
+    new Set(),
+    0,
+    new Map([[runId, details]]),
+  ).find((candidate) => candidate.runId === runId);
+
+  assert.ok(entry);
+  assert.equal(entry.live, false);
+  assert.equal(entry.details, details);
+});
+
+test("retained projections without session metadata keep current-session runs visible", () => {
+  const runId = "wf_retained_minimal";
+  const details = retainedRun(runId, 7_000);
+  delete details.sessionId;
+  writeRun(runId, details.startedAt, details.finishedAt);
+  writeFileSync(join(agentDir, "workflows", runId, "workflow.json"), "{");
+
+  const entry = loadRunEntries(
+    new Map(),
+    SESSION,
+    new Set(),
+    0,
+    new Map([[runId, details]]),
+  ).find((candidate) => candidate.runId === runId);
+
+  assert.ok(entry);
+  assert.equal(entry.live, false);
+  assert.equal(entry.details, details);
+});
 test("restored run directories require a generated safe id", () => {
-  writeRun("wf_\u001b]52;c;clipboard\u0007", 9_000);
+  const unsafeRunId =
+    process.platform === "win32"
+      ? "wf_not-generated-clipboard"
+      : "wf_\u001b]52;c;clipboard\u0007";
+  writeRun(unsafeRunId, 9_000);
   const runIds = loadRunEntries(new Map(), SESSION, new Set()).map(
     (entry) => entry.runId,
   );
@@ -527,7 +1253,101 @@ test("direct workflow navigation drills right and returns left through every lev
   }
 });
 
+test("detail view surfaces transcriptsOmitted and the transcript view stops lying about it", () => {
+  // A dropped agent hydrates as an empty transcript. Without a run-level notice
+  // the detail page shows no evidence, and the transcript view's default
+  // "predates transcript capture" text is actively wrong (issue #558).
+  const details: WorkflowDetails = {
+    runId: "wf_0b17ed0123",
+    sessionId: SESSION,
+    name: "byte-budget",
+    description: "Exercise the omission notice",
+    background: true,
+    status: "completed",
+    startedAt: Date.now() - 2_000,
+    finishedAt: Date.now() - 1_000,
+    phases: [{ title: "Review" }],
+    agents: [
+      {
+        index: 12,
+        label: "review:tail",
+        phase: "Review",
+        state: "done",
+        startedAt: Date.now() - 1_900,
+        finishedAt: Date.now() - 1_100,
+        preview: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          turns: 1,
+        },
+        transcript: [],
+      },
+    ],
+    transcriptArtifact: "transcripts.json",
+    transcriptsOmitted: { agents: 3, entries: 606 },
+  };
+  const tui = {
+    terminal: { rows: 30 },
+    requestRender() {},
+  } as unknown as TUI;
+  const theme = {
+    fg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  } as unknown as Theme;
+  const keys = {
+    matches(data: string, binding: string) {
+      return data === binding.replace("tui.editor.cursor", "").toLowerCase();
+    },
+    getKeys(binding: string) {
+      const key = binding.split(".").at(-1) ?? binding;
+      return [key.toLowerCase()];
+    },
+  } as unknown as KeybindingsManager;
+  const dashboard = new WorkflowDashboard(
+    tui,
+    theme,
+    keys,
+    () => new Map([[details.runId, details]]),
+    SESSION,
+    new Set(),
+    0,
+    () => {},
+    details.runId,
+  );
+
+  try {
+    const detail = dashboard.render(120);
+    // The run-level notice is on the live detail page, not only in report.md.
+    assert.match(
+      detail.join("\n"),
+      /3 agent transcript\(s\) \(606 entries\) omitted from transcripts\.json/,
+    );
+    assert.doesNotMatch(detail.join("\n"), /full data on disk/);
+    // Reserving the notice row must not break the exact-height layout.
+    assert.equal(detail.length, 29);
+
+    dashboard.handleInput("right");
+    dashboard.handleInput("right");
+    const transcript = stripVTControlCharacters(
+      dashboard.render(120).join("\n"),
+    );
+    assert.match(
+      transcript,
+      /this run omitted 3 agent transcript\(s\).*stay within its byte budget/,
+    );
+    assert.doesNotMatch(transcript, /full data on disk/);
+    assert.doesNotMatch(transcript, /predates transcript capture/);
+  } finally {
+    dashboard.dispose();
+  }
+});
+
 test("Workflow transcript follows, pauses on its top row, and resumes", () => {
+  const mouseModes: string[] = [];
   const transcript = Array.from({ length: 40 }, (_, index) => ({
     role: "assistant" as const,
     text: `line ${index}`,
@@ -564,7 +1384,8 @@ test("Workflow transcript follows, pauses on its top row, and resumes", () => {
   writeRun(details.runId, details.startedAt);
   const dashboard = new WorkflowDashboard(
     {
-      terminal: { rows: 20 },
+      mode: "regular",
+      terminal: { rows: 20, write: (data: string) => mouseModes.push(data) },
       requestRender() {},
     } as unknown as TUI,
     {
@@ -587,13 +1408,33 @@ test("Workflow transcript follows, pauses on its top row, and resumes", () => {
   );
 
   try {
+    dashboard.focused = true;
     dashboard.handleInput("right");
     dashboard.handleInput("right");
+    // A running transcript opens at the latest output and follows by default.
+    assert.equal(mouseModes.at(-1), "\x1b[?1000h\x1b[?1006h");
+    const opened = dashboard.render(80).join("\n");
+    assert.match(opened, /line 39/);
+    assert.doesNotMatch(opened, /line 0\b/);
+
+    dashboard.handleInput("G");
     const pinned = dashboard.render(80).join("\n");
     assert.match(pinned, /line 39/);
-    assert.doesNotMatch(pinned, /line 0\b/);
 
-    dashboard.handleInput("k");
+    dashboard.handleMouse({
+      type: "wheel",
+      button: "none",
+      x: 10,
+      y: 10,
+      screenX: 10,
+      screenY: 10,
+      width: 80,
+      height: 20,
+      shift: false,
+      alt: false,
+      ctrl: false,
+      wheelDelta: -6,
+    });
     const paused = dashboard.render(80);
     const anchor = paused.find((line) => /line \d+/.test(line));
     assert.ok(anchor);
@@ -614,6 +1455,8 @@ test("Workflow transcript follows, pauses on its top row, and resumes", () => {
     const resumed = dashboard.render(80).join("\n");
     assert.match(resumed, /line 44/);
     assert.doesNotMatch(resumed, /↓ \d+/);
+    dashboard.handleInput("h");
+    assert.equal(mouseModes.at(-1), "\x1b[?1000l\x1b[?1006l");
   } finally {
     dashboard.dispose();
   }
@@ -782,7 +1625,9 @@ function saveReport(runId: string) {
 
 test("a newly created dashboard report is private", () => {
   const report = saveReport("wf_600001");
-  assert.equal(statSync(report).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(report).mode & 0o777, 0o600);
+  }
 });
 
 test("overwriting a dashboard report restores private mode atomically", () => {
@@ -793,7 +1638,9 @@ test("overwriting a dashboard report restores private mode atomically", () => {
   chmodSync(report, 0o644);
 
   assert.equal(saveReport(runId), report);
-  assert.equal(statSync(report).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(report).mode & 0o777, 0o600);
+  }
   assert.notEqual(readFileSync(report, "utf8"), "old report");
 });
 
@@ -852,7 +1699,7 @@ test("narrator lines survive the disk round trip and are re-sanitized", () => {
       phases: [],
       agents: [],
       logs: [
-        { at: 1, text: "round 1: 3 found" },
+        { at: 1, text: "round 1: 3 found", kind: "pipeline-drop" },
         { at: 2, text: "round 2:\u001b[31m red\u001b[0m\nsecond row" },
         { at: 3 },
         "not an entry",
@@ -865,8 +1712,287 @@ test("narrator lines survive the disk round trip and are re-sanitized", () => {
   )?.details;
   assert.equal(details?.logs?.length, 2);
   assert.equal(details?.logs?.[0]?.text, "round 1: 3 found");
+  assert.equal(details?.logs?.[0]?.kind, "pipeline-drop");
   assert.ok(
     !/[\u0000-\u001f\u007f-\u009f]/.test(details?.logs?.[1]?.text ?? ""),
   );
   assert.equal(details?.logsDropped, 4);
+});
+
+function performanceDashboard(
+  active: Map<string, WorkflowDetails>,
+  initialRunId?: string,
+  retained: Map<string, WorkflowDetails> = new Map(),
+  startedSince = 0,
+) {
+  return new WorkflowDashboard(
+    { terminal: { rows: 30 }, requestRender() {} } as unknown as TUI,
+    {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme,
+    {
+      matches: () => false,
+      getKeys: () => ["esc"],
+    } as unknown as KeybindingsManager,
+    () => active,
+    SESSION,
+    new Set(),
+    startedSince,
+    () => {},
+    initialRunId,
+    undefined,
+    () => retained,
+  );
+}
+
+test("animation and navigation reuse history while live progress and settlement remain visible", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const runId = "wf_ab120";
+  const details = {
+    ...retainedRun(runId, Date.now()),
+    status: "running" as const,
+  };
+  delete details.finishedAt;
+  writeRun(runId, details.startedAt);
+  const active = new Map<string, WorkflowDetails>([[runId, details]]);
+  const dashboard = performanceDashboard(active);
+  const read = t.mock.method(fs, "readFileSync");
+  const scan = t.mock.method(fs, "readdirSync");
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  try {
+    details.name = "updated-live-name";
+    for (let i = 0; i < 10; i++) {
+      t.mock.timers.tick(SPINNER_INTERVAL_MS);
+      dashboard.render(100);
+    }
+    assert.match(dashboard.render(100).join("\n"), /updated-live-name/);
+    dashboard.handleInput("l");
+    dashboard.handleInput("h");
+    assert.equal(
+      read.mock.callCount(),
+      0,
+      "animation/navigation must not reread history",
+    );
+    assert.equal(
+      scan.mock.callCount(),
+      0,
+      "animation/navigation must not rescan history",
+    );
+
+    // Completion is still read from canonical disk once the live owner leaves.
+    writeFileSync(
+      join(agentDir, "workflows", runId, "workflow.json"),
+      JSON.stringify({
+        ...details,
+        name: "canonical-settled-name",
+        status: "completed",
+        finishedAt: Date.now(),
+      }),
+    );
+    active.delete(runId);
+    t.mock.timers.tick(SPINNER_INTERVAL_MS);
+    assert.match(dashboard.render(100).join("\n"), /canonical-settled-name/);
+    const readsAfterSettlement = read.mock.callCount();
+    assert.equal(readsAfterSettlement, 1);
+    t.mock.timers.tick(SPINNER_INTERVAL_MS * 10);
+    assert.equal(read.mock.callCount(), readsAfterSettlement);
+  } finally {
+    dashboard.dispose();
+  }
+});
+
+test("history overview defers artifacts until a persisted transcript is opened", (t) => {
+  const runId = "wf_ab121";
+  const details = retainedRun(runId, Date.now());
+  const dir = join(agentDir, "workflows", runId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "workflow.json"),
+    JSON.stringify({
+      ...details,
+      transcriptArtifact: "transcripts.json",
+      resultArtifact: "result.json",
+      phases: [{ title: "Work" }],
+      agents: [
+        {
+          index: 1,
+          label: "worker",
+          phase: "Work",
+          state: "done",
+          startedAt: details.startedAt,
+        },
+      ],
+    }),
+  );
+  writeFileSync(
+    join(dir, "transcripts.json"),
+    JSON.stringify({
+      "1": [{ role: "assistant", text: "lazy transcript evidence" }],
+    }),
+  );
+  writeFileSync(
+    join(dir, "result.json"),
+    JSON.stringify("lazy result evidence"),
+  );
+  const read = t.mock.method(fs, "readFileSync");
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const artifactReads = () =>
+    read.mock.calls.filter((call) =>
+      /(?:transcripts|result)\.json$/.test(String(call.arguments[0])),
+    ).length;
+  const dashboard = performanceDashboard(new Map(), runId);
+  try {
+    assert.equal(
+      artifactReads(),
+      0,
+      "overview must not hydrate side artifacts",
+    );
+    dashboard.handleInput("l");
+    assert.equal(
+      artifactReads(),
+      0,
+      "agent list must not hydrate side artifacts",
+    );
+    dashboard.handleInput("l");
+    assert.match(dashboard.render(100).join("\n"), /lazy transcript evidence/);
+    const loaded = artifactReads();
+    assert.ok(loaded > 0);
+    dashboard.render(100);
+    dashboard.render(100);
+    assert.equal(
+      artifactReads(),
+      loaded,
+      "render must reuse the loaded transcript",
+    );
+  } finally {
+    dashboard.dispose();
+  }
+});
+
+test("retained history excluded by request time is not retried on animation ticks", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const oldId = "wf_ab122";
+  const liveId = "wf_ab123";
+  const old = retainedRun(oldId, 1);
+  writeRun(oldId, 1);
+  const live = { ...retainedRun(liveId, 10_000), status: "running" as const };
+  const retained = new Map([[oldId, old]]);
+  const dashboard = performanceDashboard(
+    new Map([[liveId, live]]),
+    undefined,
+    retained,
+    5_000,
+  );
+  const read = t.mock.method(fs, "readFileSync");
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  try {
+    t.mock.timers.tick(SPINNER_INTERVAL_MS * 10);
+    assert.equal(read.mock.callCount(), 0);
+    // A run may finish entirely between frames; retention must surface it.
+    const finished = retainedRun("wf_ab124", 11_000);
+    retained.set(finished.runId, finished);
+    t.mock.timers.tick(SPINNER_INTERVAL_MS);
+    assert.match(dashboard.render(100).join("\n"), /wf_ab124/);
+    assert.equal(read.mock.callCount(), 1);
+    t.mock.timers.tick(SPINNER_INTERVAL_MS * 10);
+    assert.equal(read.mock.callCount(), 1);
+  } finally {
+    dashboard.dispose();
+  }
+});
+
+test("persisted timing survives reload and report inspection without making replay fresh execution", () => {
+  const ledger = new ExecutionTimingLedger(1, () => 0);
+  ledger.toolStart("id", "read");
+  ledger.toolEnd("id", "read", false);
+  ledger.eventsEnded();
+  const timing = ledger.snapshot("success").summary;
+  const raw = {
+    runId: "wf_timing",
+    background: false,
+    status: "completed",
+    startedAt: 1,
+    phases: [],
+    agents: [
+      {
+        index: 1,
+        label: "fixture",
+        state: "done",
+        startedAt: 1,
+        usage: {},
+        transcript: [],
+        timing,
+        timingArtifact: "agent-timing/agent-0001.json",
+        timingArtifactState: "saved",
+      },
+    ],
+  };
+  const restored = normalizePersistedWorkflowDetails("wf_timing", raw)!;
+  assert.deepEqual(restored.agents[0]?.timing, timing);
+  assert.match(buildWorkflowReport(restored), /0ms tool wall/);
+  assert.match(buildWorkflowReport(restored), /agent-timing\/agent-0001.json/);
+  raw.agents[0]!.timingArtifact = "../../private.json";
+  assert.equal(
+    normalizePersistedWorkflowDetails("wf_timing", raw)?.agents[0]
+      ?.timingArtifact,
+    undefined,
+  );
+  const replay = normalizePersistedWorkflowDetails("wf_timing", {
+    ...raw,
+    agents: [{ ...raw.agents[0], executionOutcome: "replayed" }],
+  });
+  assert.equal(replay?.agents[0]?.timing, undefined);
+});
+
+test("malformed timing enums in persisted JSON cannot break workflow reload", () => {
+  const timing = new ExecutionTimingLedger(1, () => 0).snapshot(
+    "failure",
+  ).summary;
+  for (const malformed of [
+    { outcome: ["success"] },
+    { coverage: ["unobserved"] },
+    { outcome: { toString: null } },
+    { coverage: { toString: null } },
+  ]) {
+    const raw: unknown = JSON.parse(
+      JSON.stringify({
+        background: false,
+        status: "completed",
+        startedAt: 1,
+        phases: [],
+        agents: [
+          {
+            index: 1,
+            label: "fixture",
+            state: "done",
+            startedAt: 1,
+            usage: {},
+            transcript: [],
+            timing: { ...timing, ...malformed },
+          },
+        ],
+      }),
+    );
+    assert.doesNotThrow(() => {
+      const restored = normalizePersistedWorkflowDetails(
+        "wf_malformed_timing",
+        raw,
+      );
+      assert.equal(restored?.agents.length, 1);
+      assert.equal(restored?.agents[0]?.timing, undefined);
+    });
+  }
 });

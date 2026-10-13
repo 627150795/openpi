@@ -16,7 +16,8 @@
  * settle. `/subagents` opens a picker + full interactive takeover view.
  *
  * Agent types (`src/agent-types.ts`) are optional named presets that fix a
- * child's system prompt, model, and tool allowlist; see `docs/agent-types.md`.
+ * child's system prompt, model, and tool allowlist; see
+ * `skills/subagents/REFERENCE.md`.
  *
  * Architecture: Effect v4 generators throughout (backend -> manager ->
  * runtime); this file is the async boundary where tool handlers run effects
@@ -44,18 +45,33 @@ import {
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
+  createStatusWriter,
   formatActivityStatus,
   hasActivity,
   unreadActivityCounts,
 } from "../shared/activity-status.ts";
+import { sanitizeText } from "../shared/agent-transcript.ts";
+import {
+  delegationCompletionText,
+  type DelegationCompletion,
+} from "../shared/delegation-completion.ts";
+import { subagentCompletion } from "./src/completion.ts";
+import { queryDirectEvidence } from "./src/evidence.ts";
+import {
+  sessionChildExecutionAdmission,
+  type ChildExecutionAdmission,
+} from "../shared/child-execution-admission.ts";
 import {
   BelowEditorNavigationEditor,
   BelowEditorStripState,
 } from "../shared/below-editor-navigation.ts";
 import {
   effectiveChildToolAllowlist,
+  inheritedChildToolAllowlist,
   resolveStandaloneChildProjectTrust,
 } from "../shared/child-session.ts";
+import { onSetupApply } from "../shared/setup-apply.ts";
+import { completionOwnerFor } from "../shared/completion-inbox.ts";
 import { formatContextUtilization } from "../shared/context-utilization.ts";
 import {
   registerEditorLayer,
@@ -67,13 +83,24 @@ import {
   planModeAllowsDeclaredTools,
   planModeChildTools,
 } from "../shared/plan-mode-state.ts";
-import { loadSetupConfig } from "../shared/setup-config.ts";
+import {
+  allocateResultBudgets,
+  type ParentContextUsage,
+} from "../shared/result-budget.ts";
+import { type DetailDisplay, loadSetupConfig } from "../shared/setup-config.ts";
 import {
   OPENPI_TOOL_SURFACE,
   patchOwnedTools,
 } from "../shared/tool-surface.ts";
 import {
+  projectSubagentCapability,
+  projectSubagentDetail,
+  registerWebCapability,
+  registerWebCapabilityActions,
+} from "../shared/web-observer-registry.ts";
+import {
   createWorktree,
+  formatWorktreeCleanupWarning,
   reclaimWorktree,
   type Worktree,
 } from "../shared/worktree.ts";
@@ -81,9 +108,9 @@ import {
   normalizeSubagentTitle,
   SubagentStripWidget,
   selectSubagentStripEntry,
+  subagentStripEntryKey,
 } from "./navigation.ts";
 import {
-  type AgentType,
   formatAgentTypeDiagnostics,
   loadAgentTypes,
   roleModelForAgentType,
@@ -104,6 +131,7 @@ import {
 } from "./src/id-sequence.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
+  buildSubagentResultDisplayMessage,
   buildSubagentResultMessage,
   buildSubagentSendResult,
   buildSubagentSpawnResult,
@@ -119,22 +147,24 @@ import {
   SUBAGENT_SPAWN_PROMPT_SNIPPET,
   SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS,
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
+  stripSubagentResultTransportInstruction,
 } from "./src/prompt.ts";
-import { persistResultArtifact, projectResult } from "./src/result-artifact.ts";
 import {
-  allocateResultBudgets,
-  type ParentContextUsage,
-} from "../shared/result-budget.ts";
+  persistResultArtifact,
+  projectResult,
+  type ResultProjection,
+} from "./src/result-artifact.ts";
 import { createSubagentResultDelivery } from "./src/result-delivery.ts";
 import {
   createSubagentRuntime,
   runTool,
   type SubagentRuntime,
+  SubagentToolInterruptedError,
 } from "./src/runtime.ts";
 import { openSubagentPicker, openSubagentTakeover } from "./src/ui/takeover.ts";
 import {
-  buildWaitResultPreview,
   renderWaitResult,
+  renderWaitResultPreview,
   type WaitResultDetails,
 } from "./src/ui/wait-result.ts";
 
@@ -146,6 +176,8 @@ const WAIT_PER_AGENT_MAX_BYTES = 16 * 1024;
 const WAIT_MIN_RESULT_BYTES = 512;
 const RESULT_HEADROOM_SHARE = 0.5;
 const ESTIMATED_BYTES_PER_TOKEN = 4;
+const AUTOMATIC_BATCH_TRUNCATION_NOTICE =
+  "\n\n[Automatic subagent result batch truncated at the 48 KiB total limit.]";
 
 interface SpawnResultDetails {
   readonly id?: string;
@@ -153,9 +185,13 @@ interface SpawnResultDetails {
   readonly harness?: string;
   readonly model?: string;
   readonly agentType?: string;
+  readonly structured?: boolean;
 }
 
 interface SubagentFinishedData {
+  readonly origin?: "model";
+  readonly evidence?: SubagentSnapshot["evidence"];
+  readonly completion?: DelegationCompletion;
   readonly id: string;
   readonly title: string;
   readonly status: SubagentSnapshot["status"];
@@ -163,15 +199,33 @@ interface SubagentFinishedData {
 }
 
 interface SubagentResultDetails {
+  readonly completion?: DelegationCompletion;
   readonly id?: string;
   readonly title?: string;
   readonly status?: SubagentSnapshot["status"];
+  readonly outcome?: SubagentSnapshot["outcome"];
+  readonly worktreeBranch?: string;
+  readonly elapsed?: string;
+  readonly artifactSaveFailed?: boolean;
+  readonly fullResultSaved?: boolean;
+  readonly structured?: unknown;
+  readonly structuredArtifactPath?: string;
   readonly count?: number;
   readonly results?: ReadonlyArray<{
+    readonly completion?: DelegationCompletion;
     readonly id: string;
     readonly title: string;
     readonly status: SubagentSnapshot["status"];
+    readonly outcome?: SubagentSnapshot["outcome"];
+    readonly worktreeBranch?: string;
+    readonly elapsed?: string;
+    readonly artifactSaveFailed?: boolean;
+    readonly fullResultSaved?: boolean;
+    readonly structured?: unknown;
+    readonly structuredArtifactPath?: string;
   }>;
+  /** Display-only projection for the custom message renderer. */
+  readonly displayContent?: string;
 }
 
 interface SubagentResultEntryData {
@@ -199,13 +253,17 @@ function describeSubagent(snap: SubagentSnapshot) {
   return `${snap.id} [${snap.status}] "${snap.title}" (${details.join(", ")})`;
 }
 
+function subagentResultContent(snap: SubagentSnapshot) {
+  return snap.structuredResult?.json ?? (snap.finalText || "(no output)");
+}
+
 export function truncatedOutput(
   snap: SubagentSnapshot,
   maxBytes = SUBAGENT_OUTPUT_MAX_BYTES,
   writeArtifact: (content: string) => string = (content) =>
     persistResultArtifact(getAgentDir(), content),
 ): string {
-  const output = snap.finalText || "(no output)";
+  const output = subagentResultContent(snap);
   return projectResult(output, {
     maxBytes: Math.min(maxBytes, DEFAULT_MAX_BYTES),
     maxLines: Math.min(600, DEFAULT_MAX_LINES),
@@ -213,12 +271,53 @@ export function truncatedOutput(
   }).text;
 }
 
+function projectSubagentOutput(
+  snap: SubagentSnapshot,
+  maxBytes: number,
+): ResultProjection {
+  const output = subagentResultContent(snap);
+  return projectResult(output, {
+    maxBytes: Math.min(maxBytes, DEFAULT_MAX_BYTES),
+    maxLines: Math.min(600, DEFAULT_MAX_LINES),
+    writeArtifact: (content) => persistResultArtifact(getAgentDir(), content),
+  });
+}
+
+type OutputProjection = Pick<
+  ResultProjection,
+  "text" | "artifactPath" | "artifactSaveFailed"
+>;
+
+function normalizeProjection(
+  output: string | OutputProjection,
+): OutputProjection {
+  return typeof output === "string" ? { text: output } : output;
+}
+
+function boundAutomaticResultBatch(content: string) {
+  const probe = truncateHead(content, {
+    maxBytes: AUTOMATIC_OUTPUT_MAX_BYTES,
+    maxLines: Number.MAX_SAFE_INTEGER,
+  });
+  if (!probe.truncated) return content;
+
+  const noticeBytes = Buffer.byteLength(
+    AUTOMATIC_BATCH_TRUNCATION_NOTICE,
+    "utf8",
+  );
+  const bounded = truncateHead(content, {
+    maxBytes: Math.max(0, AUTOMATIC_OUTPUT_MAX_BYTES - noticeBytes),
+    maxLines: Number.MAX_SAFE_INTEGER,
+  });
+  return `${bounded.content}${AUTOMATIC_BATCH_TRUNCATION_NOTICE}`;
+}
+
 export function createSubagentResultDispatcher(
   pi: ExtensionAPI,
   outputFor: (
     snap: SubagentSnapshot,
     maxBytes: number,
-  ) => string = truncatedOutput,
+  ) => string | OutputProjection = projectSubagentOutput,
   getContextUsage: () => ParentContextUsage | undefined = () => undefined,
 ) {
   return (snaps: readonly SubagentSnapshot[]) => {
@@ -229,7 +328,7 @@ export function createSubagentResultDispatcher(
         title: snap.title,
         status: snap.status,
         errorText: snap.errorText,
-        output: "",
+        output: delegationCompletionText(subagentCompletion(snap)),
       }),
     );
     const wrapperBytes =
@@ -239,12 +338,12 @@ export function createSubagentResultDispatcher(
       ) +
       Math.max(0, snaps.length - 1) * 2;
     const projectionBatchBytes = Math.max(
-      AUTOMATIC_MIN_RESULT_BYTES * snaps.length,
+      0,
       AUTOMATIC_OUTPUT_MAX_BYTES - wrapperBytes,
     );
     const allocation = allocateResultBudgets(
       snaps.map((snap) =>
-        Buffer.byteLength(snap.finalText || "(no output)", "utf8"),
+        Buffer.byteLength(subagentResultContent(snap), "utf8"),
       ),
       getContextUsage(),
       {
@@ -256,34 +355,91 @@ export function createSubagentResultDispatcher(
         fixedBytes: wrapperBytes,
       },
     );
-    const content = snaps
-      .map((snap, index) =>
-        buildSubagentResultMessage({
-          id: snap.id,
-          title: snap.title,
-          status: snap.status,
-          errorText: snap.errorText,
-          output: outputFor(snap, allocation.budgets[index]!),
-        }),
-      )
-      .join("\n\n");
+    const projections = snaps.map((snap, index) =>
+      normalizeProjection(outputFor(snap, allocation.budgets[index]!)),
+    );
+    const outputs = projections.map(
+      (projection, index) =>
+        `${projection.text}\n\n${delegationCompletionText(subagentCompletion(snaps[index]!))}`,
+    );
+    const displayContent = boundAutomaticResultBatch(
+      snaps
+        .map((snap, index) =>
+          buildSubagentResultDisplayMessage({
+            id: snap.id,
+            title: snap.title,
+            status: snap.status,
+            errorText: snap.errorText,
+            output: projections[index]!.text,
+          }),
+        )
+        .join("\n\n"),
+    );
+    const content = boundAutomaticResultBatch(
+      snaps
+        .map((snap, index) =>
+          buildSubagentResultMessage({
+            id: snap.id,
+            title: snap.title,
+            status: snap.status,
+            errorText: snap.errorText,
+            output: outputs[index]!,
+          }),
+        )
+        .join("\n\n"),
+    );
     const details: SubagentResultDetails =
       snaps.length === 1
         ? {
+            completion: subagentCompletion(snaps[0]!),
             id: snaps[0]!.id,
             title: snaps[0]!.title,
             status: snaps[0]!.status,
+            ...(snaps[0]!.outcome ? { outcome: snaps[0]!.outcome } : {}),
+            ...(snaps[0]!.worktreeBranch
+              ? { worktreeBranch: snaps[0]!.worktreeBranch }
+              : {}),
+            elapsed: formatElapsed(snaps[0]!),
+            ...(projections[0]!.artifactPath ? { fullResultSaved: true } : {}),
+            ...(projections[0]!.artifactSaveFailed
+              ? { artifactSaveFailed: true }
+              : {}),
+            ...(snaps[0]!.structuredResult
+              ? {
+                  structured: snaps[0]!.structuredResult.value,
+                  structuredArtifactPath:
+                    snaps[0]!.structuredResult.artifactPath,
+                }
+              : {}),
           }
         : {
             count: snaps.length,
-            results: snaps.map((snap) => ({
+            results: snaps.map((snap, index) => ({
+              completion: subagentCompletion(snap),
               id: snap.id,
               title: snap.title,
               status: snap.status,
+              ...(snap.outcome ? { outcome: snap.outcome } : {}),
+              ...(snap.worktreeBranch
+                ? { worktreeBranch: snap.worktreeBranch }
+                : {}),
+              elapsed: formatElapsed(snap),
+              ...(projections[index]!.artifactPath
+                ? { fullResultSaved: true }
+                : {}),
+              ...(projections[index]!.artifactSaveFailed
+                ? { artifactSaveFailed: true }
+                : {}),
+              ...(snap.structuredResult
+                ? {
+                    structured: snap.structuredResult.value,
+                    structuredArtifactPath: snap.structuredResult.artifactPath,
+                  }
+                : {}),
             })),
           };
     pi.appendEntry<SubagentResultEntryData>("subagent-result", {
-      content,
+      content: displayContent,
       details,
     });
     pi.sendMessage(
@@ -291,7 +447,7 @@ export function createSubagentResultDispatcher(
         customType: "subagent-result",
         content,
         display: false,
-        details,
+        details: { ...details, displayContent },
       },
       { deliverAs: "followUp", triggerTurn: true },
     );
@@ -304,36 +460,52 @@ function renderSubagentResult(
   content: string,
   details: SubagentResultDetails,
   expanded: boolean,
+  resultDisplay: DetailDisplay,
   theme: SubagentResultTheme,
 ) {
-  if (!expanded && loadSetupConfig().ui.subagentResultDisplay === "compact") {
-    const results = details.results?.length
-      ? details.results
-      : details.id
-        ? [
-            {
-              id: details.id,
-              title: details.title,
-              status: details.status,
-            },
-          ]
-        : [];
-    return new Text(buildWaitResultPreview(content, { results }, theme), 0, 0);
+  const displayContent = sanitizeText(
+    details.displayContent ?? stripSubagentResultTransportInstruction(content),
+  );
+  const results = details.results?.length
+    ? details.results
+    : details.id
+      ? [
+          {
+            id: details.id,
+            title: details.title,
+            status: details.status,
+            outcome: details.outcome,
+            worktreeBranch: details.worktreeBranch,
+            elapsed: details.elapsed,
+            artifactSaveFailed: details.artifactSaveFailed,
+            fullResultSaved: details.fullResultSaved,
+          },
+        ]
+      : [];
+  if (!expanded && resultDisplay === "compact") {
+    return renderWaitResultPreview(displayContent, { results }, theme);
   }
 
-  const failed = details.status === "error";
+  const failed = results.some((result) => result.status === "error");
+  const batched = results.length > 1;
   const icon = failed ? theme.fg("error", "x") : theme.fg("success", "✓");
-  const header =
-    `${icon} ` +
-    theme.fg("accent", theme.bold(`subagent ${details.id ?? "?"}`)) +
-    theme.fg(
-      "muted",
-      ` · ${details.title ?? ""} · ${failed ? "failed" : "finished"}`,
-    );
+  const header = batched
+    ? `${icon} ${theme.fg("accent", theme.bold(`${results.length} subagents`))}${theme.fg("muted", ` · ${failed ? `${results.filter((result) => result.status === "error").length} failed` : "finished"}`)}`
+    : `${icon} ` +
+      theme.fg(
+        "accent",
+        theme.bold(`subagent ${sanitizeText(details.id ?? "?")}`),
+      ) +
+      theme.fg(
+        "muted",
+        ` · ${sanitizeText(details.title ?? "")} · ${failed ? "failed" : "finished"}${details.elapsed ? ` · ${sanitizeText(details.elapsed)}` : ""}`,
+      );
 
-  // Remove only the summary line. The following Error line (when present)
-  // is part of the actual result and must remain visible.
-  const body = content.split("\n").slice(1).join("\n").trim();
+  // Remove only the single-result summary line. Error lines and batched result
+  // summaries are part of the display projection and must remain visible.
+  const body = batched
+    ? displayContent.trim()
+    : displayContent.split("\n").slice(1).join("\n").trim();
   const md = new Markdown(body, 0, 0, getMarkdownTheme());
   const container = new Text(header, 0, 0);
   return {
@@ -348,8 +520,19 @@ function renderSubagentResult(
   };
 }
 
-export default function (pi: ExtensionAPI) {
+interface SubagentExtensionOptions {
+  readonly getResultDisplay?: () => DetailDisplay;
+}
+
+export default function (
+  pi: ExtensionAPI,
+  options: SubagentExtensionOptions = {},
+) {
+  const getResultDisplay =
+    options.getResultDisplay ??
+    (() => loadSetupConfig().ui.subagentResultDisplay);
   let runtime: SubagentRuntime | undefined;
+  let admission: ChildExecutionAdmission | undefined;
   let managerPromise: Promise<SubagentManagerShape> | undefined;
   let restoredIdCounters: SubagentIdCounters = {
     modelCounter: 0,
@@ -364,19 +547,27 @@ export default function (pi: ExtensionAPI) {
    */
   let settledAcknowledgedAt = 0;
   const stripState = new BelowEditorStripState();
+  const statusWriter = createStatusWriter("subagents");
   const widgetKey = "subagent-navigation";
   let navigationManager: SubagentManagerShape | undefined;
+  let unregisterWebCapability: (() => void) | undefined;
+  let unregisterWebCapabilityActions: (() => void) | undefined;
   let widgetVisible = false;
+  let widgetEntryKey: string | undefined;
   let requestWidgetRender: (() => void) | undefined;
   let navigationLayerRegistered = false;
   let dashboardOpen = false;
   const dispatchResults = createSubagentResultDispatcher(
     pi,
-    truncatedOutput,
+    projectSubagentOutput,
     () => sessionContext?.getContextUsage(),
   );
   const resultDelivery = createSubagentResultDelivery<SubagentSnapshot>({
     isIdle: () => sessionContext?.isIdle() === true,
+    owner: () =>
+      sessionContext
+        ? completionOwnerFor(sessionContext.sessionManager)
+        : undefined,
     // Every unconsumed fire-and-forget result must reach the parent. The
     // delivery coordinator batches results that settled while it was busy.
     deliver: dispatchResults,
@@ -391,17 +582,44 @@ export default function (pi: ExtensionAPI) {
     (runtime ??= createSubagentRuntime({
       initialModelCounter: restoredIdCounters.modelCounter,
       initialBtwCounter: restoredIdCounters.btwCounter,
+      ...(admission ? { admission } : {}),
     }));
+
+  if (pi.events) {
+    onSetupApply(pi, () => {
+      admission?.configure({
+        maxActive: loadSetupConfig().childExecutions.maxActive,
+      });
+    });
+  }
 
   const persistId = (id: string) =>
     pi.appendEntry(SUBAGENT_ID_WATERMARK_ENTRY_TYPE, subagentIdWatermark(id));
 
   /** Resolve the manager service once per runtime and wire the extension hooks. */
   const getManager = () => {
+    const scope = sessionContext?.sessionManager;
     managerPromise ??= getRuntime()
       .runPromise(SubagentManager)
       .then((manager) => {
         navigationManager = manager;
+        unregisterWebCapability?.();
+        unregisterWebCapability =
+          scope && sessionContext?.sessionManager === scope
+            ? registerWebCapability(scope, {
+                kind: "subagents",
+                snapshot: () =>
+                  projectSubagentCapability(
+                    manager.view.list(),
+                    manager.view.childExecutionAdmission?.(),
+                  ),
+                detail: (id) => {
+                  const snapshot = manager.view.get(id);
+                  return snapshot ? projectSubagentDetail(snapshot) : undefined;
+                },
+                subscribe: (listener) => manager.view.subscribe(listener),
+              })
+            : undefined;
         manager.view.setOnSettled(onSettled);
         unsubStatus?.();
         unsubStatus = manager.view.subscribe(() => updateStatus(manager));
@@ -409,6 +627,38 @@ export default function (pi: ExtensionAPI) {
         return manager;
       });
     return managerPromise;
+  };
+
+  const spawnBtw = async (
+    prompt: string,
+    ctx: ExtensionContext,
+    signal?: AbortSignal,
+  ) => {
+    const manager = await getManager();
+    const snap = await runTool(
+      getRuntime(),
+      manager.spawn("pi", {
+        origin: "btw",
+        prompt,
+        title: normalizeSubagentTitle(deriveBtwTitle(prompt), "by the way"),
+        cwd: ctx.cwd,
+        parent: {
+          parentCwd: ctx.cwd,
+          projectTrusted: ctx.isProjectTrusted(),
+          inheritedModel: ctx.model
+            ? { provider: ctx.model.provider, id: ctx.model.id }
+            : undefined,
+          inheritedThinkingLevel: pi.getThinkingLevel(),
+          modelRegistry: ctx.modelRegistry,
+        },
+      }),
+      {
+        signal,
+        interruptMessage: "Side conversation start aborted.",
+      },
+    );
+    persistId(snap.id);
+    return { manager, snap };
   };
 
   const stripEntry = () =>
@@ -422,10 +672,19 @@ export default function (pi: ExtensionAPI) {
   const updateSubagentWidget = () => {
     const ctx = sessionContext;
     if (!ctx || ctx.mode !== "tui") return;
-    const visible = Boolean(stripEntry());
-    if (visible === widgetVisible) return;
+    const entry = stripEntry();
+    const visible = Boolean(entry);
+    const entryKey = subagentStripEntryKey(entry);
+    if (visible === widgetVisible) {
+      if (visible && entryKey !== widgetEntryKey) {
+        widgetEntryKey = entryKey;
+        requestWidgetRender?.();
+      }
+      return;
+    }
     if (!visible) {
       stripState.focused = false;
+      widgetEntryKey = undefined;
       requestWidgetRender = undefined;
       ctx.ui.setWidget(widgetKey, undefined);
       widgetVisible = false;
@@ -440,6 +699,7 @@ export default function (pi: ExtensionAPI) {
       { placement: "belowEditor" },
     );
     widgetVisible = true;
+    widgetEntryKey = entryKey;
   };
 
   const updateStatus = (manager: SubagentManagerShape) => {
@@ -451,8 +711,8 @@ export default function (pi: ExtensionAPI) {
     // In the TUI the below-editor strip already reports the same activity and
     // carries the manage affordance, so a footer status line would repeat it.
     const tui = sessionContext?.mode === "tui";
-    ui.setStatus(
-      "subagents",
+    statusWriter.write(
+      ui,
       !tui && hasActivity(counts)
         ? formatActivityStatus(ui.theme, "subagents", counts)
         : undefined,
@@ -467,7 +727,11 @@ export default function (pi: ExtensionAPI) {
     let manager: SubagentManagerShape | undefined;
     try {
       manager = await getManager();
-      if (manager.view.size() === 0) return;
+      if (
+        manager.view.size() === 0 &&
+        !manager.view.childExecutionAdmission?.()?.enabled
+      )
+        return;
       await openSubagentPicker(ctx, manager.view, initialId);
       settledAcknowledgedAt = Date.now();
     } finally {
@@ -501,6 +765,15 @@ export default function (pi: ExtensionAPI) {
   };
 
   const deliverBtwResult = (snap: SubagentSnapshot) => {
+    const isAborted = snap.outcome === "interrupted";
+    const output = (snap.structuredResult?.json ?? snap.finalText)?.trim();
+    if (snap.status === "error" && (!output || isAborted)) {
+      if (!isAborted) {
+        ui?.notify(`by the way “${snap.title}” failed`, "error");
+      }
+      return;
+    }
+
     // appendEntry is a synchronous SessionManager operation and emits an
     // entry_appended event, so it is safe while the parent is streaming and
     // never enters the model's context or follow-up queue.
@@ -531,12 +804,21 @@ export default function (pi: ExtensionAPI) {
     }
     // Mark the finish in the transcript. The result itself reaches the model
     // separately; this line is for the reader watching the run.
-    pi.appendEntry<SubagentFinishedData>("subagent-finished", {
-      id: snap.id,
-      title: snap.title,
-      status: snap.status,
-      elapsed: formatElapsed(snap),
-    });
+    try {
+      if (snap.evidence) snap.evidence.parentBound = true;
+      pi.appendEntry<SubagentFinishedData>("subagent-finished", {
+        id: snap.id,
+        origin: "model",
+        title: snap.title,
+        status: snap.status,
+        elapsed: formatElapsed(snap),
+        evidence: snap.evidence,
+        completion: subagentCompletion(snap),
+      });
+    } catch {
+      // Storage failure must not hide execution success or invent a locator.
+      if (snap.evidence) snap.evidence.parentBound = false;
+    }
     if (consumed) {
       resultDelivery.consume([snap.id]);
       return;
@@ -552,12 +834,53 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.on("session_start", (_event, ctx) => {
+    admission = sessionChildExecutionAdmission(ctx.sessionManager, {
+      maxActive: loadSetupConfig().childExecutions.maxActive,
+    });
     restoredIdCounters = restoreSubagentIdCounters(
       ctx.sessionManager.getBranch(),
     );
     refreshAgentTypes(ctx.cwd, ctx.isProjectTrusted());
     registerStableToolFamily();
     sessionContext = ctx;
+    const scope = ctx.sessionManager;
+    unregisterWebCapabilityActions?.();
+    unregisterWebCapabilityActions = registerWebCapabilityActions(scope, {
+      kind: "subagents",
+      run: async (request, signal) => {
+        if (sessionContext?.sessionManager !== scope) {
+          throw new Error(
+            "The active Session changed. Reopen side conversation.",
+          );
+        }
+        if (request.action === "spawn-btw") {
+          const { snap } = await spawnBtw(request.prompt, ctx, signal);
+          return projectSubagentDetail(snap);
+        }
+
+        const manager = await getManager();
+        const existing = manager.view.get(request.id);
+        if (!existing || existing.origin !== "btw") {
+          throw new Error(`Unknown side conversation id "${request.id}".`);
+        }
+        if (request.action === "send-btw") {
+          await runTool(getRuntime(), manager.send(request.id, request.text), {
+            signal,
+            interruptMessage: "Side conversation send aborted.",
+          });
+          resultDelivery.consume([request.id]);
+        } else {
+          await runTool(getRuntime(), manager.cancel([request.id]), {
+            signal,
+            interruptMessage: "Side conversation cancellation aborted.",
+          });
+        }
+        const current = manager.view.get(request.id);
+        if (!current)
+          throw new Error("Side conversation is no longer available.");
+        return projectSubagentDetail(current);
+      },
+    });
     settledAcknowledgedAt = 0;
     if (ctx.hasUI) ui = ctx.ui;
     installSubagentNavigation(ctx);
@@ -586,21 +909,29 @@ export default function (pi: ExtensionAPI) {
     resultDelivery.clear();
     unsubStatus?.();
     unsubStatus = undefined;
+    unregisterWebCapability?.();
+    unregisterWebCapability = undefined;
+    unregisterWebCapabilityActions?.();
+    unregisterWebCapabilityActions = undefined;
     try {
       ui?.setStatus("subagents", undefined);
       sessionContext?.ui.setWidget(widgetKey, undefined);
     } catch {
       // UI may already be disposed.
     }
+    statusWriter.reset();
     sessionContext = undefined;
     ui = undefined;
     navigationManager = undefined;
     widgetVisible = false;
+    widgetEntryKey = undefined;
     requestWidgetRender = undefined;
     stripState.focused = false;
     dashboardOpen = false;
     const closing = runtime;
     runtime = undefined;
+    admission?.shutdown();
+    admission = undefined;
     managerPromise = undefined;
     // Disposing the runtime runs the manager finalizer, which tears down all
     // subagent scopes (and, later, their real child processes).
@@ -698,6 +1029,7 @@ export default function (pi: ExtensionAPI) {
       if (
         planning &&
         agentType &&
+        !agentType.planningCompatible &&
         !planModeAllowsDeclaredTools(declaredChildTools)
       ) {
         throw new Error(
@@ -746,7 +1078,14 @@ export default function (pi: ExtensionAPI) {
       const requestedChildTools = planning
         ? planModeChildTools(declaredChildTools)
         : declaredChildTools;
-      const childTools = effectiveChildToolAllowlist(requestedChildTools);
+      const childTools = inheritedChildToolAllowlist(
+        pi.getActiveTools(),
+        requestedChildTools,
+        {
+          availableTools: pi.getAllTools(),
+          cwd: ctx.cwd,
+        },
+      );
       // Read at spawn time so `/openpi-setup` changes affect the next child
       // without reloading this extension. Undefined preserves parent-model
       // inheritance in the backend.
@@ -768,11 +1107,21 @@ export default function (pi: ExtensionAPI) {
         model,
         reasoningEffort: params.reasoning_effort ?? agentType?.reasoningEffort,
         ...(agentType?.body ? { appendSystemPrompt: [agentType.body] } : {}),
-        ...(childTools ? { tools: childTools } : {}),
+        ...(childTools
+          ? {
+              tools: childTools,
+              inheritedTools: agentType?.tools === undefined,
+            }
+          : {}),
         ...(agentType ? { agentTypeName: agentType.name } : {}),
+        ...(params.output_schema !== undefined
+          ? { outputSchema: params.output_schema }
+          : {}),
         ...(worktree ? { worktree: { ...worktree, repoCwd: cwd } } : {}),
         parent: {
           parentCwd: ctx.cwd,
+          sessionId: ctx.sessionManager?.getSessionId?.(),
+          originEntryId: ctx.sessionManager?.getLeafId?.(),
           projectTrusted,
           inheritedModel: ctx.model
             ? { provider: ctx.model.provider, id: ctx.model.id }
@@ -789,9 +1138,50 @@ export default function (pi: ExtensionAPI) {
           interruptMessage: "Subagent spawn aborted.",
         });
       } catch (error) {
-        // The session scope owns reclamation, but it never opened, so this
-        // worktree would otherwise be orphaned on disk.
-        if (worktree) await reclaimWorktree(cwd, worktree).catch(() => {});
+        // Known startup failures can reclaim their empty checkout. Interrupted
+        // startup must preserve it while asynchronous acquisition may continue.
+        if (worktree) {
+          const spawnError =
+            error instanceof Error ? error.message : String(error);
+          // Cancelling Effect acquisition does not prove an asynchronous
+          // factory or extension hook has quiesced. It may still use this cwd.
+          if (
+            signal?.aborted ||
+            error instanceof SubagentToolInterruptedError
+          ) {
+            throw new Error(
+              `${spawnError}; startup quiescence is unknown; checkout preserved at ${worktree.path} (branch ${worktree.branch})`,
+              { cause: error },
+            );
+          }
+          let cleanupWarning: string | undefined;
+          let cleanupError: unknown;
+          try {
+            const cleanup = await reclaimWorktree(cwd, worktree);
+            cleanupWarning = formatWorktreeCleanupWarning(
+              cleanup,
+              worktree.path,
+            );
+          } catch (failure) {
+            cleanupError = failure;
+          }
+          if (cleanupError) {
+            const reason =
+              cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError);
+            throw new Error(
+              `${spawnError}; worktree cleanup failed: ${reason}; checkout preserved at ${worktree.path}`,
+              { cause: error },
+            );
+          }
+          if (cleanupWarning) {
+            throw new Error(
+              `${spawnError}; worktree cleanup warning: ${cleanupWarning}`,
+              { cause: error },
+            );
+          }
+        }
         throw error;
       }
       persistId(snap.id);
@@ -809,6 +1199,9 @@ export default function (pi: ExtensionAPI) {
               ...(worktree ? { worktreeBranch: worktree.branch } : {}),
               ...(agentType ? { agentTypeName: agentType.name } : {}),
               ...(childTools ? { tools: childTools } : {}),
+              ...(params.output_schema !== undefined
+                ? { structured: true }
+                : {}),
             }),
           },
         ],
@@ -819,6 +1212,7 @@ export default function (pi: ExtensionAPI) {
           harness,
           model: snap.meta.modelLabel,
           ...(agentType ? { agentType: agentType.name } : {}),
+          ...(params.output_schema !== undefined ? { structured: true } : {}),
         },
       };
     },
@@ -912,6 +1306,7 @@ export default function (pi: ExtensionAPI) {
         const verb = snap.status === "error" ? "failed" : "finished";
         let header = `## ${snap.id} "${snap.title}" ${verb}`;
         if (snap.errorText) header += `\nError: ${snap.errorText}`;
+        header += `\n\n${delegationCompletionText(subagentCompletion(snap))}`;
         return { id, snap, header };
       });
       const separatorsBytes = Math.max(0, entries.length - 1) * 7;
@@ -941,7 +1336,7 @@ export default function (pi: ExtensionAPI) {
       );
       const allocation = allocateResultBudgets(
         resultEntries.map(({ snap }) =>
-          Buffer.byteLength(snap.finalText || "(no output)", "utf8"),
+          Buffer.byteLength(subagentResultContent(snap), "utf8"),
         ),
         ctx.getContextUsage(),
         {
@@ -954,10 +1349,15 @@ export default function (pi: ExtensionAPI) {
         },
       );
       let resultIndex = 0;
+      const artifactSaveFailures = new Set<string>();
+      const fullResultsSaved = new Set<string>();
       const sections = entries.map((entry) => {
         if ("section" in entry) return entry.section;
         const outputBudget = allocation.budgets[resultIndex++]!;
-        return `${entry.header}\n\n${truncatedOutput(entry.snap, outputBudget)}`;
+        const projection = projectSubagentOutput(entry.snap, outputBudget);
+        if (projection.artifactSaveFailed) artifactSaveFailures.add(entry.id);
+        if (projection.artifactPath) fullResultsSaved.add(entry.id);
+        return `${entry.header}\n\n${projection.text}`;
       });
 
       const combined = sections.join("\n\n---\n\n");
@@ -973,7 +1373,27 @@ export default function (pi: ExtensionAPI) {
         details: {
           results: ids.map((id) => {
             const snap = manager.view.get(id);
-            return { id, title: snap?.title, status: snap?.status };
+            return {
+              id,
+              ...(snap ? { completion: subagentCompletion(snap) } : {}),
+              title: snap?.title,
+              status: snap?.status,
+              ...(snap?.outcome ? { outcome: snap.outcome } : {}),
+              ...(snap?.worktreeBranch
+                ? { worktreeBranch: snap.worktreeBranch }
+                : {}),
+              ...(snap ? { elapsed: formatElapsed(snap) } : {}),
+              ...(fullResultsSaved.has(id) ? { fullResultSaved: true } : {}),
+              ...(artifactSaveFailures.has(id)
+                ? { artifactSaveFailed: true }
+                : {}),
+              ...(snap?.structuredResult
+                ? {
+                    structured: snap.structuredResult.value,
+                    structuredArtifactPath: snap.structuredResult.artifactPath,
+                  }
+                : {}),
+            };
           }),
         },
       };
@@ -998,7 +1418,7 @@ export default function (pi: ExtensionAPI) {
       return renderWaitResult(
         content,
         result.details as WaitResultDetails | undefined,
-        expanded || loadSetupConfig().ui.subagentResultDisplay === "full",
+        expanded || getResultDisplay() === "full",
         theme,
       );
     },
@@ -1123,8 +1543,55 @@ export default function (pi: ExtensionAPI) {
       id: Type.String({
         description: SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS.id,
       }),
+      generation: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          description:
+            "Actual Direct run generation; omitted selects the latest active-branch owner record when reading evidence.",
+        }),
+      ),
+      evidence: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal("transcript"),
+            Type.Literal("final"),
+            Type.Literal("structured"),
+          ],
+          {
+            description:
+              "Explicit original evidence read through Pi permissions. Native nestedCalls may disclose read paths. Missing/legacy/unsealed/pruned/denied/oversized evidence is unavailable.",
+          },
+        ),
+      ),
+      offset: Type.Optional(
+        Type.Integer({
+          minimum: 0,
+          description:
+            "Unicode code-point offset in selected evidence; use nextOffset to continue.",
+        }),
+      ),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 4096,
+          description:
+            "Maximum code points per page (default 2048); serialized page capped at 16 KiB.",
+        }),
+      ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (
+        params.generation !== undefined ||
+        params.evidence !== undefined ||
+        params.offset !== undefined ||
+        params.limit !== undefined
+      ) {
+        const evidence = await queryDirectEvidence(ctx, params, signal);
+        return {
+          content: [{ type: "text", text: JSON.stringify(evidence) }],
+          details: evidence,
+        };
+      }
       const manager = await getManager();
       const snap = manager.view.get(params.id);
       if (!snap || !isModelVisible(snap)) {
@@ -1149,9 +1616,20 @@ export default function (pi: ExtensionAPI) {
         text += "\n\n(no text output yet)";
       }
 
+      const completion = subagentCompletion(snap);
       return {
-        content: [{ type: "text", text }],
-        details: { id: snap.id, status: snap.status, turns: snap.turns },
+        content: [
+          {
+            type: "text",
+            text: `${text}\n\n${delegationCompletionText(completion)}`,
+          },
+        ],
+        details: {
+          id: snap.id,
+          status: snap.status,
+          turns: snap.turns,
+          completion,
+        },
       };
     },
   });
@@ -1193,6 +1671,7 @@ export default function (pi: ExtensionAPI) {
         content,
         (message.details ?? {}) as SubagentResultDetails,
         expanded,
+        getResultDisplay(),
         theme,
       );
     },
@@ -1205,6 +1684,7 @@ export default function (pi: ExtensionAPI) {
         entry.data?.content ?? "",
         entry.data?.details ?? {},
         expanded,
+        getResultDisplay(),
         theme,
       ),
   );
@@ -1247,7 +1727,7 @@ export default function (pi: ExtensionAPI) {
         .filter(Boolean)
         .join("\n\n");
 
-      if (expanded || loadSetupConfig().ui.subagentResultDisplay === "full") {
+      if (expanded || getResultDisplay() === "full") {
         const md = new Markdown(body, 0, 0, getMarkdownTheme());
         const container = new Text(header, 0, 0);
         return {
@@ -1288,27 +1768,10 @@ export default function (pi: ExtensionAPI) {
       if (!prompt) return;
     }
 
-    const manager = await getManager();
+    let manager: SubagentManagerShape;
     let snap: SubagentSnapshot;
     try {
-      snap = await runTool(
-        getRuntime(),
-        manager.spawn("pi", {
-          origin: "btw",
-          prompt,
-          title: normalizeSubagentTitle(deriveBtwTitle(prompt), "by the way"),
-          cwd: ctx.cwd,
-          parent: {
-            parentCwd: ctx.cwd,
-            projectTrusted: ctx.isProjectTrusted(),
-            inheritedModel: ctx.model
-              ? { provider: ctx.model.provider, id: ctx.model.id }
-              : undefined,
-            inheritedThinkingLevel: pi.getThinkingLevel(),
-            modelRegistry: ctx.modelRegistry,
-          },
-        }),
-      );
+      ({ manager, snap } = await spawnBtw(prompt, ctx));
     } catch (error) {
       ctx.ui.notify(
         error instanceof Error ? error.message : String(error),
@@ -1316,8 +1779,6 @@ export default function (pi: ExtensionAPI) {
       );
       return;
     }
-    persistId(snap.id);
-
     await openSubagentTakeover(ctx, manager.view, snap.id, {
       badge: "by the way",
     });
@@ -1341,7 +1802,10 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const manager = await getManager();
-      if (manager.view.size() === 0) {
+      if (
+        manager.view.size() === 0 &&
+        !manager.view.childExecutionAdmission?.()?.enabled
+      ) {
         ctx.ui.notify(
           "No subagents yet. The agent spawns them with subagent_spawn.",
           "info",

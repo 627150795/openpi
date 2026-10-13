@@ -158,6 +158,21 @@ test("CRLF messages fold without losing their line endings", () => {
   );
 });
 
+test("LF and CRLF fenced messages fold with the same semantics", () => {
+  const lf = [
+    "intro",
+    "```js",
+    ...Array.from({ length: 30 }, (_, i) => `console.log(${i});`),
+    "```",
+    "outro",
+  ].join("\n");
+  const crlf = lf.replaceAll("\n", "\r\n");
+  const normalizeNewlines = (text: string) => text.replaceAll("\r\n", "\n");
+
+  assert.equal(normalizeNewlines(foldUserMessage(crlf)), foldUserMessage(lf));
+  assert.ok(foldUserMessage(crlf).includes("```\r\n"));
+});
+
 test("trailing newlines neither fold short messages nor pad the count", () => {
   assert.equal(foldUserMessage("hello\n"), "hello\n");
   assert.equal(foldUserMessage("hello\n\n"), "hello\n\n");
@@ -180,17 +195,94 @@ test("empty and whitespace-only messages are left alone", () => {
   }
 });
 
-test("an unterminated fence folds conservatively as plain text", () => {
+test("an unterminated fence folds as a code block with a synthesized close", () => {
   const message = [
     "```js",
     ...Array.from({ length: 30 }, (_, i) => `stmt ${i};`),
   ].join("\n");
   const out = foldUserMessage(message);
   assert.ok(out.startsWith("```js"));
-  assert.ok(out.includes("stmt 10;"));
-  assert.ok(!out.includes("stmt 12;"));
+  assert.ok(out.includes("stmt 3;"));
+  assert.ok(!out.includes("stmt 4;"));
+  // The synthesized closing fence keeps the folded preview balanced Markdown.
+  assert.ok(out.includes("…\n```"));
   assert.ok(
-    out.endsWith("… folded 19 lines · full content was sent to the model"),
+    out.endsWith("… folded 25 lines · full content was sent to the model"),
+  );
+});
+
+test("a nested ``` block does not close a ```` block (CommonMark §4.5)", () => {
+  const message = [
+    "Please review this prompt template:",
+    "````markdown",
+    "Here is an example snippet:",
+    "```javascript",
+    "function hello() {",
+    '  console.log("Hello world");',
+    "}",
+    "```",
+    "Follow the instructions above carefully.",
+    ...Array.from({ length: 15 }, (_, i) => `${i + 1}. Step ${i + 1}`),
+    "````",
+    "End of message.",
+  ].join("\n");
+  const out = foldUserMessage(message);
+  assert.ok(
+    out.startsWith("Please review this prompt template:\n````markdown"),
+  );
+  // Content after the inner ``` fence stays inside the outer block.
+  assert.ok(!out.includes("Follow the instructions"));
+  assert.ok(!out.includes("Step 1"));
+  // The outer block is closed by its matching four-backtick fence.
+  assert.ok(out.includes("…\n````\nEnd of message."));
+  assert.ok(
+    out.endsWith("… folded 18 lines · full content was sent to the model"),
+  );
+});
+
+test("a longer closing fence closes a shorter opening fence", () => {
+  const message = ["~~~", ...numberedLines(30), "~~~~~~"].join("\n");
+  const out = foldUserMessage(message);
+  assert.ok(out.startsWith("~~~\nline 01"));
+  assert.ok(out.includes("…\n~~~~~~"));
+  assert.ok(
+    out.endsWith("… folded 26 lines · full content was sent to the model"),
+  );
+});
+
+test("tilde fences are recognized and fold like backtick fences", () => {
+  const message = [
+    "intro",
+    "~~~py",
+    ...Array.from({ length: 30 }, (_, i) => `py-${i}`),
+    "~~~",
+    "outro",
+  ].join("\n");
+  const out = foldUserMessage(message);
+  assert.ok(out.startsWith("intro\n~~~py"));
+  assert.ok(out.includes("py-3"));
+  assert.ok(!out.includes("py-4"));
+  assert.ok(out.includes("…\n~~~\noutro"));
+  assert.ok(
+    out.endsWith("… folded 26 lines · full content was sent to the model"),
+  );
+});
+
+test("backtick and tilde fences never close each other", () => {
+  const message = [
+    "~~~text",
+    "```",
+    ...numberedLines(30),
+    "```",
+    "~~~",
+    "tail",
+  ].join("\n");
+  const out = foldUserMessage(message);
+  // The inner ``` lines are content of the tilde block, not its closer.
+  assert.ok(out.startsWith("~~~text\n```\nline 01"));
+  assert.ok(out.includes("…\n~~~\ntail"));
+  assert.ok(
+    out.endsWith("… folded 28 lines · full content was sent to the model"),
   );
 });
 
@@ -250,4 +342,37 @@ test("the marker always states that the model received the full content", () => 
   const out = foldUserMessage(giantBlock);
   assert.ok(out.includes(MARKER));
   assert.ok(out.includes("full content was sent to the model"));
+});
+
+test("finalized user previews do not split a surrogate pair at the prose cutoff", () => {
+  for (const symbol of ["😀", "𠮷"]) {
+    const prefix = "x".repeat(1199);
+    const message = [prefix + symbol + "tail", ...numberedLines(21)].join("\n");
+    const rendered = transformUserMarkdown(message, {
+      messageType: "user",
+      isStreaming: false,
+    });
+    assert.equal(Buffer.from(rendered, "utf8").toString("utf8"), rendered);
+    assert.equal(rendered.split("\n")[0], prefix + "…");
+    assert.ok(rendered.includes(MARKER));
+    assert.equal(
+      transformUserMarkdown(message, {
+        messageType: "user",
+        isStreaming: true,
+      }),
+      message,
+    );
+  }
+});
+
+test("prose truncation preserves a complete pair and the existing code-unit budget", () => {
+  for (const prefix of ["x".repeat(1198) + "😀", "界".repeat(1200)]) {
+    const message = [prefix + "tail", ...numberedLines(21)].join("\n");
+    const rendered = transformUserMarkdown(message, {
+      messageType: "user",
+      isStreaming: false,
+    });
+    assert.equal(rendered.split("\n")[0], prefix + "…");
+    assert.equal(Buffer.from(rendered, "utf8").toString("utf8"), rendered);
+  }
 });

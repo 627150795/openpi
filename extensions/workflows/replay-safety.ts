@@ -4,11 +4,13 @@ import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  DefaultResourceLoader,
-  ToolDefinition,
+import {
+  VERSION as PI_VERSION,
+  type DefaultResourceLoader,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { effectiveChildToolAllowlist } from "../shared/child-session.ts";
+import { isPiBuiltinExtensionPath } from "../shared/pi-builtin-extensions.ts";
 
 const REPLAY_FILESYSTEM_TOOL_NAMES = new Set([
   "read",
@@ -423,13 +425,44 @@ function canonicalPath(value: string) {
   return fs.realpathSync.native(value);
 }
 
-function repositoryFingerprint(cwd: string) {
+function deadlineBoundGitRunner() {
+  // One budget per fingerprint call: every git invocation shares a single
+  // deadline.
   const deadline = Date.now() + REPLAY_IDENTITY_TIMEOUT_MS;
-  const git = (gitCwd: string, args: readonly string[]) =>
+  return (gitCwd: string, args: readonly string[]) =>
     boundedGit(gitCwd, args, deadline);
-  const root = canonicalPath(git(cwd, ["rev-parse", "--show-toplevel"]).trim());
-  const head = git(root, ["rev-parse", "--verify", "HEAD"]).trim();
-  const diff = git(root, [
+}
+
+export function repositoryFingerprint(
+  cwd: string,
+  runGit: (
+    gitCwd: string,
+    args: readonly string[],
+  ) => string = deadlineBoundGitRunner(),
+) {
+  const root = canonicalPath(
+    runGit(cwd, ["rev-parse", "--show-toplevel"]).trim(),
+  );
+  const assertNoIgnoredFiles = () => {
+    // Ignored files are observable to a read-capable child but are commonly
+    // too large or secret-bearing to hash (node_modules, .env, build output).
+    // A complete identity cannot pretend they do not exist, so disable replay.
+    const ignoredOutput = runGit(root, [
+      "ls-files",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--directory",
+      "-z",
+    ]);
+    if (ignoredOutput.length > 0) {
+      throw new Error("ignored files make the replay identity incomplete");
+    }
+  };
+  // The common disqualifying case exits before the expensive binary diff.
+  assertNoIgnoredFiles();
+  const head = runGit(root, ["rev-parse", "--verify", "HEAD"]).trim();
+  const diff = runGit(root, [
     "diff",
     "--no-ext-diff",
     "--no-textconv",
@@ -437,7 +470,7 @@ function repositoryFingerprint(cwd: string) {
     "HEAD",
     "--",
   ]);
-  const trackedModes = git(root, ["ls-files", "-s", "-z"]);
+  const trackedModes = runGit(root, ["ls-files", "-s", "-z"]);
   // Tracked symlinks can expose changing content outside Git, while gitlinks
   // can expose submodule state absent from the parent diff. Neither has a
   // complete bounded identity here, so execute instead of replaying.
@@ -450,21 +483,11 @@ function repositoryFingerprint(cwd: string) {
   ) {
     throw new Error("symlinks and gitlinks make replay identity incomplete");
   }
-  // Ignored files are observable to a read-capable child but are commonly too
-  // large or secret-bearing to hash (node_modules, .env, build output). A
-  // complete identity cannot pretend they do not exist, so disable replay.
-  const ignoredOutput = git(root, [
-    "ls-files",
-    "--others",
-    "--ignored",
-    "--exclude-standard",
-    "--directory",
-    "-z",
-  ]);
-  if (ignoredOutput.length > 0) {
-    throw new Error("ignored files make the replay identity incomplete");
-  }
-  const untrackedOutput = git(root, [
+  // Preserve the original post-diff safety observation: an ignored file can
+  // appear while the synchronous diff is running, including from another
+  // process. The early check is only an optimization, never the final gate.
+  assertNoIgnoredFiles();
+  const untrackedOutput = runGit(root, [
     "ls-files",
     "--others",
     "--exclude-standard",
@@ -545,9 +568,24 @@ function resourceFingerprint(loader: ReplayResourceLoader) {
         `${right.name}\0${right.file.path}`,
       ),
     );
+  // Reviewed native factories have no file path. Bind both their presence and
+  // their implementation version; an unknown synthetic extension still cannot
+  // prove its behavior and must disable replay rather than disappear from it.
   const extensions = loader
     .getExtensions()
-    .extensions.map((extension) => resourceFile(extension.resolvedPath))
+    .extensions.map((extension) => {
+      const extensionPath = extension.resolvedPath;
+      if (isPiBuiltinExtensionPath(extensionPath)) {
+        return { path: extensionPath, runtimeVersion: PI_VERSION };
+      }
+      if (
+        extensionPath.startsWith("builtin:") ||
+        extensionPath.startsWith("<")
+      ) {
+        throw new Error(`unverifiable extension identity: ${extensionPath}`);
+      }
+      return resourceFile(extensionPath);
+    })
     .sort((left, right) => left.path.localeCompare(right.path));
 
   return digest(

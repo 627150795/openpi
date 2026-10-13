@@ -11,14 +11,15 @@ import type {
   KeybindingsManager,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
+import type {
+  Component,
+  Focusable,
+  TUI,
+  TuiMouseEvent,
+} from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { AgentSessionPage } from "../../../shared/agent-session-page.ts";
-import {
-  hintLine,
-  panelFrame,
-  type ScreenHint,
-} from "../../../shared/screen-chrome.ts";
+import { hintLine, panelFrame } from "../../../shared/screen-chrome.ts";
 import { sanitizeTerminalText } from "../../../shared/terminal-text.ts";
 import { formatElapsed, type SubagentSnapshot } from "../domain.ts";
 import { formatContextUtilization } from "../../../shared/context-utilization.ts";
@@ -66,6 +67,8 @@ function statusGlyph(
 
 export interface TakeoverOptions {
   readonly badge?: string;
+  /** Captured from the parent UI when this child page opens. */
+  readonly toolsExpanded?: boolean;
 }
 
 export async function openSubagentTakeover(
@@ -75,9 +78,21 @@ export async function openSubagentTakeover(
   options?: TakeoverOptions,
 ) {
   if (!view.get(id)) return;
+  const takeoverOptions: TakeoverOptions = {
+    ...options,
+    toolsExpanded: ctx.ui.getToolsExpanded(),
+  };
   await ctx.ui.custom<null>(
     (tui, theme, keybindings, done) =>
-      new TakeoverView(tui, theme, keybindings, id, view, done, options),
+      new TakeoverView(
+        tui,
+        theme,
+        keybindings,
+        id,
+        view,
+        done,
+        takeoverOptions,
+      ),
     {
       overlay: true,
       overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
@@ -262,11 +277,17 @@ export class SubagentDashboard implements Component {
     const running = subs.filter((snap) => snap.status === "running").length;
     const done = subs.filter((snap) => snap.status === "done").length;
     const failed = subs.filter((snap) => snap.status === "error").length;
+    const admission = this.view.childExecutionAdmission?.();
+    const admissionSummary =
+      admission?.enabled && admission.limit !== undefined
+        ? `${admission.held}/${admission.limit} session slots · ${admission.queued} queued · wf ${admission.heldByOrigin.workflow} / direct ${admission.heldByOrigin.direct} / btw ${admission.heldByOrigin.btw}`
+        : undefined;
     const summary =
       [
         running > 0 ? `${running} running` : "",
         done > 0 ? `${done} done` : "",
         failed > 0 ? `${failed} failed` : "",
+        admissionSummary ?? "",
       ]
         .filter(Boolean)
         .join(" · ") || "no agents";
@@ -280,7 +301,7 @@ export class SubagentDashboard implements Component {
       // One empty row of air between the conversation and the docked panel.
       "",
       ...panelFrame(theme, {
-        label: `Subagents · ${summary}`,
+        label: `Subagents · ${summary}${admission?.blockedReason ? ` · ${admission.blockedReason}` : ""}`,
         rows: rowLines,
         width,
         height: rowLines.length + 2,
@@ -407,30 +428,36 @@ export class TakeoverView implements Component, Focusable {
     done: (value: null) => void,
     options?: TakeoverOptions,
   ) {
-    this.page = new AgentSessionPage(tui, theme, keybindings, {
-      getState: () => {
-        const snap = view.get(id);
-        if (!snap) return undefined;
-        return {
-          id: snap.id,
-          title: snap.title,
-          status: snap.status,
-          document: subagentTranscriptDocument(
-            snap,
-            view.getToolRenderer?.(id),
-          ),
-          metadata: [
-            options?.badge,
-            snap.meta.modelLabel,
-            formatContextUtilization(snap.usage),
-            formatElapsed(snap),
-          ],
-          errorText: snap.errorText,
-        };
+    this.page = new AgentSessionPage(
+      tui,
+      theme,
+      keybindings,
+      {
+        getState: () => {
+          const snap = view.get(id);
+          if (!snap) return undefined;
+          return {
+            id: snap.id,
+            title: snap.title,
+            status: snap.status,
+            document: subagentTranscriptDocument(
+              snap,
+              view.getToolRenderer?.(id),
+            ),
+            metadata: [
+              options?.badge,
+              snap.meta.modelLabel,
+              formatContextUtilization(snap.usage),
+              formatElapsed(snap),
+            ],
+            errorText: snap.errorText,
+          };
+        },
+        close: () => this.close(done),
+        abort: () => view.requestAbort(id),
       },
-      close: () => this.close(done),
-      abort: () => view.requestAbort(id),
-    });
+      { toolsExpanded: options?.toolsExpanded },
+    );
     this.unsubscribe = view.subscribeTo(id, () => {
       this.refreshTicker(view.get(id), tui);
       this.scheduleRender(tui);
@@ -460,6 +487,7 @@ export class TakeoverView implements Component, Focusable {
     if (this.closed) return false;
     this.closed = true;
     this.unsubscribe();
+    this.page.dispose();
     if (this.ticker) clearInterval(this.ticker);
     if (this.renderTimer) clearTimeout(this.renderTimer);
     this.renderTimer = undefined;
@@ -476,6 +504,10 @@ export class TakeoverView implements Component, Focusable {
 
   handleInput(data: string): void {
     this.page.handleInput(data);
+  }
+
+  handleMouse(event: TuiMouseEvent) {
+    return this.page.handleMouse(event);
   }
 
   render(width: number): string[] {

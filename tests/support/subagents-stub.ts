@@ -11,7 +11,7 @@
  * - fails the run when the prompt starts with "FAIL:", and refuses to spawn
  *   at all when it starts with "SPAWNFAIL:" (error-path testing);
  * - hangs the run after RunStarted without any assistant event when the
- * prompt starts with "HANG:" (first-response watchdog testing);
+ * prompt starts with "HANG:" (cancellation and stalled-provider testing);
  * - appends every event to a JSONL "session file" in tmpdir so the
  *   "full transcript in session file" pointers resolve.
  */
@@ -276,6 +276,9 @@ const makeStubSession = (
       events: Stream.fromQueue(events),
       send: submit,
       interrupt: Effect.gen(function* () {
+        // Test-only: model a transport whose stop acknowledgement never
+        // returns, so manager lifecycle tests can assert fail-closed cleanup.
+        if (task.prompt.includes("STUCKSTOP:")) return yield* Effect.never;
         // Drop queued prompts so interrupting cannot immediately start
         // another turn, then stop the active turn. A prompt may be mid-flight
         // between the driver dequeuing it and registering its fiber, so wait

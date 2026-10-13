@@ -15,11 +15,9 @@ import {
 import { Type } from "typebox";
 import {
   agentFailureMessage,
-  createModelProgressWatchdog,
   guardWorkflowChildTools,
   observeAssistantSettlement,
   recordToolExecutionTiming,
-  resolveModelProgressTimeoutMs,
   runAgent,
   type ToolExecutionTiming,
   transcriptFromMessages,
@@ -64,7 +62,9 @@ async function settleWithin<T>(operation: Promise<T>, timeoutMs = 250) {
 
 function runnerHarness(options: {
   bind?: () => Promise<void>;
-  prompt?: () => Promise<void>;
+  prompt?: (
+    promptOptions?: Parameters<AgentSession["prompt"]>[1],
+  ) => Promise<void>;
   abort?: () => Promise<void>;
   shutdown?: () => Promise<void>;
   onMessageRead?: () => void;
@@ -103,9 +103,12 @@ function runnerHarness(options: {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    async prompt() {
+    async prompt(
+      _text: string,
+      promptOptions?: Parameters<AgentSession["prompt"]>[1],
+    ) {
       prompts++;
-      await options.prompt?.();
+      await options.prompt?.(promptOptions);
     },
     async abort() {
       aborts++;
@@ -817,11 +820,43 @@ test("cancel during prompt owns the session and returns after bounded disposal",
   const outcome = await outcomePromise;
   assert.equal(outcome.ok, false);
   assert.equal(outcome.aborted, true);
+  assert.equal(outcome.retainAdmissionLease, true);
   assert.match(outcome.error ?? "", /aborted.*abort timed out/i);
   assert.equal(harness.aborts(), 1);
   assert.equal(harness.disposals(), 1);
   prompt.resolve();
   abort.resolve();
+});
+
+test("cancellation during prompt preflight does not enter the provider loop", async () => {
+  const preflightStarted = deferred<void>();
+  const preflightRelease = deferred<void>();
+  let providerCalls = 0;
+  const harness = runnerHarness({
+    prompt: async (promptOptions) => {
+      preflightStarted.resolve();
+      await preflightRelease.promise;
+      promptOptions?.preflightResult?.("started");
+      providerCalls++;
+    },
+  });
+  const controller = new AbortController();
+  const outcomePromise = runHarnessAgent(harness, {
+    signal: controller.signal,
+    shutdownTimeoutMs: 10,
+  });
+
+  await preflightStarted.promise;
+  controller.abort(new Error("cancel during prompt preflight"));
+  const outcome = await outcomePromise;
+  preflightRelease.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.aborted, true);
+  assert.equal(providerCalls, 0);
+  assert.equal(harness.aborts(), 1);
+  assert.equal(harness.disposals(), 1);
 });
 
 test("cancel during a hanging tool ignores late events and progress writers", async () => {
@@ -860,7 +895,68 @@ test("cancel during a hanging tool ignores late events and progress writers", as
   prompt.resolve();
 });
 
-test("slow preflight does not arm the provider-turn watchdog", async () => {
+test("silent provider turns can complete after the former 45 second cutoff", async (t) => {
+  const prompt = deferred<void>();
+  const harness = runnerHarness({ prompt: () => prompt.promise });
+  const pending = runHarnessAgent(harness);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    harness.emit({ type: "turn_start" });
+    t.mock.timers.tick(46_000);
+    assert.equal(harness.aborts(), 0);
+    const completed = assistantTextMessage(
+      "provider completed after quiet thinking",
+    );
+    harness.messages.push(completed);
+    harness.emit({ type: "message_end", message: completed });
+    prompt.resolve();
+    const outcome = await pending;
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.output, "provider completed after quiet thinking");
+  } finally {
+    t.mock.timers.reset();
+    prompt.resolve();
+    await pending;
+  }
+});
+
+test("later quiet turns retain Pi transport failures instead of manufacturing a timeout", async (t) => {
+  const prompt = deferred<void>();
+  const harness = runnerHarness({ prompt: () => prompt.promise });
+  const pending = runHarnessAgent(harness);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const first = assistantTextMessage("earlier evidence");
+    harness.emit({ type: "turn_start" });
+    harness.messages.push(first);
+    harness.emit({ type: "message_end", message: first });
+    harness.emit({ type: "turn_start" });
+    t.mock.timers.tick(60_000);
+    assert.equal(harness.aborts(), 0);
+    const failure = {
+      ...assistantTextMessage(""),
+      stopReason: "error" as const,
+      errorMessage:
+        "Provider HTTP 429: account rate limit after native retries",
+    };
+    harness.messages.push(failure);
+    harness.emit({ type: "message_end", message: failure });
+    prompt.resolve();
+    const outcome = await pending;
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.aborted, false);
+    assert.equal(outcome.error, failure.errorMessage);
+    assert.match(outcome.output, /earlier evidence/);
+  } finally {
+    t.mock.timers.reset();
+    prompt.resolve();
+    await pending;
+  }
+});
+
+test("slow preflight can complete before the first provider turn", async () => {
   let run = async () => {};
   const harness = runnerHarness({ prompt: () => run() });
   run = async () => {
@@ -871,104 +967,14 @@ test("slow preflight does not arm the provider-turn watchdog", async () => {
     harness.emit({ type: "message_end", message: completed });
   };
 
-  const outcome = await runHarnessAgent(harness, {
-    modelProgressTimeoutMs: 10,
-  });
+  const outcome = await runHarnessAgent(harness);
 
   assert.equal(outcome.ok, true);
   assert.equal(outcome.output, "completed after preflight");
   assert.equal(harness.aborts(), 0);
 });
 
-test("a later provider turn with no visible progress is aborted and cannot become success", async () => {
-  const prompt = deferred<void>();
-  let emitAbort = () => {};
-  const harness = runnerHarness({
-    prompt: () => prompt.promise,
-    abort: async () => emitAbort(),
-  });
-  emitAbort = () => {
-    const aborted = {
-      ...assistantTextMessage(""),
-      content: [],
-      stopReason: "aborted" as const,
-      errorMessage: "Request was aborted",
-    };
-    harness.messages.push(aborted);
-    harness.emit({ type: "message_end", message: aborted });
-  };
-  const outcomePromise = runHarnessAgent(harness, {
-    modelProgressTimeoutMs: 10,
-    shutdownTimeoutMs: 20,
-  });
-
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  const first = {
-    ...assistantTextMessage("first turn evidence"),
-    content: [
-      { type: "text" as const, text: "first turn evidence" },
-      {
-        type: "toolCall" as const,
-        id: "read-1",
-        name: "read",
-        arguments: { path: "fixture.txt" },
-      },
-    ],
-    stopReason: "toolUse" as const,
-  };
-  const result = {
-    role: "toolResult" as const,
-    toolCallId: "read-1",
-    toolName: "read",
-    content: [{ type: "text" as const, text: "retained tool evidence" }],
-    isError: false,
-    timestamp: 1_100,
-  };
-  harness.emit({ type: "turn_start" });
-  harness.messages.push(first);
-  harness.emit({ type: "message_start", message: first });
-  harness.emit({ type: "message_end", message: first });
-  harness.emit({
-    type: "tool_execution_start",
-    toolCallId: "read-1",
-    toolName: "read",
-    args: { path: "fixture.txt" },
-  });
-  harness.messages.push(result);
-  harness.emit({
-    type: "tool_execution_end",
-    toolCallId: "read-1",
-    toolName: "read",
-    result,
-    isError: false,
-  });
-  harness.emit({ type: "turn_end", message: first, toolResults: [result] });
-  harness.emit({ type: "turn_start" });
-  harness.emit({ type: "message_start", message: assistantTextMessage("") });
-
-  const outcome = await settleWithin(outcomePromise);
-  const late = assistantTextMessage("late success");
-  harness.messages.push(late);
-  harness.emit({ type: "message_end", message: late });
-  prompt.resolve();
-
-  assert.equal(outcome.ok, false);
-  assert.equal(outcome.aborted, false);
-  assert.match(outcome.error ?? "", /no model-visible progress/i);
-  assert.equal(outcome.output, "first turn evidence");
-  assert.equal(outcome.usage.turns, 2);
-  assert.equal(
-    outcome.transcript.some(
-      (entry) =>
-        entry.role === "toolResult" && entry.text === "retained tool evidence",
-    ),
-    true,
-  );
-  assert.equal(harness.aborts(), 1);
-  assert.equal(harness.disposals(), 1);
-});
-
-test("model-visible deltas extend a provider turn until assistant completion", async () => {
+test("model-visible deltas preserve assistant completion", async () => {
   let run = async () => {};
   const harness = runnerHarness({ prompt: () => run() });
   run = async () => {
@@ -993,9 +999,7 @@ test("model-visible deltas extend a provider turn until assistant completion", a
     harness.emit({ type: "message_end", message: completed });
   };
 
-  const outcome = await runHarnessAgent(harness, {
-    modelProgressTimeoutMs: 30,
-  });
+  const outcome = await runHarnessAgent(harness);
 
   assert.equal(outcome.ok, true);
   assert.equal(outcome.output, "done");
@@ -1008,83 +1012,6 @@ test("cleanup timeout is surfaced instead of reporting agent success", async () 
   assert.equal(outcome.ok, false);
   assert.match(outcome.error ?? "", /cleanup failed.*shutdown timed out/i);
   assert.equal(harness.disposals(), 1);
-});
-
-test("model-progress watchdog aborts a silent provider turn", async () => {
-  let aborted = false;
-  const watchdog = createModelProgressWatchdog(
-    async () => {
-      aborted = true;
-    },
-    { timeoutMs: 10, model: "fixture-model" },
-  );
-  watchdog.armTurn();
-
-  await assert.rejects(
-    watchdog.waitFor(new Promise<never>(() => {})),
-    /provider turn for fixture-model.*no model-visible progress for 10 ms.*stalled/i,
-  );
-  assert.equal(aborted, true);
-});
-
-test("model-progress timeout preserves the default and honors wider Pi idle settings", () => {
-  assert.equal(
-    resolveModelProgressTimeoutMs(SettingsManager.inMemory()),
-    45_000,
-  );
-  assert.equal(
-    resolveModelProgressTimeoutMs(
-      SettingsManager.inMemory({ httpIdleTimeoutMs: 120_000 }),
-    ),
-    120_000,
-  );
-  assert.equal(
-    resolveModelProgressTimeoutMs(
-      SettingsManager.inMemory({ httpIdleTimeoutMs: 120_000 }),
-      5,
-    ),
-    5,
-  );
-});
-
-test("model progress refreshes its turn while completion leaves tool time unrestricted", async () => {
-  let timedOut = false;
-  const watchdog = createModelProgressWatchdog(
-    async () => {
-      timedOut = true;
-    },
-    { timeoutMs: 30 },
-  );
-  watchdog.armTurn();
-
-  const result = await watchdog.waitFor(
-    (async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      watchdog.markProgress();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      watchdog.completeTurn();
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      return "done";
-    })(),
-  );
-  assert.equal(result, "done");
-  assert.equal(timedOut, false);
-});
-
-test("explicit watchdog cancellation disarms a pending operation", async () => {
-  let timedOut = false;
-  const watchdog = createModelProgressWatchdog(
-    async () => {
-      timedOut = true;
-    },
-    { timeoutMs: 5 },
-  );
-  watchdog.armTurn();
-  void watchdog.waitFor(new Promise<never>(() => {}));
-  watchdog.cancel();
-
-  await new Promise((resolve) => setTimeout(resolve, 15));
-  assert.equal(timedOut, false);
 });
 
 test("structured role children keep their terminating tool without widening capabilities", () => {
@@ -1274,4 +1201,43 @@ test("workflow children guard structured, normal, and dynamically registered too
   );
   assert.equal(dynamicSignal?.aborted, true);
   unsubscribe();
+});
+
+test("runAgent captures tools absent from messages and classifies cancellation independently", async () => {
+  let respond = () => {};
+  const controller = new AbortController();
+  const harness = runnerHarness({ prompt: async () => respond() });
+  respond = () => {
+    harness.emit({
+      type: "tool_execution_start",
+      toolCallId: "observed-only",
+      toolName: "read",
+      args: { private: "secret" },
+    });
+    harness.emit({
+      type: "tool_execution_end",
+      toolCallId: "observed-only",
+      toolName: "read",
+      result: {
+        content: [{ type: "text", text: "secret output" }],
+        details: {},
+      },
+      isError: false,
+    });
+    harness.emit({
+      type: "tool_execution_start",
+      toolCallId: "unfinished",
+      toolName: "read",
+      args: {},
+    });
+    controller.abort(new Error("fixture cancellation"));
+  };
+  const outcome = await runHarnessAgent(harness, { signal: controller.signal });
+  assert.equal(outcome.timing?.summary.tools.started, 2);
+  assert.equal(outcome.timing?.summary.tools.paired, 1);
+  assert.equal(outcome.timing?.summary.tools.unclosedStarts, 1);
+  assert.equal(outcome.timing?.summary.outcome, "cancelled");
+  assert.equal(outcome.timing?.summary.coverage, "partial-tool-events");
+  assert.equal(outcome.transcript.length, 0);
+  assert.ok(!JSON.stringify(outcome.timing).includes("secret"));
 });

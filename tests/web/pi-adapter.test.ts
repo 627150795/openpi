@@ -1,0 +1,1548 @@
+import assert from "node:assert/strict";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { PiWebAdapter } from "../../web/adapter/pi-adapter.ts";
+import { WebHost } from "../../web/host/web-host.ts";
+import {
+  WEB_MAX_SESSIONS,
+  WEB_MAX_SNAPSHOT_BYTES,
+  WEB_MAX_SELECTED_TRANSCRIPT_BYTES,
+} from "../../web/protocol/types.ts";
+import { projectWebModelSearch } from "../../web/runtime/model-discovery.ts";
+import type { WebRuntimeController } from "../../web/runtime/types.ts";
+
+function runtimeFor(
+  cwd: string,
+  sessionDirectory: string,
+  sessionManager: SessionManager,
+): WebRuntimeController {
+  return {
+    cwd,
+    workspaceSelected: true,
+    sessionDirectory,
+    sessionManager,
+    isIdle: () => true,
+    getActiveTurn: () => undefined,
+    cancelTurn: async (options) => ({ ...options, state: "stale-turn" }),
+    sendPrompt: async () => ({ pendingFollowUps: 0 }),
+    newSession: async () => ({
+      cancelled: false,
+      sessionId: sessionManager.getSessionId(),
+    }),
+    switchSession: async () => ({ cancelled: false }),
+    listModels: () => [],
+    searchModels: (query, limit) => projectWebModelSearch([], query, limit),
+    setModel: async () => {
+      throw new Error("Model is not available");
+    },
+    subscribe: () => () => {},
+    dispose: async () => {},
+  };
+}
+
+const zeroUsage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+  },
+};
+
+function persistSession(
+  manager: SessionManager,
+  content: string,
+  timestamp: number,
+) {
+  manager.appendMessage({ role: "user", content, timestamp });
+  manager.appendMessage({
+    role: "assistant",
+    content: [],
+    api: "openai-responses",
+    provider: "fixture",
+    model: "fixture",
+    usage: zeroUsage,
+    stopReason: "stop",
+    timestamp,
+  });
+}
+
+test("content search uses Pi's visible catalog and locates older messages in a bounded native window", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-search-window-"));
+  const directory = join(root, "sessions");
+  try {
+    const manager = SessionManager.create(root, directory);
+    persistSession(manager, "older BODY-NEEDLE", 1);
+    const promptId = manager
+      .getBranch()
+      .find(
+        (entry) => entry.type === "message" && entry.message.role === "user",
+      )!.id;
+    manager.appendSessionInfo("Searchable title");
+    for (let index = 0; index < 340; index++)
+      persistSession(manager, `later turn ${index}`, index + 2);
+    const path = manager.getSessionFile()!;
+    const runtime = runtimeFor(root, directory, manager);
+    const adapter = new PiWebAdapter(runtime);
+    const recent = await adapter.getSession(path);
+    assert.ok(!recent!.entries.some((entry) => entry.id === promptId));
+    const found = await adapter.searchTranscripts("BODY-NEEDLE");
+    assert.equal(found.matches.length, 1);
+    assert.equal(found.matches[0]!.sessionName, "Searchable title");
+    assert.equal(found.matches[0]!.messageId, promptId);
+    const window = await adapter.getSessionMessageWindow(
+      manager.getSessionId(),
+      path,
+      promptId,
+    );
+    assert.equal(window.status, "ok");
+    if (window.status === "ok") {
+      assert.equal(window.session.history!.anchorOnBranch, true);
+      assert.ok(window.session.entries.some((entry) => entry.id === promptId));
+      assert.ok(
+        Buffer.byteLength(JSON.stringify({ session: window.session })) <=
+          WEB_MAX_SELECTED_TRANSCRIPT_BYTES,
+      );
+    }
+    assert.equal(
+      (await adapter.getSessionMessageWindow("copied-id", path, promptId))
+        .status,
+      "changed",
+    );
+    assert.equal(
+      (
+        await adapter.getSessionMessageWindow(
+          manager.getSessionId(),
+          path,
+          "missing",
+        )
+      ).status,
+      "changed",
+    );
+    await adapter.archiveSession(path);
+    assert.equal(
+      (await adapter.searchTranscripts("BODY-NEEDLE")).matches.length,
+      0,
+    );
+    assert.equal(
+      (
+        await adapter.searchTranscripts("BODY-NEEDLE", {
+          includeArchived: true,
+        })
+      ).matches.length,
+      1,
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      adapter.searchTranscripts("BODY-NEEDLE", { signal: controller.signal }),
+      /abort/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pins preserve identity and manual order across reload, archive and workspace changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-pins-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const first = SessionManager.create(root, sessionDirectory);
+    persistSession(first, "first", 1);
+    const second = SessionManager.create(root, sessionDirectory);
+    persistSession(second, "second", 2);
+    const runtime = runtimeFor(root, sessionDirectory, second);
+    const adapter = new PiWebAdapter(runtime);
+    const a = { path: first.getSessionFile()!, id: first.getSessionId() };
+    const b = { path: second.getSessionFile()!, id: second.getSessionId() };
+    const ordered = async (source: PiWebAdapter) =>
+      (await source.listSessions())
+        .filter(
+          (session) => session.pinOrder !== undefined && !session.archived,
+        )
+        .sort((a, b) => a.pinOrder! - b.pinOrder!)
+        .map((session) => session.path);
+    await Promise.all([
+      adapter.setSessionPin(a.path, a.id, true),
+      adapter.setSessionPin(b.path, b.id, true),
+    ]);
+    assert.deepEqual(await ordered(adapter), [a.path, b.path]);
+    await adapter.setSessionPin(b.path, b.id, true, a);
+    await adapter.setSessionPin(b.path, b.id, true); // Retry does not move an existing pin.
+    assert.deepEqual(await ordered(new PiWebAdapter(runtime)), [
+      b.path,
+      a.path,
+    ]);
+    await adapter.archiveSession(b.path);
+    assert.deepEqual(await ordered(adapter), [a.path]);
+    await adapter.unarchiveSession(b.path);
+    assert.deepEqual(await ordered(adapter), [b.path, a.path]);
+    await adapter.renameWorkspace(root, "Renamed");
+    assert.deepEqual(await ordered(new PiWebAdapter(runtime)), [
+      b.path,
+      a.path,
+    ]);
+    await assert.rejects(
+      adapter.setSessionPin(a.path, "stale-id", false),
+      /identity changed/,
+    );
+    await assert.rejects(
+      adapter.setSessionPin(a.path, a.id, true, {
+        path: b.path,
+        id: "stale-id",
+      }),
+      /order changed/,
+    );
+    const copyPath = join(sessionDirectory, "copied.jsonl");
+    await writeFile(copyPath, await readFile(a.path));
+    assert.equal(
+      (await adapter.listSessions()).find(
+        (session) => session.path === copyPath,
+      )?.pinOrder,
+      undefined,
+    );
+    await adapter.setSessionPin(a.path, a.id, false);
+    assert.deepEqual(await ordered(new PiWebAdapter(runtime)), [b.path]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pin writes fail closed and retain the previous persisted order", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-pin-failure-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const manager = SessionManager.create(root, sessionDirectory);
+    persistSession(manager, "first", 1);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, manager),
+    );
+    const path = manager.getSessionFile()!;
+    await adapter.setSessionPin(path, manager.getSessionId(), true);
+    const metadata = join(sessionDirectory, "workspace-state.json");
+    const prior = await readFile(metadata, "utf8");
+    await rm(metadata);
+    await mkdir(metadata);
+    await assert.rejects(
+      adapter.setSessionPin(path, manager.getSessionId(), false),
+    );
+    assert.equal(
+      (await adapter.listSessions()).find((session) => session.path === path)
+        ?.pinOrder,
+      0,
+    );
+    await rm(metadata, { recursive: true });
+    await writeFile(metadata, prior);
+    await adapter.setSessionPin(path, manager.getSessionId(), false);
+    assert.equal(
+      (await adapter.listSessions()).find((session) => session.path === path)
+        ?.pinOrder,
+      undefined,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("session projection uses the selected file when IDs are duplicated", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-session-identity-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.create(root, sessionDirectory);
+    persistSession(current, "original conversation", 1);
+    const currentPath = current.getSessionFile()!;
+    const copyPath = join(sessionDirectory, "copied-session.jsonl");
+    await writeFile(copyPath, await readFile(currentPath));
+    const copy = SessionManager.open(copyPath, sessionDirectory);
+    persistSession(copy, "copied conversation only", 2);
+    await utimes(copyPath, new Date(), new Date(Date.now() + 10_000));
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+
+    const snapshot = await adapter.getSnapshot(copyPath);
+    assert.equal(snapshot.selectedSession?.path, copyPath);
+    assert.equal(
+      snapshot.sessions.find((item) => item.path === copyPath)?.controller,
+      "none",
+    );
+    assert.match(
+      JSON.stringify(snapshot.selectedSession?.entries),
+      /copied conversation only/,
+    );
+    assert.doesNotMatch(
+      JSON.stringify((await adapter.getSession(currentPath))?.entries),
+      /copied conversation only/,
+    );
+    assert.equal(
+      (await adapter.getSnapshot()).selectedSession?.path,
+      currentPath,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("session summaries include only known execution facts for an exact Session identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-session-status-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.create(root, sessionDirectory);
+    persistSession(current, "current conversation", 1);
+    const currentPath = current.getSessionFile()!;
+    const copiedPath = join(sessionDirectory, "copied-session.jsonl");
+    await writeFile(copiedPath, await readFile(currentPath));
+    const unknown = SessionManager.create(root, sessionDirectory);
+    persistSession(unknown, "unloaded conversation", 2);
+    const runtime = runtimeFor(root, sessionDirectory, current);
+    runtime.getSessionExecution = (sessionId, sessionPath) => {
+      if (sessionId === current.getSessionId()) {
+        return {
+          sessionId,
+          sessionPath: currentPath,
+          status: "running",
+          pendingFollowUps: 2,
+          queuedMessages: ["private queued content"],
+          liveTools: [],
+          liveToolsOmitted: 0,
+        };
+      }
+      return {
+        sessionId,
+        sessionPath,
+        status: "unknown",
+        liveTools: [],
+        liveToolsOmitted: 0,
+      };
+    };
+    const adapter = new PiWebAdapter(runtime);
+    const sessions = await adapter.listSessions();
+    assert.deepEqual(
+      sessions.find((session) => session.path === currentPath)?.execution,
+      {
+        status: "running",
+        pendingFollowUps: 2,
+      },
+    );
+    assert.equal(
+      sessions.find((session) => session.path === copiedPath)?.execution,
+      undefined,
+    );
+    assert.equal(
+      sessions.find((session) => session.path === unknown.getSessionFile())
+        ?.execution,
+      undefined,
+    );
+    assert.doesNotMatch(JSON.stringify(sessions), /private queued content/);
+
+    runtime.getSessionExecution = (sessionId, sessionPath) => ({
+      sessionId: "mismatched-id",
+      sessionPath,
+      status: "running",
+      pendingFollowUps: 3,
+      liveTools: [],
+      liveToolsOmitted: 0,
+    });
+    assert.equal(
+      (await adapter.listSessions()).some((session) => session.execution),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("renaming a copied session does not rename the active session with the same ID", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-session-rename-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.create(root, sessionDirectory);
+    persistSession(current, "original conversation", 1);
+    current.appendSessionInfo("active name");
+    const currentPath = current.getSessionFile()!;
+    const originalBytes = await readFile(currentPath);
+    const copyPath = join(sessionDirectory, "copied-session.jsonl");
+    await writeFile(copyPath, originalBytes);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+
+    await adapter.renameSession(copyPath, "copy name");
+    assert.equal(
+      SessionManager.open(copyPath, sessionDirectory).getSessionName(),
+      "copy name",
+    );
+    assert.equal(current.getSessionName(), "active name");
+    assert.deepEqual(await readFile(currentPath), originalBytes);
+    await adapter.renameSession(currentPath, "new active name");
+    assert.equal(current.getSessionName(), "new active name");
+    assert.equal(
+      SessionManager.open(copyPath, sessionDirectory).getSessionName(),
+      "copy name",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("selecting a copied session calls the runtime despite a shared session ID", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-select-identity-"));
+  const sessionDirectory = join(root, "sessions");
+  const current = SessionManager.create(root, sessionDirectory);
+  persistSession(current, "original conversation", 1);
+  const currentPath = current.getSessionFile()!;
+  const copyPath = join(sessionDirectory, "copied-session.jsonl");
+  await writeFile(copyPath, await readFile(currentPath));
+  const runtime = runtimeFor(root, sessionDirectory, current);
+  const switched: string[] = [];
+  runtime.switchSession = async (path) => {
+    switched.push(path);
+    return { cancelled: false };
+  };
+  const host = new WebHost({ runtime });
+  try {
+    await host.start();
+    const url = new URL(host.url);
+    const token = new URLSearchParams(url.hash.slice(1)).get("token");
+    for (const path of [currentPath, copyPath]) {
+      const response = await fetch(`${url.origin}/api/sessions/select`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ path }),
+      });
+      assert.equal(response.status, 200);
+      await response.json();
+    }
+    assert.deepEqual(switched, [copyPath]);
+  } finally {
+    await host.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("snapshot pins current and selected sessions while bounding the projection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-adapter-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.inMemory(root);
+    current.appendMessage({ role: "user", content: "current", timestamp: 1 });
+    const selectedCwd = join(root, "selected-workspace");
+    await mkdir(selectedCwd);
+    const selected = SessionManager.create(selectedCwd, sessionDirectory);
+    persistSession(selected, "selected", 2);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    const pinnedSession = SessionManager.create(root, sessionDirectory);
+    persistSession(pinnedSession, "pinned outside the recent window", 2);
+    await adapter.setSessionPin(
+      pinnedSession.getSessionFile()!,
+      pinnedSession.getSessionId(),
+      true,
+    );
+    for (let index = 0; index < WEB_MAX_SESSIONS + 3; index++) {
+      const manager = SessionManager.create(root, sessionDirectory);
+      persistSession(manager, `session-${index}`, index + 3);
+    }
+
+    const selectedPath = selected.getSessionFile();
+    assert.ok(selectedPath);
+    const snapshot = await adapter.getSnapshot(selectedPath);
+    assert.equal(
+      snapshot.sessions.find(
+        (session) => session.path === pinnedSession.getSessionFile(),
+      )?.pinOrder,
+      0,
+    );
+
+    assert.equal(snapshot.sessions.length, WEB_MAX_SESSIONS);
+    assert.ok(
+      snapshot.sessions.some(
+        (session) => session.id === current.getSessionId(),
+      ),
+    );
+    const currentSummary = snapshot.sessions.find(
+      (session) => session.id === current.getSessionId(),
+    );
+    assert.deepEqual(
+      {
+        source: currentSummary?.source,
+        origin: currentSummary?.origin,
+        controller: currentSummary?.controller,
+        readOnly: currentSummary?.readOnly,
+      },
+      {
+        source: "web-session",
+        origin: "web",
+        controller: "web",
+        readOnly: false,
+      },
+    );
+    assert.ok(
+      snapshot.sessions.some((session) => session.path === selectedPath),
+    );
+    const selectedSummary = snapshot.sessions.find(
+      (session) => session.path === selectedPath,
+    );
+    assert.equal(selectedSummary?.source, "web-session");
+    assert.equal(selectedSummary?.origin, "web");
+    assert.equal(selectedSummary?.controller, "none");
+    assert.equal(selectedSummary?.readOnly, false);
+    assert.equal(snapshot.selectedSession?.path, selectedPath);
+    assert.equal(
+      (
+        await new PiWebAdapter(
+          runtimeFor(root, sessionDirectory, current),
+        ).requireSession(selectedPath)
+      ).cwd,
+      selectedCwd,
+    );
+    assert.equal(snapshot.truncation.sessionsOmitted, 6);
+    assert.equal(snapshot.truncation.truncated, true);
+    assert.ok(snapshot.truncation.bytes <= WEB_MAX_SNAPSHOT_BYTES);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("discovers default Pi sessions as bounded read-only projections", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-terminal-history-"));
+  const sessionDirectory = join(root, "web-sessions");
+  const agentDirectory = join(root, "pi-agent");
+  const previousAgentDirectory = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDirectory;
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const current = SessionManager.inMemory(root);
+    const terminal = SessionManager.create(root);
+    persistSession(terminal, "terminal history", 2);
+    const terminalPath = terminal.getSessionFile();
+    assert.ok(terminalPath);
+    const unrelatedWorkspace = join(root, "unrelated-workspace");
+    await mkdir(unrelatedWorkspace);
+    const unrelated = SessionManager.create(unrelatedWorkspace);
+    persistSession(unrelated, "unrelated first message", 3);
+    unrelated.appendMessage({
+      role: "user",
+      content: "unrelated-only-token",
+      timestamp: 4,
+    });
+    const unrelatedPath = unrelated.getSessionFile();
+    assert.ok(unrelatedPath);
+    const fileBefore = await readFile(terminalPath);
+    const originalOpen = fsPromises.open;
+    const openedPaths: string[] = [];
+    t.mock.method(
+      fsPromises,
+      "open",
+      (...args: Parameters<typeof originalOpen>) => {
+        openedPaths.push(String(args[0]));
+        assert.notEqual(String(args[0]), unrelatedPath);
+        return originalOpen(...args);
+      },
+    );
+    syncBuiltinESMExports();
+    t.after(() => {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    });
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    const listAll = SessionManager.listAll;
+    SessionManager.listAll = async () => {
+      throw new Error("unrelated Session discovery must not be used");
+    };
+    try {
+      const listed = await adapter.listReadOnlyTerminalSessions({ limit: 1 });
+      assert.equal(listed.total, 1);
+      assert.equal("allMessagesText" in listed.sessions[0]!, false);
+      assert.deepEqual(listed.sessions[0], {
+        id: terminal.getSessionId(),
+        path: terminalPath,
+        cwd: root,
+        modified: listed.sessions[0]?.modified,
+        created: listed.sessions[0]?.created,
+        messageCount: 2,
+        metadataPartial: false,
+        firstMessage: "terminal history",
+        source: "pi-default",
+        origin: "terminal",
+        readOnly: true,
+      });
+      const inspected = await adapter.getReadOnlyTerminalSession(terminalPath);
+      assert.equal(inspected.readOnly, true);
+      assert.equal(inspected.source, "pi-default");
+      assert.equal(inspected.preview.messages.length, 2);
+      assert.equal("allMessagesText" in inspected, false);
+      assert.ok(openedPaths.includes(terminalPath));
+      assert.equal(
+        (
+          await adapter.listReadOnlyTerminalSessions({
+            query: "unrelated-only-token",
+          })
+        ).total,
+        0,
+      );
+      await assert.rejects(
+        adapter.getReadOnlyTerminalSession(unrelatedPath),
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as { code?: string }).code === "SESSION_NOT_FOUND",
+      );
+      const cancelled = AbortSignal.abort();
+      const opensBefore = openedPaths.length;
+      await assert.rejects(
+        adapter.getReadOnlyTerminalSession(terminalPath, { signal: cancelled }),
+        { name: "AbortError" },
+      );
+      await assert.rejects(
+        adapter.listReadOnlyTerminalSessions({ signal: cancelled }),
+        { name: "AbortError" },
+      );
+      assert.equal(openedPaths.length, opensBefore);
+
+      const controller = new AbortController();
+      let targetOpens = 0;
+      t.mock.method(
+        fsPromises,
+        "open",
+        async (...args: Parameters<typeof originalOpen>) => {
+          const handle = await originalOpen(...args);
+          if (String(args[0]) === terminalPath && ++targetOpens === 2) {
+            const read = handle.read.bind(handle);
+            t.mock.method(
+              handle,
+              "read",
+              async (...readArgs: Parameters<typeof read>) => {
+                const result = await read(...readArgs);
+                controller.abort();
+                return result;
+              },
+            );
+          }
+          return handle;
+        },
+      );
+      syncBuiltinESMExports();
+      await assert.rejects(
+        adapter.getReadOnlyTerminalSession(terminalPath, {
+          signal: controller.signal,
+        }),
+        { name: "AbortError" },
+      );
+      assert.equal(
+        targetOpens,
+        2,
+        "cancellation occurs during the preview, after metadata admission",
+      );
+    } finally {
+      SessionManager.listAll = listAll;
+    }
+    assert.equal((await SessionManager.listAll(sessionDirectory)).length, 0);
+    assert.deepEqual(await readFile(terminalPath), fileBefore);
+    assert.equal(
+      (await adapter.listSessions()).some(
+        (session) => session.path === terminalPath,
+      ),
+      false,
+    );
+    assert.equal(
+      (await adapter.getSnapshot()).currentSessionId,
+      current.getSessionId(),
+    );
+    const hidden = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    await hidden.removeWorkspace(root);
+    const unboundRuntime = {
+      ...runtimeFor(root, sessionDirectory, current),
+      workspaceSelected: false,
+    };
+    const unbound = new PiWebAdapter(unboundRuntime);
+    const originalReaddir = fsPromises.readdir;
+    t.mock.method(
+      fsPromises,
+      "readdir",
+      (...args: Parameters<typeof originalReaddir>) => {
+        assert.ok(
+          !String(args[0]).startsWith(agentDirectory),
+          "unavailable workspace must not walk the default store",
+        );
+        return originalReaddir(...args);
+      },
+    );
+    syncBuiltinESMExports();
+    await assert.rejects(hidden.listReadOnlyTerminalSessions());
+    await assert.rejects(unbound.listReadOnlyTerminalSessions());
+
+    const firstKept = terminal.appendMessage({
+      role: "user",
+      content: "kept after compaction",
+      timestamp: 5,
+    });
+    terminal.appendCompaction("summary before kept window", firstKept, 100);
+    const compacted = await adapter.getReadOnlyTerminalSession(terminalPath);
+    assert.ok(
+      JSON.stringify(compacted.preview.messages).includes(
+        "kept after compaction",
+      ),
+    );
+    assert.ok(
+      !JSON.stringify(compacted.preview.messages).includes("terminal history"),
+    );
+    assert.ok(compacted.preview.messages.length <= 80);
+    assert.ok(compacted.preview.retainedBytes <= 1024 * 1024);
+    await assert.rejects(
+      readFile(join(sessionDirectory, "archived-sessions.json")),
+      { code: "ENOENT" },
+    );
+    terminal.appendMessage({
+      role: "user",
+      content: "x".repeat(300 * 1024),
+      timestamp: 8,
+    });
+    terminal.appendSessionInfo("late metadata name");
+    const partial = await adapter.listReadOnlyTerminalSessions();
+    assert.equal(partial.partial, true);
+    assert.equal(partial.sessions[0]?.metadataPartial, true);
+    assert.equal(
+      (await adapter.getReadOnlyTerminalSession(terminalPath)).metadataPartial,
+      true,
+    );
+    const unmatched = await adapter.listReadOnlyTerminalSessions({
+      query: "late metadata name",
+    });
+    assert.equal(unmatched.sessions.length, 0);
+    assert.equal(
+      unmatched.partial,
+      true,
+      "an absent match in a prefix is not a complete search",
+    );
+    const directory = terminalPath.slice(
+      0,
+      Math.max(terminalPath.lastIndexOf("/"), terminalPath.lastIndexOf("\\")),
+    );
+    for (let i = 0; i <= WEB_MAX_SESSIONS; i++)
+      await writeFile(join(directory, `unrelated-${i}.txt`), "");
+    const capped = await adapter.listReadOnlyTerminalSessions();
+    assert.equal(
+      capped.partial,
+      true,
+      "directory traversal stops at the discovery bound",
+    );
+  } finally {
+    if (previousAgentDirectory === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = previousAgentDirectory;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an unbound Web runtime never projects its bootstrap cwd as a workspace or Session", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-unbound-"));
+  const bootstrap = join(root, ".bootstrap-workspace");
+  const imported = join(root, "chosen-workspace");
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await Promise.all([
+      mkdir(bootstrap, { recursive: true }),
+      mkdir(imported, { recursive: true }),
+      mkdir(sessionDirectory, { recursive: true }),
+    ]);
+    const current = SessionManager.inMemory(bootstrap);
+    const runtime = Object.assign(
+      runtimeFor(bootstrap, sessionDirectory, current),
+      { workspaceSelected: false as const },
+    );
+    const adapter = new PiWebAdapter(runtime);
+
+    const initial = await adapter.getSnapshot();
+    assert.deepEqual(initial.workspaces, []);
+    assert.deepEqual(initial.sessions, []);
+    assert.equal(initial.currentSessionId, undefined);
+    assert.equal(initial.selectedSession, undefined);
+
+    await adapter.importWorkspace(imported);
+    const afterImport = await adapter.getSnapshot();
+    const canonicalImported = await realpath(imported);
+    const canonicalBootstrap = await realpath(bootstrap);
+    assert.deepEqual(
+      afterImport.workspaces.map((workspace) => workspace.path),
+      [canonicalImported],
+    );
+    assert.equal(
+      afterImport.workspaces.some(
+        (workspace) => workspace.path === canonicalBootstrap,
+      ),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("selected transcript is byte bounded with explicit omission evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-transcript-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.inMemory(root);
+    for (let index = 0; index < 300; index++) {
+      current.appendMessage({
+        role: "user",
+        content: `${index}:${"x".repeat(20_000)}`,
+        timestamp: index,
+      });
+    }
+    const runtime: WebRuntimeController = {
+      ...runtimeFor(root, sessionDirectory, current),
+      listModels: () =>
+        Array.from({ length: 1_000 }, (_, index) => ({
+          provider: "p".repeat(1_000),
+          id: `model-${index}`,
+          name: "n".repeat(1_000),
+          label: "l".repeat(1_000),
+          current: index === 999,
+        })),
+    };
+    const adapter = new PiWebAdapter(runtime);
+    const snapshot = await adapter.getSnapshot();
+
+    assert.ok(snapshot.selectedSession);
+    assert.ok(snapshot.selectedSession.bytes <= 2 * 1024 * 1024);
+    assert.ok(snapshot.selectedSession.truncation.entriesOmitted > 0);
+    assert.equal(snapshot.selectedSession.truncation.truncated, true);
+    assert.equal(snapshot.models.length, 250);
+    assert.ok(snapshot.models.some((model) => model.current));
+    assert.equal(snapshot.truncation.modelsOmitted, 750);
+    assert.ok(snapshot.truncation.bytes <= WEB_MAX_SNAPSHOT_BYTES);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("first archive mutation preserves previously persisted archive metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-archive-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const existing = join(sessionDirectory, "existing.jsonl");
+    await writeFile(
+      join(sessionDirectory, "archived-sessions.json"),
+      `${JSON.stringify([existing])}\n`,
+    );
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    const currentPath = `current:${current.getSessionId()}`;
+
+    await adapter.archiveSession(currentPath);
+
+    const persisted = JSON.parse(
+      await readFile(join(sessionDirectory, "archived-sessions.json"), "utf8"),
+    ) as string[];
+    assert.deepEqual(
+      new Set(persisted),
+      new Set([existing, resolve(currentPath)]),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("archived Session listing is queryable, cursor-bounded, and stale-safe", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-archived-list-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.inMemory(root);
+    const alphaOne = SessionManager.create(root, sessionDirectory);
+    persistSession(alphaOne, "alpha first", 1);
+    alphaOne.appendSessionInfo("Alpha One");
+    const alphaTwo = SessionManager.create(root, sessionDirectory);
+    persistSession(alphaTwo, "alpha second", 2);
+    alphaTwo.appendSessionInfo("Alpha Two");
+    const beta = SessionManager.create(root, sessionDirectory);
+    persistSession(beta, "beta only", 3);
+    beta.appendSessionInfo("Beta");
+    const paths = [
+      alphaOne.getSessionFile(),
+      alphaTwo.getSessionFile(),
+      beta.getSessionFile(),
+    ];
+    assert.ok(paths.every((path) => path !== undefined));
+
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    for (const path of paths) await adapter.archiveSession(path!);
+
+    const first = await adapter.listArchivedSessions({
+      query: "ALPHA",
+      limit: 1,
+    });
+    assert.equal(first.status, "ok");
+    if (first.status !== "ok") return;
+    assert.equal(first.sessions.length, 1);
+    assert.equal(first.sessions[0]?.archived, true);
+    assert.ok(first.nextCursor);
+    assert.equal(first.truncation.matchesOmitted, 1);
+
+    const second = await adapter.listArchivedSessions({
+      query: "alpha",
+      limit: 1,
+      cursor: first.nextCursor,
+    });
+    assert.equal(second.status, "ok");
+    if (second.status !== "ok") return;
+    assert.equal(second.sessions.length, 1);
+    assert.equal(second.nextCursor, undefined);
+    assert.deepEqual(
+      new Set([...first.sessions, ...second.sessions].map((item) => item.id)),
+      new Set([alphaOne.getSessionId(), alphaTwo.getSessionId()]),
+    );
+
+    assert.deepEqual(
+      await adapter.listArchivedSessions({
+        cursor: first.nextCursor,
+        query: "different-query",
+      }),
+      { status: "stale_cursor" },
+    );
+    assert.deepEqual(
+      await adapter.listArchivedSessions({ cursor: "not-a-valid-cursor" }),
+      { status: "invalid" },
+    );
+    assert.deepEqual(await adapter.listArchivedSessions({ limit: 51 }), {
+      status: "invalid",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("archived cursors bind duplicate IDs to their file and stay replayable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-archived-cursor-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.inMemory(root);
+    const first = SessionManager.create(root, sessionDirectory);
+    persistSession(first, "中".repeat(160), 1);
+    const firstPath = first.getSessionFile();
+    assert.ok(firstPath);
+    const duplicatePath = join(sessionDirectory, "duplicate.jsonl");
+    await writeFile(duplicatePath, await readFile(firstPath));
+    const second = SessionManager.create(root, sessionDirectory);
+    persistSession(second, "ﬃ".repeat(50), 2);
+    const secondPath = second.getSessionFile();
+    assert.ok(secondPath);
+    const normalizedSecond = SessionManager.create(root, sessionDirectory);
+    persistSession(normalizedSecond, "ﬃ".repeat(50), 3);
+    const normalizedSecondPath = normalizedSecond.getSessionFile();
+    assert.ok(normalizedSecondPath);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    for (const path of [
+      firstPath,
+      duplicatePath,
+      secondPath,
+      normalizedSecondPath,
+    ]) {
+      await adapter.archiveSession(path);
+    }
+
+    const chinese = await adapter.listArchivedSessions({
+      query: "中".repeat(160),
+      limit: 1,
+    });
+    assert.equal(chinese.status, "ok");
+    if (chinese.status !== "ok") return;
+    assert.ok(chinese.nextCursor);
+    assert.ok(chinese.nextCursor.length <= 512);
+    const chineseReplay = await adapter.listArchivedSessions({
+      query: "中".repeat(160),
+      limit: 1,
+      cursor: chinese.nextCursor,
+    });
+    assert.equal(chineseReplay.status, "ok");
+
+    const normalized = await adapter.listArchivedSessions({
+      query: "ﬃ".repeat(50),
+      limit: 1,
+    });
+    assert.equal(normalized.status, "ok");
+    if (normalized.status !== "ok") return;
+    assert.ok(normalized.nextCursor);
+    assert.ok(normalized.nextCursor.length <= 512);
+    const normalizedReplay = await adapter.listArchivedSessions({
+      query: "ﬃ".repeat(50),
+      limit: 1,
+      cursor: normalized.nextCursor,
+    });
+    assert.equal(normalizedReplay.status, "ok");
+
+    const duplicateFirst = await adapter.listArchivedSessions({
+      query: "中",
+      limit: 1,
+    });
+    assert.equal(duplicateFirst.status, "ok");
+    if (duplicateFirst.status !== "ok") return;
+    const duplicateSeen = new Set(
+      duplicateFirst.sessions.map((item) => item.path),
+    );
+    let cursor = duplicateFirst.nextCursor;
+    while (cursor) {
+      const page = await adapter.listArchivedSessions({
+        query: "中",
+        limit: 1,
+        cursor,
+      });
+      assert.equal(page.status, "ok");
+      if (page.status !== "ok") break;
+      for (const session of page.sessions) duplicateSeen.add(session.path);
+      cursor = page.nextCursor;
+    }
+    assert.deepEqual(duplicateSeen, new Set([firstPath, duplicatePath]));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("corrupt package metadata fails closed without overwriting it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-corrupt-state-"));
+  const imported = await mkdtemp(join(tmpdir(), "openpi-web-corrupt-import-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const workspaceFile = join(sessionDirectory, "workspace-state.json");
+    const archiveFile = join(sessionDirectory, "archived-sessions.json");
+    await writeFile(workspaceFile, "{not-json\n");
+    await writeFile(archiveFile, '{"not":"an array"}\n');
+    const current = SessionManager.inMemory(root);
+
+    await assert.rejects(
+      new PiWebAdapter(
+        runtimeFor(root, sessionDirectory, current),
+      ).importWorkspace(imported),
+      /JSON|position|property/u,
+    );
+    assert.equal(await readFile(workspaceFile, "utf8"), "{not-json\n");
+
+    await assert.rejects(
+      new PiWebAdapter(
+        runtimeFor(root, sessionDirectory, current),
+      ).archiveSession(`current:${current.getSessionId()}`),
+      /Archive metadata/u,
+    );
+    assert.equal(await readFile(archiveFile, "utf8"), '{"not":"an array"}\n');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(imported, { recursive: true, force: true });
+  }
+});
+
+test("workspace mutation rolls back its in-memory state when persistence fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-state-rollback-"));
+  const imported = await mkdtemp(join(tmpdir(), "openpi-web-import-rollback-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    (
+      adapter as unknown as {
+        writeAtomically: () => Promise<void>;
+      }
+    ).writeAtomically = async () => {
+      throw new Error("disk full");
+    };
+
+    await assert.rejects(adapter.importWorkspace(imported), /disk full/u);
+    const snapshot = await adapter.getSnapshot();
+    assert.equal(
+      snapshot.workspaces.some((workspace) => workspace.path === imported),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(imported, { recursive: true, force: true });
+  }
+});
+
+test("workspace transactions roll back a failed mutation before the next mutation persists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-state-transaction-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    const internal = adapter as unknown as {
+      writeAtomically: (filePath: string, content: string) => Promise<void>;
+    };
+    const writeAtomically = internal.writeAtomically.bind(adapter);
+    let attempts = 0;
+    internal.writeAtomically = async (filePath, content) => {
+      attempts++;
+      if (attempts === 1) throw new Error("first write fails");
+      await writeAtomically(filePath, content);
+    };
+
+    const first = adapter.renameWorkspace(root, "First");
+    const second = adapter.renameWorkspace(root, "Second");
+    const [firstResult, secondResult] = await Promise.allSettled([
+      first,
+      second,
+    ]);
+
+    assert.equal(firstResult.status, "rejected");
+    assert.equal(secondResult.status, "fulfilled");
+    assert.equal(attempts, 2);
+    const persisted = JSON.parse(
+      await readFile(join(sessionDirectory, "workspace-state.json"), "utf8"),
+    ) as { workspaceNames: Record<string, string> };
+    assert.equal(persisted.workspaceNames[resolve(root)], "Second");
+    assert.equal(
+      (await adapter.getSnapshot()).workspaces.find(
+        (workspace) => workspace.path === resolve(root),
+      )?.name,
+      "Second",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("archive transactions roll back a failed mutation before the next mutation persists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-archive-transaction-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    const internal = adapter as unknown as {
+      writeAtomically: (filePath: string, content: string) => Promise<void>;
+    };
+    const writeAtomically = internal.writeAtomically.bind(adapter);
+    let attempts = 0;
+    internal.writeAtomically = async (filePath, content) => {
+      attempts++;
+      if (attempts === 1) throw new Error("first write fails");
+      await writeAtomically(filePath, content);
+    };
+    const currentPath = `current:${current.getSessionId()}`;
+
+    const first = adapter.archiveSession(currentPath);
+    const second = adapter.archiveSession(currentPath);
+    const [firstResult, secondResult] = await Promise.allSettled([
+      first,
+      second,
+    ]);
+
+    assert.equal(firstResult.status, "rejected");
+    assert.equal(secondResult.status, "fulfilled");
+    assert.equal(attempts, 2);
+    const persisted = JSON.parse(
+      await readFile(join(sessionDirectory, "archived-sessions.json"), "utf8"),
+    ) as string[];
+    assert.deepEqual(persisted, [resolve(currentPath)]);
+    assert.equal(
+      (await adapter.getSnapshot()).sessions.find(
+        (session) => session.id === current.getSessionId(),
+      )?.archived,
+      true,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workspace reads see only committed state while an atomic write is pending", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-state-visibility-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    await adapter.renameWorkspace(root, "Old");
+    const internal = adapter as unknown as {
+      writeAtomically: (filePath: string, content: string) => Promise<void>;
+    };
+    const writeAtomically = internal.writeAtomically.bind(adapter);
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolveStarted) => {
+      markStarted = resolveStarted;
+    });
+    let releaseWrite: () => void = () => {};
+    const released = new Promise<void>((resolveReleased) => {
+      releaseWrite = resolveReleased;
+    });
+    internal.writeAtomically = async (filePath, content) => {
+      markStarted();
+      await released;
+      await writeAtomically(filePath, content);
+    };
+
+    const pending = adapter.renameWorkspace(root, "New");
+    await started;
+
+    const during = await adapter.getSnapshot();
+    assert.equal(
+      during.workspaces.find((workspace) => workspace.path === resolve(root))
+        ?.name,
+      "Old",
+    );
+    const persistedDuring = JSON.parse(
+      await readFile(join(sessionDirectory, "workspace-state.json"), "utf8"),
+    ) as { workspaceNames: Record<string, string> };
+    assert.equal(persistedDuring.workspaceNames[resolve(root)], "Old");
+
+    releaseWrite();
+    await pending;
+
+    assert.equal(
+      (await adapter.getSnapshot()).workspaces.find(
+        (workspace) => workspace.path === resolve(root),
+      )?.name,
+      "New",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("archive reads see only committed state while an atomic write is pending", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-archive-visibility-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    await writeFile(join(sessionDirectory, "archived-sessions.json"), "[]\n");
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    const internal = adapter as unknown as {
+      writeAtomically: (filePath: string, content: string) => Promise<void>;
+    };
+    const writeAtomically = internal.writeAtomically.bind(adapter);
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolveStarted) => {
+      markStarted = resolveStarted;
+    });
+    let releaseWrite: () => void = () => {};
+    const released = new Promise<void>((resolveReleased) => {
+      releaseWrite = resolveReleased;
+    });
+    internal.writeAtomically = async (filePath, content) => {
+      markStarted();
+      await released;
+      await writeAtomically(filePath, content);
+    };
+    const currentPath = `current:${current.getSessionId()}`;
+
+    const pending = adapter.archiveSession(currentPath);
+    await started;
+
+    assert.equal(
+      (await adapter.getSnapshot()).sessions.find(
+        (session) => session.id === current.getSessionId(),
+      )?.archived,
+      undefined,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        await readFile(
+          join(sessionDirectory, "archived-sessions.json"),
+          "utf8",
+        ),
+      ),
+      [],
+    );
+
+    releaseWrite();
+    await pending;
+
+    assert.equal(
+      (await adapter.getSnapshot()).sessions.find(
+        (session) => session.id === current.getSessionId(),
+      )?.archived,
+      true,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("initialize restores the initial workspace exactly once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-initialize-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const workspaceFile = join(sessionDirectory, "workspace-state.json");
+    await writeFile(
+      workspaceFile,
+      `${JSON.stringify({
+        version: 1,
+        hiddenWorkspaces: [resolve(root)],
+        ungroupedSessions: [],
+        workspaceNames: {},
+      })}\n`,
+    );
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    const internal = adapter as unknown as {
+      writeAtomically: (filePath: string, content: string) => Promise<void>;
+    };
+    const writeAtomically = internal.writeAtomically.bind(adapter);
+    let writes = 0;
+    internal.writeAtomically = async (filePath, content) => {
+      writes++;
+      await writeAtomically(filePath, content);
+    };
+
+    await adapter.initialize();
+    await adapter.initialize();
+
+    assert.equal(writes, 1);
+    assert.ok(
+      (await adapter.getSnapshot()).workspaces.some(
+        (workspace) => workspace.path === resolve(root),
+      ),
+    );
+    const persisted = JSON.parse(await readFile(workspaceFile, "utf8")) as {
+      hiddenWorkspaces: string[];
+    };
+    assert.deepEqual(persisted.hiddenWorkspaces, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("getSnapshot does not restore or persist workspace metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-read-only-snapshot-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    await writeFile(
+      join(sessionDirectory, "workspace-state.json"),
+      `${JSON.stringify({
+        version: 1,
+        hiddenWorkspaces: [resolve(root)],
+        ungroupedSessions: [],
+        workspaceNames: {},
+      })}\n`,
+    );
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    let writes = 0;
+    (
+      adapter as unknown as {
+        writeAtomically: () => Promise<void>;
+      }
+    ).writeAtomically = async () => {
+      writes++;
+      throw new Error("GET attempted to persist metadata");
+    };
+
+    const snapshot = await adapter.getSnapshot();
+
+    assert.equal(writes, 0);
+    assert.equal(
+      snapshot.workspaces.some((workspace) => workspace.path === resolve(root)),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("initialize fails closed without exposing or retrying uncommitted state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-initialize-failure-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    await mkdir(sessionDirectory, { recursive: true });
+    const workspaceFile = join(sessionDirectory, "workspace-state.json");
+    const original = `${JSON.stringify({
+      version: 1,
+      hiddenWorkspaces: [resolve(root)],
+      ungroupedSessions: [],
+      workspaceNames: {},
+    })}\n`;
+    await writeFile(workspaceFile, original);
+    const current = SessionManager.inMemory(root);
+    const adapter = new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    );
+    let writes = 0;
+    (
+      adapter as unknown as {
+        writeAtomically: () => Promise<void>;
+      }
+    ).writeAtomically = async () => {
+      writes++;
+      throw new Error("disk full");
+    };
+
+    await assert.rejects(adapter.initialize(), /disk full/u);
+    await assert.rejects(adapter.initialize(), /disk full/u);
+
+    assert.equal(writes, 1);
+    assert.equal(await readFile(workspaceFile, "utf8"), original);
+    assert.equal(
+      (await adapter.getSnapshot()).workspaces.some(
+        (workspace) => workspace.path === resolve(root),
+      ),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Session provenance targets the current file even when a copied file retains its id", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-provenance-"));
+  try {
+    const directory = join(root, "sessions");
+    const manager = SessionManager.create(root, directory);
+    persistSession(manager, "original", 1);
+    const original = manager.getSessionFile();
+    assert.ok(original);
+    const copy = join(directory, "copied.jsonl");
+    await writeFile(copy, await readFile(original));
+    const adapter = new PiWebAdapter(runtimeFor(root, directory, manager));
+    const { sessions } = await adapter.listSessionProjection();
+    assert.equal(sessions.find((s) => s.path === copy)?.controller, "none");
+    assert.deepEqual(
+      sessions.filter((s) => s.controller === "web").map((s) => s.path),
+      [original],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unarchive is idempotent across restart and preserves canonical Session data", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-unarchive-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const manager = SessionManager.create(root, sessionDirectory);
+    persistSession(manager, "keep original history", 1);
+    const path = manager.getSessionFile();
+    assert.ok(path);
+    const original = await readFile(path, "utf8");
+    const runtime = runtimeFor(root, sessionDirectory, manager);
+    const adapter = new PiWebAdapter(runtime);
+    await adapter.archiveSession(path);
+    assert.equal((await adapter.requireSession(path)).archived, true);
+    await Promise.all([
+      adapter.unarchiveSession(path),
+      adapter.unarchiveSession(path),
+    ]);
+    const restored = await new PiWebAdapter(runtime).requireSession(path);
+    assert.equal(restored.archived, undefined);
+    assert.equal(restored.cwd, root);
+    assert.equal(await readFile(path, "utf8"), original);
+    const metadata = await readFile(
+      join(sessionDirectory, "archived-sessions.json"),
+      "utf8",
+    );
+    await assert.rejects(adapter.unarchiveSession(join(root, "missing.jsonl")));
+    assert.equal(
+      await readFile(join(sessionDirectory, "archived-sessions.json"), "utf8"),
+      metadata,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("snapshot projects a bounded thinking state without a revision", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-thinking-bounds-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.inMemory(root);
+    const runtime: WebRuntimeController = {
+      ...runtimeFor(root, sessionDirectory, current),
+      getThinkingState: () => ({
+        level: "l".repeat(900),
+        available: Array.from(
+          { length: 20 },
+          (_, index) => `level-${index}-${"a".repeat(600)}`,
+        ),
+        supported: true,
+      }),
+    };
+    const snapshot = await new PiWebAdapter(runtime).getSnapshot();
+
+    assert.ok(snapshot.thinking);
+    assert.equal(snapshot.thinking.level.length, 500);
+    assert.equal(snapshot.thinking.available.length, 16);
+    assert.ok(
+      snapshot.thinking.available.every((level) => level.length <= 500),
+    );
+    assert.equal(snapshot.thinking.supported, true);
+    assert.equal("revision" in snapshot.thinking, false);
+    assert.ok(snapshot.truncation.bytes <= WEB_MAX_SNAPSHOT_BYTES);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a throwing or absent thinking getter is omitted without failing the snapshot", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openpi-web-thinking-fail-open-"));
+  const sessionDirectory = join(root, "sessions");
+  try {
+    const current = SessionManager.inMemory(root);
+    const throwing: WebRuntimeController = {
+      ...runtimeFor(root, sessionDirectory, current),
+      getThinkingState: () => {
+        throw new Error("thinking state exploded");
+      },
+    };
+    const thrown = await new PiWebAdapter(throwing).getSnapshot();
+    assert.equal(thrown.thinking, undefined);
+
+    const absent = await new PiWebAdapter(
+      runtimeFor(root, sessionDirectory, current),
+    ).getSnapshot();
+    assert.equal(absent.thinking, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

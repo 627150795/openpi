@@ -58,7 +58,7 @@ test("rejected, missing, malformed, and missing evidence remain distinct", () =>
   );
 });
 
-test("acceptance controls ok without hiding an underlying agent error", () => {
+test("deprecated self-attestation never controls runtime ok", () => {
   const accepted = applyAcceptance({
     contract,
     agentOk: true,
@@ -72,6 +72,28 @@ test("acceptance controls ok without hiding an underlying agent error", () => {
     },
   });
   assert.equal(accepted.ok, true);
+  assert.equal(accepted.ledger?.authority, "model-self-attestation");
+  assert.deepEqual(accepted.ledger?.deprecated, {
+    since: "0.5",
+    removal: "1.0",
+  });
+  assert.match(accepted.acceptanceWarning ?? "", /does not determine ok/);
+
+  const rejected = applyAcceptance({
+    contract,
+    agentOk: true,
+    structured: {
+      acceptance: {
+        criteria: [
+          { id: "tests", status: "rejected", evidence: ["command"] },
+          { id: "scope", status: "accepted", evidence: [] },
+        ],
+      },
+    },
+  });
+  assert.equal(rejected.ok, true);
+  assert.equal(rejected.ledger?.status, "rejected");
+  assert.equal(rejected.error, undefined);
 
   const failed = applyAcceptance({
     contract,
@@ -80,7 +102,8 @@ test("acceptance controls ok without hiding an underlying agent error", () => {
     structured: undefined,
   });
   assert.equal(failed.ok, false);
-  assert.match(failed.error ?? "", /provider failed; Acceptance missing/);
+  assert.equal(failed.error, "provider failed");
+  assert.equal(failed.ledger?.status, "missing");
 });
 
 test("contract validation rejects duplicate or unsafe identifiers", () => {
@@ -100,6 +123,64 @@ test("contract validation rejects duplicate or unsafe identifiers", () => {
         criteria: [{ id: "../escape", description: "bad" }],
       }),
     /invalid id/,
+  );
+});
+
+test("contract validation rejects scalar or invalid requiredEvidence", () => {
+  assert.throws(
+    () =>
+      parseAcceptanceContract({
+        criteria: [
+          {
+            id: "tests",
+            description: "Focused tests pass.",
+            requiredEvidence: "test-command" as unknown as string[],
+          },
+        ],
+      }),
+    /requiredEvidence must be an array/,
+  );
+  assert.throws(
+    () =>
+      parseAcceptanceContract({
+        criteria: [
+          {
+            id: "tests",
+            description: "Focused tests pass.",
+            requiredEvidence: Array.from(
+              { length: 17 },
+              (_, i) => `label-${i}`,
+            ),
+          },
+        ],
+      }),
+    /at most 16 labels/,
+  );
+  assert.throws(
+    () =>
+      parseAcceptanceContract({
+        criteria: [
+          {
+            id: "tests",
+            description: "Focused tests pass.",
+            requiredEvidence: ["   "],
+          },
+        ],
+      }),
+    /invalid evidence label/,
+  );
+  assert.throws(
+    () =>
+      parseAcceptanceContract({
+        criteria: [
+          {
+            id: "tests",
+            description: "Focused tests pass.",
+            requiredEvidence: ["a".repeat(121)],
+          },
+        ],
+      }),
+    /invalid evidence label/,
   );
 });
 

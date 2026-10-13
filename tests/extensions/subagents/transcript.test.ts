@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import {
   defineTool,
@@ -41,6 +42,7 @@ function snapshot(overrides: Partial<SubagentSnapshot> = {}): SubagentSnapshot {
     createdAt: 0,
     meta: { backend: "pi" },
     usage: {},
+    transcriptVersion: 0,
     transcript: [],
     liveTools: [],
     queued: [],
@@ -268,7 +270,7 @@ test("tool argument summaries relativize paths inside the child cwd", () => {
   const cwd = "/repo";
   assert.equal(
     summarizeToolArgs("read", '{"path":"/repo/src/a.ts"}', cwd),
-    "src/a.ts",
+    path.join("src", "a.ts"),
   );
   assert.equal(
     summarizeToolArgs("rg", '{"pattern":"foo","path":"/repo/ext"}', cwd),

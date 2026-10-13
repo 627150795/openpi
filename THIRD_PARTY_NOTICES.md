@@ -1,5 +1,74 @@
 # Third-Party Notices
 
+## Project origins and acknowledgments
+
+The Web model settings page adapts the provider cards, inline editors and model
+selection interactions of `@deepseek-ai/dsh-client-ui-settings-models` version
+`0.1.7-rc.2`, from [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+The styles are adapted to OpenPI's existing settings shell and theme tokens;
+configuration and authentication remain owned by Pi. The applicable MIT notice
+is reproduced in [`web/ui/src/features/settings/LICENSE.dsh`](web/ui/src/features/settings/LICENSE.dsh).
+
+The workspace Files explorer and preview interactions were informed by
+[DSH-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar), revision
+`9b5834f74ad197534c821c35b8357edac1ad3919`. OpenPI uses its own Session-bound
+file service and inline workbar layout; no DSH source is embedded.
+
+File preview bundles additionally include Mermaid, PDF.js, Mammoth, ExcelJS,
+fflate, fast-xml-parser, highlight.js, DOMPurify and rehype-raw. Their licenses
+and bundled dependency notices are reproduced in
+[`web/THIRD_PARTY_LICENSES.txt`](web/THIRD_PARTY_LICENSES.txt), included in the
+package alongside the Web assets. JSZip is used under its MIT option;
+DOMPurify is used under its Apache-2.0 option.
+
+OpenPI originated from [davis7dotsh/my-pi-setup](https://github.com/davis7dotsh/my-pi-setup) and is maintained as an independent distribution. Thanks to the original author for the starting point.
+
+Web workbench contributions include:
+
+- [@testikun](https://github.com/testikun): Web runtime source information ([#398](https://github.com/openpi-dev/openpi/pull/398)) and Pi project trust diagnostics ([#392](https://github.com/openpi-dev/openpi/pull/392)).
+- [QuinnWan (@somewan820)](https://github.com/somewan820): UI restoration baseline and clipboard fallback ([#352](https://github.com/openpi-dev/openpi/pull/352)), carried forward through the React migration ([#384](https://github.com/openpi-dev/openpi/pull/384)).
+- [@seekskyworld](https://github.com/seekskyworld): request timeout protection ([#377](https://github.com/openpi-dev/openpi/pull/377)) and native cancellation proposals ([#358](https://github.com/openpi-dev/openpi/pull/358)), whose goals were integrated with the existing React transport and cancellation implementation, including additional regression coverage.
+
+The optional top-level Session communication package is [pi-intercom](https://github.com/nicobailon/pi-intercom).
+
+The Web workbench terminal lifecycle and presentation were informed by
+[`agegr/pi-web`](https://github.com/agegr/pi-web) revision `8366762` (MIT,
+Copyright (c) 2026 agegr). The browser tool's tab, navigation, and embedded
+viewport interactions were informed by [`apache/maka`](https://github.com/apache/maka)
+revision `ebeb961` (Apache License 2.0). OpenPI uses its own Web host protocol
+and headless Chromium/CDP implementation; it does not embed either project or
+copy Maka's Electron-only `WebContentsView`.
+
+The follow-up Git, file-preview and settings investigation also consulted
+`agegr/pi-web` revision `1eb5e66a37c468aca7f0d338edb23de4fd84433e` (MIT),
+`jmfederico/pi-web` revision `60a29acbfc710908e73b0df9857cb63b53b672d3` (MIT),
+and `apache/maka` revision `0dc1142aa90000e45627017e846b6d57d1e165e0`
+(Apache License 2.0). These are architectural references, not embedded packages.
+The General settings follow-up consulted `agegr/pi-web` revision
+`4a5081a3d9a993fa77553c62196cc0a2b48ed810` (MIT, Copyright (c) 2026 agegr)
+for inline switches, sliders, and immediate-save interactions. OpenPI keeps
+its existing canonical configuration fields and setup episode.
+
+The screencast sizing approach was informed by Chromium DevTools'
+[`ScreencastView.ts`](https://github.com/ChromeDevTools/devtools-frontend/blob/main/front_end/panels/screencast/ScreencastView.ts)
+(BSD-3-Clause). OpenPI retains its own bounded transport and Session authority.
+
+## OAuth model providers
+
+`extensions/ai-providers/` adapts protocol and OAuth details from
+[`oh-my-pi`](https://github.com/can1357/oh-my-pi) (Antigravity Cloud Code
+Assist and Cursor AgentService). The upstream project is distributed under the
+MIT License. Its copyright notice states `Copyright (c) 2025 Mario Zechner`,
+`Copyright (c) 2025-2026 Can Bölük`, and `Copyright (c) 2026 Stencil Labs, Inc.`;
+the complete license text is included at
+[`extensions/ai-providers/LICENSE.upstream`](extensions/ai-providers/LICENSE.upstream).
+The local Antigravity message conversion is adapted from the same project's
+pi-ai 0.84.1 Google conversion implementation so the installed extension does
+not depend on a non-public Pi runtime module.
+
+Cursor support in this package is chat-only: it does not copy or execute
+Cursor-native coding tools.
+
 ## Sessions extension
 
 `extensions/sessions/` is adapted from
@@ -13,3 +82,265 @@ The upstream project is distributed under the MIT License. Its notice states
 OpenPI is distributed under the MIT License; see [`LICENSE`](LICENSE). Portions
 identified in this notice retain their original copyright notices and license
 terms. The project-wide MIT license does not replace or remove those notices.
+
+## Web production bundle
+
+`web/dist/app.js` and `web/dist/styles.css` contain code from the packages
+listed below. This inventory was taken from the Vite production module graph;
+build-only packages are not included.
+
+### MIT-licensed packages
+
+Copyright (c) 2026 Meta Platforms, Inc.:
+
+- `@astryxdesign/core@0.5.2`
+- `@astryxdesign/theme-neutral@0.5.2`
+
+Copyright (c) Meta Platforms, Inc. and affiliates:
+
+- `@stylexjs/stylex@0.19.0`
+- `react@19.2.8`
+- `react-dom@19.2.8`
+- `scheduler@0.27.0`
+- `use-sync-external-store@1.6.0`
+
+Copyright (c) 2023 FormatJS:
+
+- `@formatjs/fast-memoize@3.1.7`
+- `@formatjs/icu-messageformat-parser@3.5.17`
+- `@formatjs/icu-skeleton-parser@2.1.11`
+
+Copyright (c) 2011-present i18next:
+
+- `i18next@26.4.1`
+
+Copyright (c) 2015-present i18next:
+
+- `react-i18next@17.0.13`
+
+Copyright (c) 2026 Espen Hovlandsdal <espen@hovlandsdal.com>:
+
+- `eventsource-parser@4.1.0`
+
+Copyright (c) Espen Hovlandsdal:
+
+- `react-markdown@10.1.0`
+
+Copyright (c) 2019 Paul Henschel:
+
+- `zustand@5.0.15`
+
+Copyright (c) 2017-2019, The xterm.js authors; Copyright (c) 2014-2016,
+SourceLair Private Company; Copyright (c) 2012-2013, Christopher Jeffrey:
+
+- `@xterm/xterm@6.0.0`
+
+Copyright (c) 2019, The xterm.js authors:
+
+- `@xterm/addon-fit@0.11.0`
+
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com>
+(<https://sindresorhus.com>):
+
+- `escape-string-regexp@5.0.0`
+- `is-plain-obj@4.1.0`
+
+Copyright (c) 2012 TJ Holowaychuk <tj@vision-media.ca>:
+
+- `inline-style-parser@0.2.7`
+
+Copyright (c) 2014 Stefan Thomas:
+
+- `extend@3.0.2`
+
+Copyright (c) 2017 Menglin "Mark" Xu <mark@remarkablemark.org>:
+
+- `style-to-object@1.0.14`
+
+Copyright (c) 2020 Menglin "Mark" Xu <mark@remarkablemark.org>:
+
+- `style-to-js@1.1.21`
+
+Copyright (c) 2014 Titus Wormer <tituswormer@gmail.com>:
+
+- `remark-parse@11.0.0`
+
+Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>:
+
+- `bail@2.0.2`, `ccount@2.0.1`, `mdast-util-to-string@4.0.0`
+- `unified@11.0.5`, `unist-util-is@6.0.1`, `unist-util-position@5.0.0`
+- `unist-util-visit@5.1.0`, `vfile@6.0.3`
+
+Copyright (c) 2015 Titus Wormer <mailto:tituswormer@gmail.com>:
+
+- `longest-streak@3.1.0`, `trim-lines@3.0.1`
+
+Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>:
+
+- `comma-separated-tokens@2.0.3`, `hast-util-whitespace@3.0.0`
+- `mdast-util-to-hast@13.2.1`, `rehype-sanitize@6.0.0`
+- `space-separated-tokens@2.0.2`, `trough@2.2.0`
+- `unist-util-stringify-position@4.0.0`, `unist-util-visit-parents@6.0.2`
+
+Copyright (c) 2017 Titus Wormer <tituswormer@gmail.com>:
+
+- `mdast-util-newline-to-break@2.0.0`, `remark-breaks@4.0.0`
+
+Copyright (c) 2020 Titus Wormer <tituswormer@gmail.com>:
+
+- `estree-util-is-identifier-name@3.0.0`
+- `mdast-util-gfm-autolink-literal@2.0.1`
+- `mdast-util-gfm-strikethrough@2.0.0`, `mdast-util-gfm-table@2.0.0`
+- `mdast-util-gfm-task-list-item@2.0.0`, `micromark-extension-gfm@3.0.0`
+- `micromark-extension-gfm-autolink-literal@2.1.0`
+- `micromark-extension-gfm-strikethrough@2.1.0`
+- `micromark-extension-gfm-task-list-item@2.1.0`
+
+Copyright (c) 2021 Titus Wormer <tituswormer@gmail.com>:
+
+- `micromark-extension-gfm-footnote@2.1.0`
+
+Copyright (c) 2023 Titus Wormer <tituswormer@gmail.com>:
+
+- `devlop@1.1.0`
+
+Copyright (c) Titus Wormer <tituswormer@gmail.com>:
+
+- `decode-named-character-reference@1.3.0`, `hast-util-sanitize@5.0.2`
+- `hast-util-to-jsx-runtime@2.3.6`, `markdown-table@3.0.4`
+- `mdast-util-find-and-replace@3.0.2`, `mdast-util-from-markdown@2.0.3`
+- `mdast-util-gfm@3.1.0`, `mdast-util-gfm-footnote@2.1.0`
+- `mdast-util-to-markdown@2.1.2`, `micromark@4.0.2`
+- `micromark-core-commonmark@2.0.3`, `micromark-extension-gfm-table@2.1.1`
+- `micromark-factory-destination@2.0.1`, `micromark-factory-label@2.0.1`
+- `micromark-factory-space@2.0.1`, `micromark-factory-title@2.0.1`
+- `micromark-factory-whitespace@2.0.1`, `micromark-util-character@2.1.1`
+- `micromark-util-chunked@2.0.1`, `micromark-util-classify-character@2.0.1`
+- `micromark-util-combine-extensions@2.0.1`
+- `micromark-util-decode-numeric-character-reference@2.0.2`
+- `micromark-util-decode-string@2.0.1`, `micromark-util-html-tag-name@2.0.1`
+- `micromark-util-normalize-identifier@2.0.1`
+- `micromark-util-resolve-all@2.0.1`, `micromark-util-sanitize-uri@2.0.1`
+- `micromark-util-subtokenize@2.1.0`, `remark-gfm@4.0.1`
+- `remark-rehype@11.1.2`, `vfile-message@4.0.3`
+
+Copyright (c) Titus Wormer:
+
+- `html-url-attributes@3.0.1`
+
+Copyright (c) Titus Wormer <mailto:tituswormer@gmail.com>:
+
+- `property-information@7.2.0`
+
+`mdast-util-phrasing@4.1.0` retains both of its notices:
+
+- Copyright (c) 2017 Titus Wormer <tituswormer@gmail.com>
+- Copyright (c) 2017 Victor Felder <victor@draft.li>
+
+The MIT terms for the packages above are:
+
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in
+> all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+## Host runtime dependencies
+
+The Web host uses `node-pty@1.2.0-beta.15` to provide a real workspace PTY.
+It retains these MIT notices:
+
+- Copyright (c) 2012-2015, Christopher Jeffrey
+- Copyright (c) 2016, Daniel Imms
+- Copyright (c) 2018-present Microsoft Corporation
+
+The MIT terms are the same as reproduced above.
+
+### ISC-licensed packages
+
+Copyright (c) 2021, Andrea Giammarchi, @WebReflection:
+
+- `@ungap/structured-clone@1.4.0`
+
+Copyright (c) 2026 Lucide Icons and Contributors:
+
+- `lucide-react@1.39.0`
+
+The ISC terms for these packages are:
+
+> Permission to use, copy, modify, and/or distribute this software for any
+> purpose with or without fee is hereby granted, provided that the above
+> copyright notice and this permission notice appear in all copies.
+>
+> THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+> REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+> AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+> INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+> LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+> OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+> PERFORMANCE OF THIS SOFTWARE.
+
+Some Lucide icons are derived from Feather and retain this additional notice:
+
+> Copyright (c) 2013-present Cole Bemis
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in
+> all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+### BSD-3-Clause package
+
+`intl-messageformat@11.2.14` retains this notice:
+
+> Copyright (c) 2023, Oath Inc.
+>
+> Redistribution and use of this software in source and binary forms, with or
+> without modification, are permitted provided that the following conditions
+> are met:
+>
+> - Redistributions of source code must retain the above copyright notice,
+>   this list of conditions and the following disclaimer.
+> - Redistributions in binary form must reproduce the above copyright notice,
+>   this list of conditions and the following disclaimer in the documentation
+>   and/or other materials provided with the distribution.
+> - Neither the name of Oath Inc. nor the names of its contributors may be used
+>   to endorse or promote products derived from this software without specific
+>   prior written permission.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+> AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+> IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+> ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+> LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+> CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+> SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+> INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+> CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+> ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+> POSSIBILITY OF SUCH DAMAGE.

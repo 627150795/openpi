@@ -7,13 +7,37 @@ import type {
   EntryRenderer,
   ExtensionAPI,
   ExtensionContext,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { encodeStructuredResult } from "../../../extensions/shared/structured-output.ts";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { PLAN_MODE_CHANNEL } from "../../../extensions/shared/plan-mode-state.ts";
 import subagents, {
   createSubagentResultDispatcher,
   truncatedOutput,
 } from "../../../extensions/subagents/index.ts";
 import { projectResult } from "../../../extensions/subagents/src/result-artifact.ts";
+import {
+  delegationCompletionText,
+  projectDelegationCompletion,
+} from "../../../extensions/shared/delegation-completion.ts";
+
+import {
+  type AgentSession,
+  createAgentSession,
+  createSyntheticSourceInfo,
+  DefaultResourceLoader,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import { shutdownAndDisposeChildSession } from "../../../extensions/shared/child-session.ts";
+import { makePiBackend } from "../../../extensions/subagents/src/backends/pi.ts";
+import { __setSubagentTestBackends } from "../../../extensions/subagents/src/runtime.ts";
+import { createPiAgentSessionHarness } from "../../support/pi-agent-session-harness.ts";
+import { toolExecutionContext } from "../../support/extension-tool-context.ts";
+
+initTheme("dark", false);
 
 const emptySessionManager = { getBranch: () => [] };
 
@@ -42,6 +66,7 @@ test("subagent results render before the hidden wake-up message", () => {
       settledAt: 1_000,
       meta: { backend: "pi" },
       usage: {},
+      transcriptVersion: 0,
       transcript: [],
       liveTools: [],
       queued: [],
@@ -50,17 +75,25 @@ test("subagent results render before the hidden wake-up message", () => {
     },
   ]);
 
+  const completion = projectDelegationCompletion({
+    owner: "direct",
+    referenceKind: "fingerprint",
+    outcome: "uncertain",
+    effectiveCwd: process.cwd(),
+    isolation: "shared",
+  });
   assert.deepEqual(events, [
     {
       kind: "entry",
       customType: "subagent-result",
       data: {
-        content:
-          'Subagent sa-3 "investigate plan mode" finished.\n\nreport\n\n(This result is already shown to the user. Act on it and relay only the decisions or next steps — do not repeat it verbatim.)',
+        content: 'Subagent sa-3 "investigate plan mode" finished.\n\nreport',
         details: {
           id: "sa-3",
           title: "investigate plan mode",
           status: "done",
+          elapsed: "1s",
+          completion,
         },
       },
     },
@@ -68,18 +101,161 @@ test("subagent results render before the hidden wake-up message", () => {
       kind: "message",
       message: {
         customType: "subagent-result",
-        content:
-          'Subagent sa-3 "investigate plan mode" finished.\n\nreport\n\n(This result is already shown to the user. Act on it and relay only the decisions or next steps — do not repeat it verbatim.)',
+        content: `Subagent sa-3 "investigate plan mode" finished.\n\nreport\n\n${delegationCompletionText(completion)}\n\n(This result is already shown to the user. Act on it and relay only the decisions or next steps — do not repeat it verbatim.)`,
         display: false,
         details: {
           id: "sa-3",
           title: "investigate plan mode",
           status: "done",
+          elapsed: "1s",
+          completion,
+          displayContent:
+            'Subagent sa-3 "investigate plan mode" finished.\n\nreport',
         },
       },
       options: { deliverAs: "followUp", triggerTurn: true },
     },
   ]);
+});
+
+test("automatic delivery exposes structured data and its canonical artifact", () => {
+  let entry: { content: string; details: Record<string, unknown> } | undefined;
+  let sent: { content: string } | undefined;
+  const pi = {
+    appendEntry(
+      _customType: string,
+      data: { content: string; details: Record<string, unknown> },
+    ) {
+      entry = data;
+    },
+    sendMessage(message: { content: string }) {
+      sent = message;
+    },
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(pi);
+  dispatch([
+    {
+      id: "sa-structured",
+      origin: "model",
+      backend: "pi",
+      title: "structured review",
+      prompt: "review",
+      cwd: process.cwd(),
+      status: "done",
+      outcome: "completed",
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: {
+        backend: "pi",
+        sessionFilePath: "/Users/private-host/.pi/child.jsonl",
+      },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: "",
+      structuredResult: {
+        value: { verdict: "pass" },
+        json: '{"verdict":"pass"}',
+        byteLength: 18,
+        artifactPath: "/tmp/structured.json",
+      },
+      turns: 1,
+    },
+  ]);
+
+  assert.match(entry?.content ?? "", /\{"verdict":"pass"\}/);
+  assert.deepEqual(entry?.details.structured, { verdict: "pass" });
+  assert.equal(entry?.details.structuredArtifactPath, "/tmp/structured.json");
+  assert.ok(sent);
+  assert.equal(
+    sent.content.includes("/Users/private-host/.pi/child.jsonl"),
+    false,
+  );
+  assert.equal(sent.content.includes("/tmp/structured.json"), false);
+});
+
+test("automatic delivery keeps large structured values in runtime details, not parent model text", () => {
+  const findings = "x".repeat(80 * 1024);
+  const value = { findings };
+  const encoded = encodeStructuredResult(value);
+  let persisted = "";
+  let sent: { content: string; details: Record<string, unknown> } | undefined;
+  const pi = {
+    appendEntry() {},
+    sendMessage(message: {
+      content: string;
+      details: Record<string, unknown>;
+    }) {
+      sent = message;
+    },
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(pi, (snap, maxBytes) =>
+    truncatedOutput(snap, maxBytes, (content) => {
+      persisted = content;
+      return "/tmp/structured-full.json";
+    }),
+  );
+
+  dispatch([
+    {
+      id: "sa-structured-large",
+      origin: "model",
+      backend: "pi",
+      title: "structured review",
+      prompt: "review",
+      cwd: process.cwd(),
+      status: "done",
+      outcome: "completed",
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: "",
+      structuredResult: {
+        ...encoded,
+        artifactPath: "/tmp/structured-full.json",
+      },
+      turns: 1,
+    },
+  ]);
+
+  assert.ok(sent);
+  assert.equal(persisted, encoded.json);
+  assert.deepEqual(sent.details.structured, value);
+  assert.equal(
+    sent.details.structuredArtifactPath,
+    "/tmp/structured-full.json",
+  );
+  assert.ok(Buffer.byteLength(sent.content, "utf8") < encoded.byteLength);
+  assert.equal(sent.content.includes(findings), false);
+
+  const llm = convertToLlm([
+    {
+      role: "custom",
+      customType: "subagent-result",
+      content: sent.content,
+      display: false,
+      details: sent.details,
+      timestamp: Date.now(),
+    },
+  ]);
+  const llmText = llm
+    .flatMap((message) =>
+      Array.isArray(message.content)
+        ? message.content
+            .filter((block) => block.type === "text")
+            .map((block) => block.text)
+        : [],
+    )
+    .join("");
+  assert.equal(llmText, sent.content);
+  assert.equal(JSON.stringify(llm).includes(findings), false);
 });
 
 test("automatic result projection keeps both ends and persists the exact final answer", () => {
@@ -98,6 +274,7 @@ test("automatic result projection keeps both ends and persists the exact final a
       settledAt: 1_000,
       meta: { backend: "pi" },
       usage: {},
+      transcriptVersion: 0,
       transcript: [],
       liveTools: [],
       queued: [],
@@ -115,6 +292,142 @@ test("automatic result projection keeps both ends and persists the exact final a
   assert.match(text, /^BEGIN/);
   assert.match(text, /FINAL-VERDICT/);
   assert.match(text, /Full final answer: "\/tmp\/subagent-final\.txt"/);
+});
+
+test("automatic projection carries artifact save failures into result details", () => {
+  let entryDetails: Record<string, unknown> | undefined;
+  const pi = {
+    appendEntry(
+      _customType: string,
+      data: { details: Record<string, unknown> },
+    ) {
+      entryDetails = data.details;
+    },
+    sendMessage() {},
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(pi, () => ({
+    text: "Full final answer could not be saved; only the head and tail above are available.",
+    artifactSaveFailed: true,
+  }));
+
+  dispatch([
+    {
+      id: "sa-artifact",
+      origin: "model",
+      backend: "pi",
+      title: "artifact test",
+      prompt: "inspect",
+      cwd: process.cwd(),
+      status: "done",
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: "x".repeat(40 * 1024),
+      turns: 1,
+    },
+  ]);
+
+  assert.equal(entryDetails?.artifactSaveFailed, true);
+});
+
+test("automatic projection carries canonical outcome and recovery metadata", () => {
+  let entryDetails: Record<string, unknown> | undefined;
+  const pi = {
+    appendEntry(
+      _customType: string,
+      data: { details: Record<string, unknown> },
+    ) {
+      entryDetails = data.details;
+    },
+    sendMessage() {},
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(pi, () => ({
+    text: "projected result",
+    truncated: true,
+    artifactPath: "/tmp/subagent-final.txt",
+  }));
+
+  dispatch([
+    {
+      id: "sa-recovery",
+      origin: "model",
+      backend: "pi",
+      title: "recovery test",
+      prompt: "inspect",
+      cwd: process.cwd(),
+      status: "error",
+      outcome: "interrupted",
+      worktreeBranch: "pi/impl-1",
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: "result",
+      turns: 1,
+    },
+  ]);
+
+  assert.equal(entryDetails?.outcome, "interrupted");
+  assert.equal(entryDetails?.worktreeBranch, "pi/impl-1");
+  assert.equal(entryDetails?.fullResultSaved, true);
+});
+
+test("automatic delivery reports real artifact save failures", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "openpi-artifact-dir-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+
+  try {
+    await writeFile(path.join(directory, "cache"), "not a directory");
+    let entryDetails: Record<string, unknown> | undefined;
+    const pi = {
+      appendEntry(
+        _customType: string,
+        data: { details: Record<string, unknown> },
+      ) {
+        entryDetails = data.details;
+      },
+      sendMessage() {},
+    } as unknown as ExtensionAPI;
+    const dispatch = createSubagentResultDispatcher(pi);
+
+    dispatch([
+      {
+        id: "sa-real-artifact",
+        origin: "model",
+        backend: "pi",
+        title: "artifact test",
+        prompt: "inspect",
+        cwd: process.cwd(),
+        status: "done",
+        createdAt: 0,
+        settledAt: 1_000,
+        meta: { backend: "pi" },
+        usage: {},
+        transcriptVersion: 0,
+        transcript: [],
+        liveTools: [],
+        queued: [],
+        finalText: "x".repeat(40 * 1024),
+        turns: 1,
+      },
+    ]);
+
+    assert.equal(entryDetails?.artifactSaveFailed, true);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("automatic result delivery shrinks a batch against authoritative parent headroom", () => {
@@ -143,6 +456,7 @@ test("automatic result delivery shrinks a batch against authoritative parent hea
     settledAt: 1_000,
     meta: { backend: "pi" as const },
     usage: {},
+    transcriptVersion: 0,
     transcript: [],
     liveTools: [],
     queued: [],
@@ -184,6 +498,7 @@ test("automatic result wrappers and projections stay inside the shared batch cap
     settledAt: 1_000,
     meta: { backend: "pi" as const },
     usage: {},
+    transcriptVersion: 0,
     transcript: [],
     liveTools: [],
     queued: [],
@@ -205,6 +520,102 @@ test("automatic result wrappers and projections stay inside the shared batch cap
   }
 });
 
+test("automatic delivery keeps 64 results inside the hard batch cap", () => {
+  let displayContent = "";
+  let modelContent = "";
+  const pi = {
+    appendEntry(_customType: string, data: { content: string }) {
+      displayContent = data.content;
+    },
+    sendMessage(message: { content: string }) {
+      modelContent = message.content;
+    },
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(
+    pi,
+    (snap, maxBytes) =>
+      projectResult(snap.finalText, {
+        maxBytes,
+        maxLines: 600,
+        writeArtifact: () => `/tmp/${snap.id}.txt`,
+      }).text,
+    () => ({ tokens: 100_000, contextWindow: 100_000 }),
+  );
+  const snapshots = Array.from({ length: 64 }, (_, index) => {
+    const id = `sa-${index + 1}`;
+    return {
+      id,
+      origin: "model" as const,
+      backend: "pi" as const,
+      title: `long report ${id}`,
+      prompt: "inspect",
+      cwd: process.cwd(),
+      status: "done" as const,
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" as const },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: `BEGIN-${id}\n${"evidence\n".repeat(10_000)}END-${id}`,
+      turns: 1,
+    };
+  });
+
+  dispatch(snapshots);
+
+  assert.ok(Buffer.byteLength(displayContent, "utf8") <= 48 * 1024);
+  assert.ok(Buffer.byteLength(modelContent, "utf8") <= 48 * 1024);
+  for (const { id } of snapshots) {
+    assert.match(displayContent, new RegExp(`Subagent ${id} `));
+    assert.match(modelContent, new RegExp(`Subagent ${id} `));
+  }
+});
+
+test("automatic delivery fails closed when wrapper metadata exceeds the cap", () => {
+  let displayContent = "";
+  let modelContent = "";
+  const pi = {
+    appendEntry(_customType: string, data: { content: string }) {
+      displayContent = data.content;
+    },
+    sendMessage(message: { content: string }) {
+      modelContent = message.content;
+    },
+  } as unknown as ExtensionAPI;
+  const dispatch = createSubagentResultDispatcher(pi, () => "report");
+
+  dispatch([
+    {
+      id: "sa-oversized",
+      origin: "model",
+      backend: "pi",
+      title: "title ".repeat(20_000),
+      prompt: "inspect",
+      cwd: process.cwd(),
+      status: "error",
+      errorText: "failure ".repeat(20_000),
+      createdAt: 0,
+      settledAt: 1_000,
+      meta: { backend: "pi" },
+      usage: {},
+      transcriptVersion: 0,
+      transcript: [],
+      liveTools: [],
+      queued: [],
+      finalText: "report",
+      turns: 1,
+    },
+  ]);
+
+  for (const content of [displayContent, modelContent]) {
+    assert.ok(Buffer.byteLength(content, "utf8") <= 48 * 1024);
+    assert.match(content, /truncated at the 48 KiB total limit/);
+  }
+});
+
 test("the visible subagent result entry renders the completed report", () => {
   const renderers = new Map<string, EntryRenderer>();
   const pi = {
@@ -219,7 +630,7 @@ test("the visible subagent result entry renders the completed report", () => {
     },
     registerCommand() {},
   } as unknown as ExtensionAPI;
-  subagents(pi);
+  subagents(pi, { getResultDisplay: () => "full" });
 
   const renderer = renderers.get("subagent-result");
   assert.ok(renderer);
@@ -259,6 +670,58 @@ test("the visible subagent result entry renders the completed report", () => {
     component.render(120).join("\n"),
     /Plan Mode investigation report/,
   );
+});
+
+test("the compact result renderer shows artifact save failures", () => {
+  const renderers = new Map<string, EntryRenderer>();
+  const pi = {
+    on() {},
+    events: { on() {} },
+    registerTool() {},
+    getActiveTools: () => [],
+    setActiveTools() {},
+    registerMessageRenderer() {},
+    registerEntryRenderer(customType: string, renderer: EntryRenderer) {
+      renderers.set(customType, renderer);
+    },
+    registerCommand() {},
+  } as unknown as ExtensionAPI;
+  subagents(pi, { getResultDisplay: () => "compact" });
+
+  const renderer = renderers.get("subagent-result");
+  assert.ok(renderer);
+  const theme = {
+    fg: (_color: string, text: string) => text,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+    strikethrough: (text: string) => text,
+    inverse: (text: string) => text,
+  } as unknown as Parameters<EntryRenderer>[2];
+  const component = renderer(
+    {
+      type: "custom",
+      id: "entry-2",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      customType: "subagent-result",
+      data: {
+        content: "Subagent sa-artifact finished.\n\nReport",
+        details: {
+          id: "sa-artifact",
+          title: "artifact",
+          status: "done",
+          artifactSaveFailed: true,
+        },
+      },
+    },
+    { expanded: false },
+    theme,
+  );
+
+  assert.ok(component);
+  assert.match(component.render(120).join("\n"), /artifact not saved/);
 });
 
 test("session start preserves the complete registered subagent family", () => {
@@ -584,5 +1047,281 @@ test("session_start re-registers agent types for its cwd and live trust decision
         ),
       /agent type "inherited-tools" would be narrowed to capabilities that contradict its unchanged prompt/,
     );
+  });
+});
+
+test("ordinary and typed Direct spawns inherit real single-file package provenance", async () => {
+  await withTempDir(async (cwd) => {
+    const agentDir = process.env.PI_CODING_AGENT_DIR!;
+    const packageDir = path.join(agentDir, "local-package-checkout");
+    const source = path.join(packageDir, "extensions", "intercom.ts");
+    await mkdir(path.dirname(source), { recursive: true });
+    await writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "pi-intercom", version: "0.0.0" }),
+    );
+    await writeFile(
+      source,
+      `export default function (pi) {
+      pi.registerTool({ name: "intercom", label: "fixture", description: "fixture",
+        parameters: { type: "object", properties: {} },
+        async execute() { return { content: [{ type: "text", text: "ok" }] }; }
+      });
+    }`,
+    );
+    await writeFile(
+      path.join(agentDir, "settings.json"),
+      JSON.stringify({ packages: [source] }),
+    );
+    const settingsManager = SettingsManager.create(cwd, agentDir);
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager,
+    });
+    await loader.reload();
+    const { session: parent } = await createAgentSession({
+      cwd,
+      agentDir,
+      resourceLoader: loader,
+      settingsManager,
+      sessionManager: SessionManager.inMemory(cwd),
+    });
+    const model = {
+      provider: "fixture",
+      id: "model",
+      name: "fixture",
+      api: "openai-completions",
+      baseUrl: "http://127.0.0.1:1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+      maxTokens: 100,
+    } as NonNullable<AgentSession["model"]>;
+    let prompts = 0;
+    __setSubagentTestBackends([
+      makePiBackend({
+        sessionFactory: async (options) => {
+          assert.deepEqual(options?.tools, ["read"]);
+          assert.equal(
+            options?.resourceLoader
+              ?.getExtensions()
+              .extensions.some((extension) => extension.tools.has("intercom")),
+            false,
+          );
+          const harness = createPiAgentSessionHarness({
+            model,
+            activeTools: ["read"],
+            prompt: async (_text, child) => {
+              prompts++;
+              child.emitAssistant("intercom boundary verified");
+            },
+          });
+          return { session: harness.session };
+        },
+      }),
+    ]);
+    const tools = new Map<
+      string,
+      { execute: (...args: unknown[]) => Promise<unknown> }
+    >();
+    const hooks = new Map<string, (...args: unknown[]) => unknown>();
+    const pi = {
+      events: { on() {}, emit() {} },
+      on(name: string, handler: (...args: unknown[]) => unknown) {
+        hooks.set(name, handler);
+      },
+      registerTool(tool: {
+        name: string;
+        execute: (...args: unknown[]) => Promise<unknown>;
+      }) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand() {},
+      registerMessageRenderer() {},
+      registerEntryRenderer() {},
+      appendEntry() {},
+      sendMessage() {},
+      setActiveTools() {},
+      getActiveTools: () => parent.getActiveToolNames(),
+      getAllTools: () => parent.getAllTools(),
+      getThinkingLevel: () => "off",
+    } as unknown as ExtensionAPI;
+    const ctx = {
+      cwd,
+      hasUI: false,
+      isProjectTrusted: () => false,
+      model,
+      getContextUsage: () => undefined,
+      modelRegistry: { find: () => model, getAll: () => [model] },
+    } as unknown as ExtensionContext;
+    try {
+      await parent.bindExtensions({ mode: "print" });
+      parent.setActiveToolsByName(["read", "intercom"]);
+      subagents(pi);
+      for (const agent_type of [undefined, "advisor"]) {
+        const spawned = (await tools.get("subagent_spawn")!.execute(
+          "spawn",
+          {
+            prompt: "inspect",
+            name: agent_type ?? "ordinary",
+            ...(agent_type ? { agent_type } : {}),
+          },
+          undefined,
+          undefined,
+          ctx,
+        )) as { details: { id: string } };
+        const waited = await tools
+          .get("subagent_wait")!
+          .execute(
+            "wait",
+            { ids: [spawned.details.id] },
+            undefined,
+            undefined,
+            ctx,
+          );
+        assert.match(JSON.stringify(waited), /intercom boundary verified/);
+        const queried = await tools
+          .get("subagent_check")!
+          .execute("check", { id: spawned.details.id });
+        const waitedProjection = waited as {
+          details: { results: Array<{ completion: unknown }> };
+        };
+        const queriedProjection = queried as {
+          details: { completion: unknown };
+        };
+        assert.deepEqual(
+          queriedProjection.details.completion,
+          waitedProjection.details.results[0]?.completion,
+        );
+        assert.match(JSON.stringify(waited), /verification=unknown/);
+        assert.deepEqual(parent.getActiveToolNames(), ["read", "intercom"]);
+      }
+      assert.equal(prompts, 2);
+    } finally {
+      await hooks.get("session_shutdown")?.({}, ctx);
+      __setSubagentTestBackends(undefined);
+      await shutdownAndDisposeChildSession(parent);
+    }
+  });
+});
+
+test("Direct spawn tolerates inherited misses but rejects a missing explicit role tool before prompting", async () => {
+  await withTempDir(async (cwd) => {
+    const agentDir = process.env.PI_CODING_AGENT_DIR!;
+    await mkdir(path.join(agentDir, "agents"), { recursive: true });
+    await writeFile(
+      path.join(agentDir, "agents", "explicit-fixture.md"),
+      "---\nname: explicit-fixture\ndescription: Requires a parent-only fixture\ntools: [read, parent_fixture]\n---\nUse parent_fixture to verify the result.\n",
+    );
+    const model = {
+      provider: "fixture",
+      id: "model",
+      name: "fixture",
+      api: "openai-completions",
+      baseUrl: "http://127.0.0.1:1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+      maxTokens: 100,
+    } as NonNullable<AgentSession["model"]>;
+    let prompts = 0;
+    __setSubagentTestBackends([
+      makePiBackend({
+        sessionFactory: async (options) => {
+          assert.deepEqual(options?.tools, ["read", "parent_fixture"]);
+          const harness = createPiAgentSessionHarness({
+            model,
+            activeTools: ["read"],
+            prompt: async (_text, child) => {
+              prompts++;
+              child.emit({ type: "agent_start" });
+              const message = child.emitAssistant("inherited surface narrowed");
+              child.emit({
+                type: "agent_end",
+                messages: [message],
+                willRetry: false,
+              });
+              child.emit({ type: "agent_settled" });
+            },
+          });
+          return { session: harness.session };
+        },
+      }),
+    ]);
+    const tools = new Map<string, ToolDefinition>();
+    const hooks = new Map<string, (...args: unknown[]) => unknown>();
+    const pi = {
+      events: { on() {}, emit() {} },
+      on(name: string, handler: (...args: unknown[]) => unknown) {
+        hooks.set(name, handler);
+      },
+      registerTool(tool: ToolDefinition) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand() {},
+      registerMessageRenderer() {},
+      registerEntryRenderer() {},
+      appendEntry() {},
+      sendMessage() {},
+      setActiveTools() {},
+      getActiveTools: () => ["read", "parent_fixture"],
+      getAllTools: () =>
+        ["read", "parent_fixture"].map((name) => ({
+          name,
+          sourceInfo: createSyntheticSourceInfo(`<sdk:${name}>`, {
+            source: "sdk",
+          }),
+        })),
+      getThinkingLevel: () => "off",
+    } as unknown as ExtensionAPI;
+    const ctx = {
+      cwd,
+      hasUI: false,
+      isProjectTrusted: () => false,
+      model,
+      getContextUsage: () => undefined,
+      modelRegistry: { find: () => model, getAll: () => [model] },
+      sessionManager: SessionManager.inMemory(cwd),
+    } as unknown as ExtensionContext;
+    const toolCtx = toolExecutionContext(ctx);
+    try {
+      subagents(pi);
+      await hooks.get("session_start")?.({}, ctx);
+      const spawn = tools.get("subagent_spawn")!;
+      const inherited = await spawn.execute(
+        "inherited",
+        { prompt: "inspect", name: "inherited" },
+        undefined,
+        undefined,
+        toolCtx,
+      );
+      const id = (inherited.details as { id: string }).id;
+      const waited = await tools
+        .get("subagent_wait")!
+        .execute("wait", { ids: [id] }, undefined, undefined, toolCtx);
+      assert.match(JSON.stringify(waited), /inherited surface narrowed/);
+      assert.equal(prompts, 1);
+      await assert.rejects(
+        spawn.execute(
+          "explicit",
+          {
+            prompt: "inspect",
+            name: "explicit",
+            agent_type: "explicit-fixture",
+          },
+          undefined,
+          undefined,
+          toolCtx,
+        ),
+        /Child tool preflight failed: requested tool "parent_fixture" is unavailable/,
+      );
+      assert.equal(prompts, 1, "an explicit miss must fail before prompting");
+    } finally {
+      await hooks.get("session_shutdown")?.({}, ctx);
+      __setSubagentTestBackends(undefined);
+    }
   });
 });

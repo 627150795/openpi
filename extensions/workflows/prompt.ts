@@ -1,9 +1,10 @@
-import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import {
   allocateResultBudgets,
   type ParentContextUsage,
 } from "../shared/result-budget.ts";
+import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { projectText } from "../shared/text-projection.ts";
+import { workflowCompletionLines } from "./agent-completion.ts";
 import {
   countStates,
   formatElapsed,
@@ -18,15 +19,15 @@ export const WORKFLOW_PARAMETER_DESCRIPTIONS = {
     "JavaScript workflow script. May start with `export const meta = {...}`, then use phase(), agent(), parallel(), args, and a final `return`.",
   args: "Optional JSON string exposed to the script as `args` (parsed when valid JSON, otherwise passed through as the raw string).",
   background:
-    "Deprecated compatibility alias: true means wait=false; false means wait=true. Do not provide both background and wait.",
+    "Deprecated compatibility alias for published callers only; new calls must use wait. Replace true with wait=false and false with wait=true. Do not provide both fields. The alias will be removed in the next announced breaking release.",
   wait: "Wait for the final result in this tool call. Interactive sessions default to false and deliver completion later; print/automation defaults to true. Interrupting the wait does not cancel the workflow.",
   resumeFromRunId:
     "Optional prior run id or unique suffix for safe read-only replay. See the workflows Skill for matching rules.",
 };
 
-/** Describes stopping a running background workflow, mirroring subagent_cancel/bg_kill. */
+/** Describes stopping a running workflow, mirroring subagent_cancel/bg_kill. */
 export const WORKFLOW_STOP_TOOL_DESCRIPTION =
-  "Cancel a running background workflow by its run id (from the workflow launch result). This aborts its remaining agents and settles the run; partial results and artifacts are preserved. Only background runs need this — a blocking workflow is already cancelled by interrupting the turn.";
+  "Cancel a running workflow by its run id (from the workflow launch result). This aborts its remaining agents and settles the run; partial results and artifacts are preserved.";
 
 /** Model-facing schema description for the workflow run id to stop. */
 export const WORKFLOW_STOP_PARAMETER_DESCRIPTIONS = {
@@ -56,7 +57,7 @@ export const WORKFLOW_TOOL_DESCRIPTION = [
   "Interactive sessions launch in the background by default and deliver completion later. Set wait: true only when this tool call must return the final result inline.",
   "Derive fan-out from independent verifiable work items and task difficulty. Concurrency is a runtime ceiling, not a target or the total-call limit; user cost, count, model, and effort constraints take precedence.",
   "For concurrent writers use isolation: 'worktree' and tell each agent to commit. Read-only work should normally stay in the shared checkout.",
-  "Read the workflows Skill before a nontrivial script; it covers the restricted sandbox, full DSL, acceptance, result refs, replay, background lifecycle, limits, and examples.",
+  "Read the workflows Skill before a nontrivial script; it covers the restricted sandbox, full DSL, result refs, replay, background lifecycle, limits, and examples.",
 ].join("\n");
 
 /** Adds workflow orchestration primitives and background execution to the model's tool prompt. */
@@ -74,14 +75,6 @@ export const WORKFLOW_PROMPT_GUIDELINES = [
 export function buildWorkflowAgentPrompt(prompt: string) {
   return prompt;
 }
-
-/** Instructs structured workflow children to terminate with exactly one structured_output call. */
-export const STRUCTURED_OUTPUT_SYSTEM_INSTRUCTION =
-  "When your task is complete, call the `structured_output` tool exactly once as your final action, with fields matching the required schema. Do not write any other text after it.";
-
-/** Describes the terminating structured_output tool and its final-action contract. */
-export const STRUCTURED_OUTPUT_TOOL_DESCRIPTION =
-  "Return your final result as structured data matching the required schema. Call this exactly once, as your last action; do not write any other text after it.";
 
 /** Builds the workflow completion report returned to the parent model. */
 export function buildWorkflowResultMessage(
@@ -157,11 +150,14 @@ export function buildWorkflowResultMessage(
               : "running";
       lines.push(
         `- [${agent.label}]${agent.phase ? ` (${agent.phase})` : ""} ${status}` +
-          (agent.acceptance ? ` · acceptance ${agent.acceptance.status}` : "") +
+          (agent.acceptance
+            ? ` · deprecated model self-attestation ${agent.acceptance.status}`
+            : "") +
           (agent.error ? ` — ${agent.error}` : ""),
       );
     }
   }
+  lines.push("", ...workflowCompletionLines(details.runId, details.agents));
   if (details.result !== undefined)
     lines.push("", "Result:", resultJson(details.result));
   return sanitizeTerminalText(lines.join("\n"));
@@ -214,6 +210,16 @@ export function buildProjectedWorkflowCompletionBatch(
   }[],
   usage?: ParentContextUsage | null,
 ) {
+  const deliveryFacts = JSON.stringify(
+    entries.map(({ deliveryId, details, runDir }) => ({
+      deliveryId,
+      runId: details.runId,
+      evidence: shortenHome(runDir),
+    })),
+  );
+  const manifest =
+    "Workflow completion delivery facts (stable across retries; deduplicate by deliveryId):\n" +
+    deliveryFacts;
   const full = entries.map(({ deliveryId, details, runDir }) =>
     buildBackgroundWorkflowFollowUp({
       runId: details.runId,
@@ -223,18 +229,30 @@ export function buildProjectedWorkflowCompletionBatch(
     }),
   );
   const separatorBytes = Math.max(0, entries.length - 1) * 2;
+  const manifestSeparatorBytes = entries.length > 0 ? 2 : 0;
+  const fixedBytes =
+    Buffer.byteLength(manifest, "utf8") +
+    separatorBytes +
+    manifestSeparatorBytes;
+  const bodyBudget = 48 * 1024 - fixedBytes;
+  if (bodyBudget < 0) {
+    throw new Error(
+      "Workflow completion delivery facts exceed the transport payload limit",
+    );
+  }
   const allocation = allocateResultBudgets(
     full.map((message) => Buffer.byteLength(message, "utf8")),
     usage,
     {
-      maxBatchBytes: 48 * 1024 - separatorBytes,
+      maxBatchBytes: bodyBudget,
       maxResultBytes: 48 * 1024,
       minResultBytes: 1024,
       headroomShare: 0.25,
       estimatedBytesPerToken: 4,
+      fixedBytes,
     },
   );
-  return full
+  const projected = full
     .map((message, index) =>
       projectText(message, {
         maxBytes: allocation.budgets[index] ?? 1024,
@@ -243,6 +261,44 @@ export function buildProjectedWorkflowCompletionBatch(
       }),
     )
     .join("\n\n");
+  return projected ? `${manifest}\n\n${projected}` : manifest;
+}
+
+/** Split transport batches so every manifest and projected body fit together. */
+export function buildProjectedWorkflowCompletionBatches(
+  entries: readonly {
+    deliveryId: string;
+    details: WorkflowDetails;
+    runDir: string;
+  }[],
+  usage?: ParentContextUsage | null,
+) {
+  const batches: Array<{
+    entries: (typeof entries)[number][];
+    content: string;
+  }> = [];
+  let current: (typeof entries)[number][] = [];
+  for (const entry of entries) {
+    const candidate = [...current, entry];
+    try {
+      buildProjectedWorkflowCompletionBatch(candidate, usage);
+      current = candidate;
+    } catch (error) {
+      if (current.length === 0) throw error;
+      batches.push({
+        entries: current,
+        content: buildProjectedWorkflowCompletionBatch(current, usage),
+      });
+      current = [entry];
+    }
+  }
+  if (current.length > 0) {
+    batches.push({
+      entries: current,
+      content: buildProjectedWorkflowCompletionBatch(current, usage),
+    });
+  }
+  return batches;
 }
 
 /** Builds the background-launch result and tells the parent model how to inspect or stop the run. */
@@ -274,6 +330,7 @@ export function buildWorkflowStatusSummary(
     details.currentPhase ? `Current phase: ${details.currentPhase}` : undefined,
     details.delivery ? `Delivery: ${details.delivery.state}.` : undefined,
     `Artifacts: ${shortenHome(runDir)}`,
+    ...workflowCompletionLines(details.runId, details.agents),
   ]
     .filter(Boolean)
     .join("\n");

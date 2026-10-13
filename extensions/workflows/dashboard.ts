@@ -1,5 +1,5 @@
 /**
- * /workflows dashboard: a full-screen overlay with a run list and a per-run
+ * /workflows dashboard: a native custom-editor page with a run list and a per-run
  * detail view (phases sidebar + agents panel), modeled after:
  *
  *   name                                             5/5 agents · 31m18s · done
@@ -18,10 +18,16 @@ import {
   getAgentDir,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+  Container,
+  type TUI,
+  type TuiMouseEvent,
+  truncateToWidth,
+} from "@earendil-works/pi-tui";
 import { AgentSessionPage } from "../shared/agent-session-page.ts";
-import { contextPercent } from "../shared/context-utilization.ts";
 import { fitNavigationSides } from "../shared/below-editor-navigation.ts";
+import { contextPercent } from "../shared/context-utilization.ts";
+import { decodeDelegationReplayOrigin } from "../shared/delegation-completion.ts";
 import {
   panelFrame,
   type ScreenHint,
@@ -31,6 +37,8 @@ import {
 import { SPINNER_INTERVAL_MS, spinnerFrame } from "../shared/spinner.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import { isAcceptanceLedger } from "./acceptance.ts";
+import { recoverPendingWorkflowCommit } from "./artifacts.ts";
+import { decodeExecutionTimingSummary } from "./execution-timing.ts";
 import { projectWorkflowGraph } from "./graph-projection.ts";
 import {
   classifyInterruptedInvocation,
@@ -62,11 +70,17 @@ import {
   type WorkflowLogEntry,
   workflowGraphRecords,
 } from "./model.ts";
+import { measureWorkflowDetailsBytes } from "./retention.ts";
 import { writeFileAtomic } from "./serialization.ts";
 import { WorkflowTranscriptAdapter } from "./transcript.ts";
+import { dashboardPageRows } from "./dashboard-page.ts";
 
 const NOTICE_TTL_MS = 4000;
 const MIN_HEIGHT = 10;
+// This is a UI projection bound. It is deliberately independent from the
+// session-memory settled-run retention policy; disk remains canonical.
+const DEFAULT_WORKFLOW_DASHBOARD_MAX_RUNS = 32;
+const DEFAULT_WORKFLOW_DASHBOARD_MAX_BYTES = 2 * 1024 * 1024;
 
 function wrapSelection(index: number, delta: number, length: number): number {
   if (length === 0) return 0;
@@ -77,6 +91,23 @@ export interface RunEntry {
   runId: string;
   details: WorkflowDetails;
   live: boolean;
+}
+
+export interface RunEntryLoadOptions {
+  /** Explicitly opened runs remain visible even when the list is bounded. */
+  initialRunId?: string;
+  /** Maximum number of non-pinned persisted entries kept in the list. */
+  maxRuns?: number;
+  /** Maximum serialized UTF-8 bytes kept by non-pinned persisted entries. */
+  maxBytes?: number;
+}
+
+export interface RunEntryLoadResult {
+  entries: RunEntry[];
+  /** Persisted entries omitted by the dashboard projection bound. */
+  omittedRuns: number;
+  /** Serialized bytes belonging to omitted persisted entries. */
+  omittedBytes: number;
 }
 
 function runsDir(): string {
@@ -143,18 +174,55 @@ export function readPersistedWorkflowDetails(
   runId: string,
   options: ReadPersistedRunOptions = {},
 ): WorkflowDetails | undefined {
-  let details: WorkflowDetails | undefined;
+  const details = normalizeReadRecord(
+    runId,
+    readPersistedWorkflowRecord(runId),
+  );
+  if (!details) return undefined;
+  if (options.hydrateArtifacts) hydrateRunArtifacts(runId, details);
+  return details;
+}
+
+function normalizeReadRecord(runId: string, raw: unknown) {
+  try {
+    return normalizePersistedWorkflowDetails(runId, raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function readPersistedWorkflowRecord(runId: string) {
+  recoverPendingWorkflowCommit(path.join(runsDir(), runId));
   try {
     const raw: unknown = JSON.parse(
       fs.readFileSync(path.join(runsDir(), runId, "workflow.json"), "utf8"),
     );
-    details = normalizePersistedWorkflowDetails(runId, raw);
+    return raw && typeof raw === "object"
+      ? (raw as Record<string, unknown>)
+      : undefined;
   } catch {
     return undefined;
   }
-  if (!details) return undefined;
-  if (options.hydrateArtifacts) hydrateRunArtifacts(runId, details);
-  return details;
+}
+
+function matchesRunScope(
+  record: { startedAt?: unknown; finishedAt?: unknown; sessionId?: unknown },
+  runId: string,
+  sessionId: string,
+  referencedRunIds: ReadonlySet<string>,
+  startedSince: number,
+  fromRetention = false,
+) {
+  const touchedAt = Math.max(
+    typeof record.startedAt === "number" ? record.startedAt : 0,
+    typeof record.finishedAt === "number" ? record.finishedAt : 0,
+  );
+  return (
+    touchedAt >= startedSince &&
+    (fromRetention ||
+      record.sessionId === sessionId ||
+      referencedRunIds.has(runId))
+  );
 }
 
 function isWorktreeCleanup(
@@ -220,6 +288,14 @@ function normalizeDelivery(value: unknown): WorkflowDetails["delivery"] {
       : 0;
   return {
     id: sanitizeLine(record.id, 256),
+    ...(typeof record.ownerSessionId === "string" && record.ownerSessionId
+      ? { ownerSessionId: sanitizeLine(record.ownerSessionId, 256) }
+      : {}),
+    ...(typeof record.ownerEpoch === "number" &&
+    Number.isSafeInteger(record.ownerEpoch) &&
+    record.ownerEpoch >= 0
+      ? { ownerEpoch: record.ownerEpoch }
+      : {}),
     state,
     attempts,
     updatedAt,
@@ -231,6 +307,22 @@ function normalizeDelivery(value: unknown): WorkflowDetails["delivery"] {
       ? { lastError: sanitizeLine(record.lastError, 2_000) }
       : {}),
   };
+}
+
+function normalizeTranscriptsOmitted(
+  value: unknown,
+): WorkflowDetails["transcriptsOmitted"] {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const positiveInt = (candidate: unknown) =>
+    typeof candidate === "number" &&
+    Number.isSafeInteger(candidate) &&
+    candidate > 0
+      ? candidate
+      : 0;
+  const agents = positiveInt(record.agents);
+  if (agents <= 0) return undefined;
+  return { agents, entries: positiveInt(record.entries) };
 }
 
 function normalizeTranscript(value: unknown): TranscriptEntry[] {
@@ -329,8 +421,55 @@ export function normalizePersistedWorkflowDetails(
             ),
           )
         : decodedInvocation;
+    const replayOrigin = decodeDelegationReplayOrigin(a.replayOrigin);
+    const executionOutcome =
+      a.executionOutcome === "success" ||
+      a.executionOutcome === "failure" ||
+      a.executionOutcome === "cancelled" ||
+      a.executionOutcome === "uncertain" ||
+      a.executionOutcome === "replayed"
+        ? a.executionOutcome
+        : undefined;
+    const timing =
+      executionOutcome === "replayed" ||
+      invocation?.admissionState === "replayed"
+        ? undefined
+        : decodeExecutionTimingSummary(a.timing);
+    const timingArtifact =
+      typeof a.timingArtifact === "string" &&
+      /^agent-timing\/agent-\d{4,8}\.json$/u.test(a.timingArtifact)
+        ? a.timingArtifact
+        : undefined;
     agents.push({
       index,
+      ...(timing ? { timing } : {}),
+      ...(timingArtifact ? { timingArtifact } : {}),
+      ...(a.timingArtifactState === "saved" ||
+      a.timingArtifactState === "failed"
+        ? { timingArtifactState: a.timingArtifactState }
+        : {}),
+      ...(executionOutcome ? { executionOutcome } : {}),
+      ...(a.resultPersistence === "saved" || a.resultPersistence === "failed"
+        ? { resultPersistence: a.resultPersistence }
+        : {}),
+      ...(typeof a.resultHasText === "boolean"
+        ? { resultHasText: a.resultHasText }
+        : {}),
+      ...(a.resultHasStructured === true ? { resultHasStructured: true } : {}),
+      ...(typeof a.requestedCwd === "string" && a.requestedCwd.length <= 4096
+        ? { requestedCwd: a.requestedCwd }
+        : {}),
+      ...(typeof a.effectiveCwd === "string" && a.effectiveCwd.length <= 4096
+        ? { effectiveCwd: a.effectiveCwd }
+        : {}),
+      ...(a.isolation === "shared" || a.isolation === "worktree"
+        ? { isolation: a.isolation }
+        : {}),
+      ...(replayOrigin
+        ? { replayOrigin }
+        : a.replayOrigin === "unknown"
+          ? { replayOrigin: "unknown" as const }
+          : {}),
       ...(typeof a.callId === "string" && a.callId
         ? { callId: sanitizeLine(a.callId, 256) }
         : {}),
@@ -428,6 +567,9 @@ export function normalizePersistedWorkflowDetails(
     logs.push({
       at: typeof entry.at === "number" ? entry.at : startedAt,
       text: sanitizeLine(entry.text, MAX_LOG_TEXT),
+      ...(entry.kind === "pipeline-drop"
+        ? { kind: "pipeline-drop" as const }
+        : {}),
     });
   }
 
@@ -442,6 +584,10 @@ export function normalizePersistedWorkflowDetails(
         "Persisted terminal workflow contained an agent without terminal evidence";
     }
   }
+
+  const transcriptsOmitted = normalizeTranscriptsOmitted(
+    record.transcriptsOmitted,
+  );
 
   return {
     runId,
@@ -475,6 +621,7 @@ export function normalizePersistedWorkflowDetails(
     ...(typeof record.logsDropped === "number" && record.logsDropped > 0
       ? { logsDropped: record.logsDropped }
       : {}),
+    ...(transcriptsOmitted ? { transcriptsOmitted } : {}),
     ...(agents.some((agent) => agent.callId)
       ? {
           graph: projectWorkflowGraph(workflowGraphRecords(agents)),
@@ -560,35 +707,159 @@ export function sessionWorkflowRunIds(ctx: ExtensionContext): Set<string> {
   return runIds;
 }
 
-export function loadRunEntries(
+function configuredLimit(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+) {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new RangeError(`${name} must be a non-negative safe integer`);
+  return value;
+}
+
+function compareRunEntries(a: RunEntry, b: RunEntry) {
+  return (
+    b.details.startedAt - a.details.startedAt || a.runId.localeCompare(b.runId)
+  );
+}
+
+function measureRunEntryBytes(details: WorkflowDetails) {
+  try {
+    return measureWorkflowDetailsBytes(details);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Build the bounded dashboard list without hydrating result/transcript
+ * artifacts. Details are loaded lazily when the user opens a run.
+ */
+export function loadRunEntryProjection(
   active: Map<string, WorkflowDetails>,
   sessionId: string,
   referencedRunIds: ReadonlySet<string>,
   /** Hide runs untouched by the current request; live runs always show. */
   startedSince = 0,
-): RunEntry[] {
-  const entries: RunEntry[] = [];
-  for (const runId of listPersistedRunIds()) {
+  /** Bounded settled projections used only if canonical disk state is unreadable. */
+  retained: ReadonlyMap<string, WorkflowDetails> = new Map(),
+  options: RunEntryLoadOptions = {},
+): RunEntryLoadResult {
+  const maxRuns = configuredLimit(
+    options.maxRuns,
+    DEFAULT_WORKFLOW_DASHBOARD_MAX_RUNS,
+    "maxRuns",
+  );
+  const maxBytes = configuredLimit(
+    options.maxBytes,
+    DEFAULT_WORKFLOW_DASHBOARD_MAX_BYTES,
+    "maxBytes",
+  );
+  const pinned = new Map<string, RunEntry>();
+  const bounded: { entry: RunEntry; bytes: number }[] = [];
+  let boundedBytes = 0;
+  let omittedRuns = 0;
+  let omittedBytes = 0;
+
+  const omit = (bytes: number | undefined) => {
+    omittedRuns++;
+    if (bytes !== undefined) omittedBytes += bytes;
+  };
+
+  const addBounded = (entry: RunEntry) => {
+    const bytes = measureRunEntryBytes(entry.details);
+    if (bytes === undefined) {
+      omit(undefined);
+      return;
+    }
+    bounded.push({ entry, bytes });
+    bounded.sort((a, b) => compareRunEntries(a.entry, b.entry));
+    boundedBytes += bytes;
+    while (bounded.length > maxRuns || boundedBytes > maxBytes) {
+      const oldest = bounded.pop();
+      if (!oldest) break;
+      boundedBytes -= oldest.bytes;
+      omit(oldest.bytes);
+    }
+  };
+
+  const addEntry = (entry: RunEntry, keepPinned: boolean) => {
+    if (keepPinned) pinned.set(entry.runId, entry);
+    else addBounded(entry);
+  };
+
+  const runIds = new Set([
+    ...listPersistedRunIds(),
+    ...active.keys(),
+    ...retained.keys(),
+  ]);
+  for (const runId of runIds) {
     const live = active.get(runId);
     if (live) {
-      entries.push({ runId, details: live, live: true });
+      addEntry({ runId, details: live, live: true }, true);
       continue;
     }
-    const details = readPersistedWorkflowDetails(runId, {
-      hydrateArtifacts: true,
-    });
-    if (!details) continue;
-    const touchedAt = Math.max(details.startedAt, details.finishedAt ?? 0);
+    // Reject unrelated history before normalizing potentially large inline
+    // transcripts. Side artifacts belong to explicit detail navigation.
+    const raw = readPersistedWorkflowRecord(runId);
     if (
-      touchedAt < startedSince ||
-      (details.sessionId !== sessionId && !referencedRunIds.has(runId))
+      raw &&
+      !matchesRunScope(raw, runId, sessionId, referencedRunIds, startedSince)
     ) {
       continue;
     }
+    const persisted = normalizeReadRecord(runId, raw);
+    const retainedDetails = retained.get(runId);
+    const details = persisted ?? retainedDetails;
+    if (!details) continue;
+    const fromRetention =
+      persisted === undefined && retainedDetails !== undefined;
+    if (
+      !matchesRunScope(
+        details,
+        runId,
+        sessionId,
+        referencedRunIds,
+        startedSince,
+        fromRetention,
+      )
+    ) {
+      continue;
+    }
+    // A session reference makes a cross-session run eligible, but it remains
+    // subject to the dashboard bound. Only active runs and the explicit target
+    // are pinned so a long session cannot defeat count/byte limits.
     recoverStaleWorkflowDetails(details);
-    entries.push({ runId, details, live: false });
+    addEntry({ runId, details, live: false }, runId === options.initialRunId);
   }
-  return entries.sort((a, b) => b.details.startedAt - a.details.startedAt);
+
+  return {
+    entries: [
+      ...pinned.values(),
+      ...bounded.map((candidate) => candidate.entry),
+    ].sort(compareRunEntries),
+    omittedRuns,
+    omittedBytes,
+  };
+}
+
+export function loadRunEntries(
+  active: Map<string, WorkflowDetails>,
+  sessionId: string,
+  referencedRunIds: ReadonlySet<string>,
+  startedSince = 0,
+  retained: ReadonlyMap<string, WorkflowDetails> = new Map(),
+  options: RunEntryLoadOptions = {},
+): RunEntry[] {
+  return loadRunEntryProjection(
+    active,
+    sessionId,
+    referencedRunIds,
+    startedSince,
+    retained,
+    options,
+  ).entries;
 }
 
 export function workflowGraphSummary(
@@ -620,6 +891,13 @@ export function buildWorkflowReport(details: WorkflowDetails): string {
   if (totals) lines.push(`- Usage: ${totals}`);
   if (details.description) lines.push("", details.description);
   if (details.error) lines.push("", `**Error:** ${details.error}`);
+  if (details.transcriptsOmitted) {
+    const { agents, entries } = details.transcriptsOmitted;
+    lines.push(
+      "",
+      `_${agents} of ${details.agents.length} agent transcript(s) (${entries} entries) omitted from transcripts.json to stay within its byte budget; execution facts above are complete._`,
+    );
+  }
 
   for (const group of phaseGroups(details, true)) {
     lines.push("", `## ${group.title}`, "");
@@ -648,6 +926,21 @@ export function buildWorkflowReport(details: WorkflowDetails): string {
         `- **${agent.label}** — ${status}${stats ? ` (${stats})` : ""}`,
       );
       if (agent.error) lines.push(`  - error: ${agent.error}`);
+      if (agent.timing) {
+        const timing = agent.timing;
+        lines.push(
+          `  - timing: ${Math.round(timing.toolWallMs)}ms tool wall / ${Math.round(timing.toolDurationMs)}ms summed tool duration; ${Math.round(timing.unattributedMs)}ms unattributed; ${timing.tools.paired}/${timing.tools.started} paired; ${timing.coverage}`,
+        );
+        lines.push(
+          `  - timing coverage: ${timing.tools.trackingDropped} tracking drops, ${timing.tools.unmatchedEnds} unmatched ends, ${timing.tools.unclosedStarts} unclosed starts, ${timing.tools.entriesOmitted} detail entries omitted; timeout=${timing.tools.timedOut}, cancelled=${timing.tools.cancelled}`,
+        );
+      }
+      if (agent.timingArtifact)
+        lines.push(`  - timing artifact: ${agent.timingArtifact}`);
+      if (agent.timingArtifactState === "failed")
+        lines.push(
+          "  - timing artifact: persistence failed (summary retained)",
+        );
     }
   }
 
@@ -696,8 +989,24 @@ type View = "list" | "detail" | "transcript";
 type DetailFocus = "phases" | "agents";
 
 export class WorkflowDashboard {
+  private _focused = false;
+  get focused() {
+    return this._focused;
+  }
+  set focused(value: boolean) {
+    this._focused = value;
+    if (this.transcriptPage) this.transcriptPage.focused = value;
+  }
+
+  handleMouse(event: TuiMouseEvent) {
+    return this.transcriptPage?.handleMouse(event);
+  }
+
   private view: View = "list";
   private entries: RunEntry[] = [];
+  private historyLoaded = false;
+  private seenRetainedRunIds = new Set<string>();
+  private hydratedRunIds = new Set<string>();
   private listIndex = 0;
   private phaseIndex = 0;
   private agentIndex = 0;
@@ -705,6 +1014,7 @@ export class WorkflowDashboard {
   private transcriptPage?: AgentSessionPage;
   private current?: RunEntry;
   private openedDirectly = false;
+  private omittedRuns = 0;
   private notice?: string;
   private noticeAt = 0;
   private disposed = false;
@@ -713,11 +1023,15 @@ export class WorkflowDashboard {
   private theme: Theme;
   private keybindings: KeybindingsManager;
   private getActive: () => Map<string, WorkflowDetails>;
+  private getRetained: () => ReadonlyMap<string, WorkflowDetails>;
   private sessionId: string;
   private referencedRunIds: ReadonlySet<string>;
   private startedSince: number;
   private close: () => void;
   private onAbort?: (runId: string) => boolean;
+  private initialToolsExpanded: boolean;
+  private initialRunId?: string;
+  private readonly pageRows?: (width: number) => number;
 
   constructor(
     tui: TUI,
@@ -730,32 +1044,47 @@ export class WorkflowDashboard {
     close: () => void,
     initialRunId?: string,
     onAbort?: (runId: string) => boolean,
+    getRetained: () => ReadonlyMap<string, WorkflowDetails> = () => new Map(),
+    initialToolsExpanded = false,
+    pageRows?: (width: number) => number,
   ) {
+    this.pageRows = pageRows;
     this.tui = tui;
     this.theme = theme;
     this.keybindings = keybindings;
     this.getActive = getActive;
+    this.getRetained = getRetained;
     this.sessionId = sessionId;
     this.referencedRunIds = referencedRunIds;
     this.startedSince = startedSince;
     this.close = close;
     this.onAbort = onAbort;
+    this.initialToolsExpanded = initialToolsExpanded;
+    const initialResolution = initialRunId
+      ? resolveWorkflowRunTarget(initialRunId, [
+          ...listPersistedRunIds(),
+          ...this.getActive().keys(),
+          ...this.getRetained().keys(),
+        ])
+      : undefined;
+    this.initialRunId = initialResolution?.ok
+      ? initialResolution.runId
+      : undefined;
     this.refresh();
-    if (initialRunId) {
-      const resolution = resolveWorkflowRunTarget(
-        initialRunId,
-        this.entries.map((entry) => entry.runId),
-      );
-      if (resolution.ok) {
+    if (initialResolution) {
+      if (initialResolution.ok) {
         const entry = this.entries.find(
-          (candidate) => candidate.runId === resolution.runId,
+          (candidate) => candidate.runId === initialResolution.runId,
         );
         if (entry) {
           this.listIndex = this.entries.indexOf(entry);
           this.enterEntry(entry, true);
+        } else {
+          this.notice = `Workflow run ${initialResolution.runId} could not be read.`;
+          this.noticeAt = Date.now();
         }
       } else {
-        this.notice = resolution.error;
+        this.notice = initialResolution.error;
         this.noticeAt = Date.now();
       }
     }
@@ -791,6 +1120,7 @@ export class WorkflowDashboard {
     this.disposed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.transcriptPage?.dispose();
     this.transcriptPage = undefined;
   }
 
@@ -800,12 +1130,109 @@ export class WorkflowDashboard {
 
   private refresh() {
     const selected = this.entries[this.listIndex]?.runId;
-    this.entries = loadRunEntries(
-      this.getActive(),
-      this.sessionId,
-      this.referencedRunIds,
-      this.startedSince,
-    );
+    const active = this.getActive();
+    const retained = this.getRetained();
+    if (!this.historyLoaded) {
+      const pinnedRunId =
+        this.view === "list"
+          ? this.initialRunId
+          : (this.current?.runId ?? this.initialRunId);
+      const projection = loadRunEntryProjection(
+        active,
+        this.sessionId,
+        this.referencedRunIds,
+        this.startedSince,
+        retained,
+        { initialRunId: pinnedRunId },
+      );
+      this.entries = projection.entries;
+      this.omittedRuns = projection.omittedRuns;
+      this.historyLoaded = true;
+    } else {
+      // Animation ticks reuse historical projections. Only a newly settled run
+      // needs one canonical read; stable frames never scan or reread history.
+      const entries = new Map(
+        this.entries.map((entry) => [entry.runId, entry]),
+      );
+      const settledIds = new Set([
+        ...this.entries
+          .filter((entry) => entry.live && !active.has(entry.runId))
+          .map((entry) => entry.runId),
+        ...[...retained.keys()].filter(
+          (runId) =>
+            !this.seenRetainedRunIds.has(runId) &&
+            !entries.has(runId) &&
+            !active.has(runId),
+        ),
+      ]);
+      for (const runId of settledIds) {
+        const persisted = readPersistedWorkflowDetails(runId);
+        const details =
+          persisted ?? retained.get(runId) ?? entries.get(runId)?.details;
+        if (!details) continue;
+        if (
+          !matchesRunScope(
+            details,
+            runId,
+            this.sessionId,
+            this.referencedRunIds,
+            this.startedSince,
+            !persisted,
+          )
+        ) {
+          entries.delete(runId);
+          continue;
+        }
+        // Recovery operates on a projection, never on the former live owner.
+        const recovered = recoverStaleWorkflowDetails({
+          ...details,
+          agents: details.agents.map((agent) => ({ ...agent })),
+        });
+        entries.set(runId, { runId, details: recovered, live: false });
+        this.hydratedRunIds.delete(runId);
+      }
+      for (const [runId, details] of active) {
+        entries.set(runId, { runId, details, live: true });
+      }
+      const pinnedRunId =
+        this.view === "list"
+          ? this.initialRunId
+          : (this.current?.runId ?? this.initialRunId);
+      const pinned: RunEntry[] = [];
+      const bounded: { entry: RunEntry; bytes: number }[] = [];
+      let boundedBytes = 0;
+      for (const entry of entries.values()) {
+        if (
+          entry.live ||
+          (pinnedRunId !== undefined && entry.runId === pinnedRunId)
+        ) {
+          pinned.push(entry);
+          continue;
+        }
+        const bytes = measureRunEntryBytes(entry.details);
+        if (bytes === undefined) {
+          this.omittedRuns++;
+          continue;
+        }
+        bounded.push({ entry, bytes });
+        boundedBytes += bytes;
+      }
+      bounded.sort((a, b) => compareRunEntries(a.entry, b.entry));
+      while (
+        bounded.length > DEFAULT_WORKFLOW_DASHBOARD_MAX_RUNS ||
+        boundedBytes > DEFAULT_WORKFLOW_DASHBOARD_MAX_BYTES
+      ) {
+        const oldest = bounded.pop();
+        if (!oldest) break;
+        boundedBytes -= oldest.bytes;
+        this.omittedRuns++;
+      }
+      this.entries = [
+        ...pinned,
+        ...bounded.map((candidate) => candidate.entry),
+      ].sort(compareRunEntries);
+    }
+    for (const runId of retained.keys()) this.seenRetainedRunIds.add(runId);
     if (selected) {
       const index = this.entries.findIndex((e) => e.runId === selected);
       if (index >= 0) this.listIndex = index;
@@ -818,8 +1245,22 @@ export class WorkflowDashboard {
       const refreshed = this.entries.find(
         (e) => e.runId === this.current?.runId,
       );
-      if (refreshed) this.current = refreshed;
+      if (refreshed) {
+        if (!this.current.live && !refreshed.live) {
+          // Keep the selected detail's already-hydrated artifacts while the
+          // list projection is refreshed from compact metadata.
+          this.current = { ...refreshed, details: this.current.details };
+        } else if (this.current.live && !refreshed.live) {
+          // A live run may settle while its detail view is open. Keep the
+          // compact projection until a transcript or report is requested.
+          this.current = refreshed;
+          this.hydratedRunIds.delete(refreshed.runId);
+        } else {
+          this.current = refreshed;
+        }
+      }
     }
+    if (this.view === "transcript") this.hydrateCurrent();
     if (this.notice && Date.now() - this.noticeAt > NOTICE_TTL_MS)
       this.notice = undefined;
   }
@@ -855,7 +1296,17 @@ export class WorkflowDashboard {
     this.agentIndex = Math.min(this.agentIndex, Math.max(0, agents.length - 1));
   }
 
+  private hydrateCurrent() {
+    const entry = this.current;
+    if (!entry || entry.live || this.hydratedRunIds.has(entry.runId)) return;
+    const details = structuredClone(entry.details);
+    hydrateRunArtifacts(entry.runId, details);
+    this.current = { ...entry, details };
+    this.hydratedRunIds.add(entry.runId);
+  }
+
   private saveReport() {
+    this.hydrateCurrent();
     const entry = this.current;
     if (!entry) return;
     const target = path.join(runsDir(), entry.runId, "report.md");
@@ -985,7 +1436,19 @@ export class WorkflowDashboard {
     if (this.view === "transcript" && this.transcriptPage) {
       return this.transcriptPage.render(width);
     }
-    const height = Math.max(MIN_HEIGHT, this.tui.terminal.rows - 1);
+    const height = this.pageRows
+      ? this.pageRows(width)
+      : Math.max(1, this.tui.terminal.rows - 1);
+    if (height < MIN_HEIGHT) {
+      return [
+        truncateToWidth(
+          `${this.keys("tui.select.cancel")} back/close · Workflows · ${this.entries.length} runs`,
+          width,
+          "",
+        ),
+        ...Array(Math.max(0, height - 1)).fill(""),
+      ];
+    }
     let lines: string[];
     if (this.view === "detail" && this.current) {
       lines = this.renderDetail(this.current.details, width, height);
@@ -996,6 +1459,7 @@ export class WorkflowDashboard {
   }
 
   private openTranscriptPage() {
+    this.hydrateCurrent();
     const transcriptAdapter = new WorkflowTranscriptAdapter();
     this.view = "transcript";
     this.transcriptPage = new AgentSessionPage(
@@ -1025,11 +1489,13 @@ export class WorkflowDashboard {
               formatElapsed(agent.startedAt, agent.finishedAt),
             ],
             errorText: agent.error,
-            emptyText:
-              "transcript unavailable (this run predates transcript capture)",
+            emptyText: details.transcriptsOmitted
+              ? `transcript unavailable (this run omitted ${details.transcriptsOmitted.agents} agent transcript(s) from transcripts.json to stay within its byte budget)`
+              : "transcript unavailable (this run predates transcript capture)",
           };
         },
         close: () => {
+          this.transcriptPage?.dispose();
           this.transcriptPage = undefined;
           this.view = "detail";
           this.detailFocus = "agents";
@@ -1037,7 +1503,10 @@ export class WorkflowDashboard {
           this.tui.requestRender();
         },
       },
+      { toolsExpanded: this.initialToolsExpanded },
+      this.pageRows,
     );
+    this.transcriptPage.focused = this.focused;
     this.tui.requestRender();
   }
 
@@ -1076,16 +1545,24 @@ export class WorkflowDashboard {
   private renderList(width: number, height: number): string[] {
     const theme = this.theme;
     const lines: string[] = [];
+    const omittedNotice =
+      this.omittedRuns > 0
+        ? theme.fg(
+            "dim",
+            `${this.omittedRuns} run${this.omittedRuns === 1 ? "" : "s"} omitted from this view; full artifacts remain on disk.`,
+          )
+        : undefined;
     lines.push(
       screenTitleLine(
         theme,
         "Workflows",
-        `${this.entries.length} run${this.entries.length === 1 ? "" : "s"}`,
+        `${this.entries.length} run${this.entries.length === 1 ? "" : "s"}${this.omittedRuns > 0 ? ` · ${this.omittedRuns} omitted` : ""}`,
         width,
       ),
     );
+    if (omittedNotice) lines.push(omittedNotice);
 
-    const panelHeight = height - 2;
+    const panelHeight = Math.max(1, height - 2 - (omittedNotice ? 1 : 0));
     const bodyHeight = Math.max(0, panelHeight - 2);
 
     if (this.entries.length === 0) {
@@ -1192,6 +1669,17 @@ export class WorkflowDashboard {
       ),
     );
 
+    // Run-level notice mirroring the saved report and completion alert: without
+    // it, opening a dropped agent's empty transcript reads as "predates capture"
+    // with no on-screen evidence anything was omitted (issue #558).
+    const omissionNotice = d.transcriptsOmitted
+      ? theme.fg(
+          "warning",
+          ` ${d.transcriptsOmitted.agents} agent transcript(s) (${d.transcriptsOmitted.entries} entries) omitted from transcripts.json (byte budget).`,
+        )
+      : undefined;
+    if (omissionNotice) lines.push(omissionNotice);
+
     const groups = this.groups();
     this.phaseIndex = Math.min(this.phaseIndex, Math.max(0, groups.length - 1));
     const selectedGroup = groups[this.phaseIndex];
@@ -1202,7 +1690,8 @@ export class WorkflowDashboard {
     // the agent list is what the view exists for.
     const logBudget = Math.max(0, Math.min(3, height - 12));
     const recentLogs = (d.logs ?? []).slice(-logBudget);
-    const panelHeight = height - 3 - recentLogs.length;
+    const panelHeight =
+      height - 3 - recentLogs.length - (omissionNotice ? 1 : 0);
     const bodyHeight = Math.max(0, panelHeight - 2);
 
     // Left: phases sidebar.
@@ -1398,13 +1887,14 @@ function groupGlyph(group: PhaseGroup, theme: Theme) {
   return theme.fg("success", "✓");
 }
 
-/** Open the dashboard as a full-screen overlay. */
+/** Use Pi's editor replacement so its renderer owns chat image visibility. */
 export async function showWorkflowDashboard(
   ctx: ExtensionContext,
   getActive: () => Map<string, WorkflowDetails>,
   initialRunId?: string,
   startedSince = 0,
   onAbort?: (runId: string) => boolean,
+  getRetained?: () => ReadonlyMap<string, WorkflowDetails>,
 ) {
   await ctx.ui.custom<void>(
     (tui, theme, keybindings, done) => {
@@ -1417,17 +1907,70 @@ export async function showWorkflowDashboard(
         sessionWorkflowRunIds(ctx),
         startedSince,
         () => {
-          dashboard.dispose();
           done(undefined);
         },
         initialRunId,
         onAbort,
+        getRetained,
+        ctx.ui.getToolsExpanded(),
+        tui.mode === "regular"
+          ? (width) => dashboardPageRows(tui, dashboard, width)
+          : undefined,
       );
-      return dashboard;
+      if (tui.mode === "fullscreen") {
+        // Fullscreen's native editor dock reserves transcript rows. Keep the
+        // existing overlay boundary; its graphics compositing remains a Pi
+        // owner issue. The empty editor slot avoids duplicate page rendering.
+        const overlay = tui.showOverlay(dashboard, {
+          anchor: "top-left",
+          width: "100%",
+          maxHeight: "100%",
+        });
+        return {
+          get focused() {
+            return dashboard.focused;
+          },
+          set focused(value: boolean) {
+            dashboard.focused = value;
+          },
+          render: () => [],
+          invalidate: () => dashboard.invalidate(),
+          handleInput: (data: string) => dashboard.handleInput(data),
+          dispose: () => {
+            overlay.hide();
+            dashboard.dispose();
+          },
+        };
+      }
+      // Native editor replacement can grow the main-screen buffer. Let the
+      // renderer clear a shrink when the editor returns, so chat images are
+      // restored into the visible viewport, then restore its previous policy.
+      const clearOnShrink = tui.getClearOnShrink();
+      tui.setClearOnShrink(true);
+      const page = new (class extends Container {
+        get focused() {
+          return dashboard.focused;
+        }
+        set focused(value: boolean) {
+          dashboard.focused = value;
+        }
+        handleInput(data: string) {
+          dashboard.handleInput(data);
+        }
+        dispose() {
+          dashboard.dispose();
+          try {
+            tui.renderNow();
+          } finally {
+            if (tui.getClearOnShrink()) tui.setClearOnShrink(clearOnShrink);
+          }
+        }
+      })();
+      page.addChild(dashboard);
+      return page;
     },
     {
-      overlay: true,
-      overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+      overlay: false,
     },
   );
 }

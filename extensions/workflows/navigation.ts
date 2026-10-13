@@ -6,13 +6,14 @@ import {
   fitNavigationSides,
   renderNavigationMetrics,
 } from "../shared/below-editor-navigation.ts";
+import {
+  formatActivityStatus,
+  type ActivityCounts,
+} from "../shared/activity-status.ts";
 import { SPINNER_INTERVAL_MS, spinnerFrame } from "../shared/spinner.ts";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import {
-  aggregateUsage,
   countStates,
-  formatElapsed,
-  formatTokens,
   statusColor,
   type Theme,
   type WorkflowDetails,
@@ -29,6 +30,28 @@ export {
 export interface WorkflowStripEntry {
   runId: string;
   details: WorkflowDetails;
+}
+
+/** Changes only when the strip needs an immediate lifecycle repaint. */
+export function workflowStripEntryKey(entry: WorkflowStripEntry | undefined) {
+  if (!entry) return undefined;
+  const { failed, uncertain } = countStates(entry.details);
+  const retained = entry.details.agents.some((agent) => agent.worktreePath);
+  return `${entry.runId}:${entry.details.status}:${failed}:${uncertain}:${retained}`;
+}
+
+/** The TUI strip owns ordinary activity; aggregate failures still need attention. */
+export function workflowActivityFooter(
+  theme: Theme,
+  counts: ActivityCounts,
+  stripVisible: boolean,
+) {
+  const projected = stripVisible
+    ? { running: 0, done: 0, failed: counts.failed }
+    : counts;
+  return projected.running + projected.done + projected.failed > 0
+    ? formatActivityStatus(theme, "workflows", projected)
+    : undefined;
 }
 
 function cleanLine(value: string) {
@@ -48,7 +71,7 @@ function statusGlyph(status: WorkflowStatus, theme: Theme, now: number) {
 
 /** Live, one-line Claude-style workflow entry rendered below the editor. */
 export class WorkflowStripWidget {
-  private readonly timer: ReturnType<typeof setInterval>;
+  private timer: ReturnType<typeof setInterval> | undefined;
   private readonly tui: TUI;
   private readonly theme: Theme;
   private readonly strip: BelowEditorStripState;
@@ -64,27 +87,44 @@ export class WorkflowStripWidget {
     this.theme = theme;
     this.strip = strip;
     this.getEntry = getEntry;
-    this.timer = setInterval(
-      () => this.tui.requestRender(),
-      SPINNER_INTERVAL_MS,
-    );
-    this.timer.unref?.();
+    this.syncSpinner();
   }
 
   dispose() {
-    clearInterval(this.timer);
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
   }
 
-  invalidate() {}
+  invalidate() {
+    this.syncSpinner();
+  }
+
+  private syncSpinner() {
+    if (this.getEntry()?.details.status === "running") {
+      if (this.timer) return;
+      const timer = setInterval(() => {
+        if (this.timer !== timer) return;
+        if (this.getEntry()?.details.status !== "running") {
+          clearInterval(timer);
+          this.timer = undefined;
+        }
+        this.tui.requestRender();
+      }, SPINNER_INTERVAL_MS);
+      this.timer = timer;
+      timer.unref?.();
+      return;
+    }
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
 
   render(width: number) {
+    this.syncSpinner();
     const entry = this.getEntry();
     if (!entry || width <= 0) return [];
     const details = entry.details;
-    const { done, failed, uncertain } = countStates(details);
-    const settled = done + failed;
-    const usage = aggregateUsage(details.agents);
-    const tokenCount = usage.input + usage.output;
+    const { failed, uncertain } = countStates(details);
+
     const glyph = this.strip.focused
       ? this.theme.fg("accent", "❯")
       : statusGlyph(details.status, this.theme, Date.now());
@@ -92,18 +132,22 @@ export class WorkflowStripWidget {
     const name = this.strip.focused
       ? this.theme.bold(this.theme.fg("accent", displayName))
       : this.theme.fg("text", displayName);
-    const rawContext = details.currentPhase ?? details.description;
-    const context = rawContext ? cleanLine(rawContext) : undefined;
-    const left = ` ${glyph} ${name}${context ? this.theme.fg("dim", ` · ${context}`) : ""}`;
+    const attention = [
+      failed ? `${failed} failed` : undefined,
+      uncertain ? `${uncertain} uncertain` : undefined,
+      details.status === "aborted" ? "cancelled" : undefined,
+      details.status === "failed" && !failed ? "failed" : undefined,
+      details.status === "uncertain" && !uncertain ? "uncertain" : undefined,
+      details.agents.some((agent) => agent.worktreePath)
+        ? "worktree retained"
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const left = ` ${glyph} ${name}${attention ? this.theme.fg("warning", ` · ${attention}`) : ""}`;
     const right = renderNavigationMetrics(
       this.theme,
-      [
-        details.agents.length > 0
-          ? `${settled}/${details.agents.length} agents${uncertain ? ` · ${uncertain} uncertain` : ""}`
-          : undefined,
-        formatElapsed(details.startedAt, details.finishedAt),
-        tokenCount > 0 ? `${formatTokens(tokenCount)} tokens` : undefined,
-      ],
+      [],
       this.strip.focused ? "enter open · ↑ back" : "↓ to manage",
       details.status === "running" ? undefined : statusColor(details.status),
     );

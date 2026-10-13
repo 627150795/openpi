@@ -17,6 +17,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
   advanceDeliveredJobs,
+  CRON_DELIVERY_MAX_BYTES,
+  CRON_DELIVERY_MAX_JOBS,
+  CRON_MAX_JOBS,
   type CronJob,
   dueJobs,
   formatInterval,
@@ -25,6 +28,7 @@ import {
 
 /** How often the scheduler looks for due jobs. */
 const POLL_MS = 30_000;
+import { notifyWebCommand } from "../shared/web-command-feedback.ts";
 
 interface CronRuntime {
   now(): number;
@@ -40,6 +44,48 @@ const SYSTEM_RUNTIME: CronRuntime = {
     return () => clearInterval(timer);
   },
 };
+
+function deliveryMessage(due: readonly CronJob[]) {
+  const jobs = due.map((job) => ({
+    id: job.id,
+    prompt: job.prompt,
+    recurring: job.intervalMs !== undefined,
+  }));
+  return due.length === 1
+    ? {
+        customType: "cron-fire",
+        content: `[cron ${jobs[0]!.id} · ${jobs[0]!.recurring ? "recurring" : "once"}]\n${jobs[0]!.prompt}`,
+        display: true,
+        details: jobs[0]!,
+      }
+    : {
+        customType: "cron-fire",
+        content: `${due.length} scheduled prompts are due:\n\n${jobs
+          .map(
+            (job) =>
+              `[cron ${job.id} · ${job.recurring ? "recurring" : "once"}]\n${job.prompt}`,
+          )
+          .join("\n\n")}`,
+        display: true,
+        details: { count: jobs.length, jobs },
+      };
+}
+
+function dueDeliveryBatch(due: readonly CronJob[]) {
+  const selected: CronJob[] = [];
+  for (const job of due.slice(0, CRON_DELIVERY_MAX_JOBS)) {
+    const candidate = [...selected, job];
+    const message = deliveryMessage(candidate);
+    if (
+      new TextEncoder().encode(message.content).byteLength >
+      CRON_DELIVERY_MAX_BYTES
+    ) {
+      break;
+    }
+    selected.push(job);
+  }
+  return selected;
+}
 
 export default function cron(
   pi: ExtensionAPI,
@@ -58,30 +104,7 @@ export default function cron(
   const fire = (due: readonly CronJob[]) => {
     if (due.length === 0) return true;
     try {
-      const jobs = due.map((job) => ({
-        id: job.id,
-        prompt: job.prompt,
-        recurring: job.intervalMs !== undefined,
-      }));
-      const message =
-        due.length === 1
-          ? {
-              customType: "cron-fire",
-              content: `[cron ${jobs[0]!.id} · ${jobs[0]!.recurring ? "recurring" : "once"}]\n${jobs[0]!.prompt}`,
-              display: true,
-              details: jobs[0],
-            }
-          : {
-              customType: "cron-fire",
-              content: `${due.length} scheduled prompts are due:\n\n${jobs
-                .map(
-                  (job) =>
-                    `[cron ${job.id} · ${job.recurring ? "recurring" : "once"}]\n${job.prompt}`,
-                )
-                .join("\n\n")}`,
-              display: true,
-              details: { count: jobs.length, jobs },
-            };
+      const message = deliveryMessage(due);
       pi.sendMessage<
         | { id: number; prompt: string; recurring: boolean }
         | {
@@ -109,9 +132,11 @@ export default function cron(
     const now = runtime.now();
     const due = dueJobs(jobs, now);
     if (due.length === 0) return;
+    const batch = dueDeliveryBatch(due);
+    if (batch.length === 0) return;
     const deliveredIds = new Set<number>();
-    if (fire(due)) {
-      for (const job of due) deliveredIds.add(job.id);
+    if (fire(batch)) {
+      for (const job of batch) deliveredIds.add(job.id);
     }
     jobs = advanceDeliveredJobs(jobs, deliveredIds, runtime.now());
     if (jobs.length === 0) stopTicker();
@@ -129,7 +154,8 @@ export default function cron(
       const parsed = parseCronCommand(rawArgs);
 
       if (parsed.action === "help") {
-        ctx.ui.notify(
+        notifyWebCommand(
+          ctx,
           parsed.error ??
             "Usage: /cron every <5m> <prompt> · /cron in <30s> <prompt> · /cron list · /cron remove <id>\nJobs live in this session only and fire when the session is idle.",
           parsed.error ? "warning" : "info",
@@ -139,7 +165,11 @@ export default function cron(
 
       if (parsed.action === "list") {
         if (jobs.length === 0) {
-          ctx.ui.notify("No scheduled prompts in this session.", "info");
+          notifyWebCommand(
+            ctx,
+            "No scheduled prompts in this session.",
+            "info",
+          );
           return;
         }
         const now = runtime.now();
@@ -153,7 +183,7 @@ export default function cron(
             : "once";
           return `${job.id}. ${when} · next in ${inSeconds}s · ${job.prompt}`;
         });
-        ctx.ui.notify(lines.join("\n"), "info");
+        notifyWebCommand(ctx, lines.join("\n"), "info");
         return;
       }
 
@@ -161,7 +191,8 @@ export default function cron(
         const before = jobs.length;
         jobs = jobs.filter((job) => job.id !== parsed.id);
         if (jobs.length === 0) stopTicker();
-        ctx.ui.notify(
+        notifyWebCommand(
+          ctx,
           jobs.length === before
             ? `No scheduled prompt with id ${parsed.id}.`
             : `Removed scheduled prompt ${parsed.id}.`,
@@ -170,16 +201,36 @@ export default function cron(
         return;
       }
 
+      if (jobs.length >= CRON_MAX_JOBS) {
+        notifyWebCommand(
+          ctx,
+          `A session can have at most ${CRON_MAX_JOBS} scheduled prompts. Remove one before adding another.`,
+          "warning",
+        );
+        return;
+      }
+
       const intervalMs = parsed.intervalMs!;
+      const now = runtime.now();
+      const nextRunAt = now + intervalMs;
+      if (!Number.isSafeInteger(now) || !Number.isSafeInteger(nextRunAt)) {
+        notifyWebCommand(
+          ctx,
+          "Scheduled time is too far in the future. Use a shorter duration.",
+          "warning",
+        );
+        return;
+      }
       const job: CronJob = {
         id: nextId++,
         prompt: parsed.prompt!,
         ...(parsed.oneShot ? {} : { intervalMs }),
-        nextRunAt: runtime.now() + intervalMs,
+        nextRunAt,
       };
       jobs.push(job);
       startTicker();
-      ctx.ui.notify(
+      notifyWebCommand(
+        ctx,
         parsed.oneShot
           ? `Scheduled prompt ${job.id} once in ${formatInterval(intervalMs)}.`
           : `Scheduled prompt ${job.id} every ${formatInterval(intervalMs)}.`,

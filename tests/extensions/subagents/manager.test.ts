@@ -28,6 +28,8 @@ import {
   type SubagentManagerShape,
 } from "../../../extensions/subagents/src/manager.ts";
 import { runTool } from "../../../extensions/subagents/src/runtime.ts";
+import { ChildExecutionAdmission } from "../../../extensions/shared/child-execution-admission.ts";
+import { subagentCompletion } from "../../../extensions/subagents/src/completion.ts";
 
 const STATUS_WAIT_TIMEOUT_MS = 5_000;
 
@@ -100,25 +102,30 @@ function waitForManagerStatus(
 const isSettledStatus = (status: SubagentStatus | undefined) =>
   status === "done" || status === "error";
 
-const TestRegistryLive = Layer.sync(BackendRegistry, () => {
-  const backends: SubagentBackend[] = [
-    makeStubBackend({
-      backend: "pi",
-      defaultModelLabel: "stub/sonnet",
-      contextWindow: 200_000,
-      toolName: "Bash",
-      cadenceMs: 40,
-    }),
-  ];
-  return new Map<BackendName, SubagentBackend>(
-    backends.map((backend) => [backend.name, backend]),
-  );
-});
+const stubBackend = () =>
+  makeStubBackend({
+    backend: "pi",
+    defaultModelLabel: "stub/sonnet",
+    contextWindow: 200_000,
+    toolName: "Bash",
+    cadenceMs: 40,
+  });
 
-const createTestRuntime = (managerConfig?: SubagentManagerConfig) =>
+const createTestRuntime = (
+  managerConfig?: SubagentManagerConfig,
+  backends: readonly SubagentBackend[] = [stubBackend()],
+) =>
   ManagedRuntime.make(
     makeSubagentManagerLayer(managerConfig).pipe(
-      Layer.provide(TestRegistryLive),
+      Layer.provide(
+        Layer.sync(
+          BackendRegistry,
+          () =>
+            new Map<BackendName, SubagentBackend>(
+              backends.map((backend) => [backend.name, backend]),
+            ),
+        ),
+      ),
     ),
   );
 
@@ -137,8 +144,9 @@ async function withManager(
     runtime: ReturnType<typeof createTestRuntime>,
   ) => Promise<void>,
   managerConfig?: SubagentManagerConfig,
+  backends?: readonly SubagentBackend[],
 ) {
-  const runtime = createTestRuntime(managerConfig);
+  const runtime = createTestRuntime(managerConfig, backends);
   try {
     const manager = await runtime.runPromise(SubagentManager);
     await run(manager, runtime);
@@ -166,6 +174,210 @@ test("status waits fail within their own deadline with diagnostic state", async 
   assert.equal(unsubscribed, true);
 });
 
+test("FAIL: Direct and BTW share session admission without weakening their local pools", async () => {
+  const admission = new ChildExecutionAdmission({ maxActive: 1 });
+  await withManager(
+    async (manager, runtime) => {
+      const direct = await runTool(
+        runtime,
+        manager.spawn("pi", task("Direct holds the shared slot")),
+      );
+      const abort = new AbortController();
+      const btw = runTool(
+        runtime,
+        manager.spawn("pi", { ...task("BTW waits"), origin: "btw" }),
+        { signal: abort.signal },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(admission.snapshot().heldByOrigin, {
+        workflow: 0,
+        direct: 1,
+        btw: 0,
+      });
+      assert.deepEqual(admission.snapshot().queuedByOrigin, {
+        workflow: 0,
+        direct: 0,
+        btw: 1,
+      });
+      abort.abort(new Error("BTW launch cancelled"));
+      await assert.rejects(btw, /Operation was aborted/);
+      await runTool(runtime, manager.waitFor([direct.id]));
+      assert.equal(admission.snapshot().held, 0);
+      assert.equal(admission.snapshot().queued, 0);
+    },
+    { admission },
+  );
+});
+
+test("FAIL: a waiting Direct spawn does not call its child factory", async () => {
+  const admission = new ChildExecutionAdmission({ maxActive: 1 });
+  const base = stubBackend();
+  let factoryCalls = 0;
+  const countingBackend: SubagentBackend = {
+    ...base,
+    spawn: (spawnTask) => {
+      factoryCalls++;
+      return base.spawn(spawnTask);
+    },
+  };
+  await withManager(
+    async (manager, runtime) => {
+      const held = await runTool(
+        runtime,
+        manager.spawn("pi", task("Direct owns the only slot")),
+      );
+      assert.equal(factoryCalls, 1);
+      const abort = new AbortController();
+      const queued = runTool(
+        runtime,
+        manager.spawn("pi", task("must not construct yet")),
+        { signal: abort.signal },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(factoryCalls, 1);
+      abort.abort();
+      await assert.rejects(queued, /Operation was aborted/);
+      await runTool(runtime, manager.waitFor([held.id]));
+    },
+    { admission },
+    [countingBackend],
+  );
+});
+
+test("releases the Direct pool reservation when shared admission is cancelled", async () => {
+  const admission = new ChildExecutionAdmission({ maxActive: 1 });
+  await withManager(
+    async (manager, runtime) => {
+      const blocker = await admission.acquire("workflow");
+      const abort = new AbortController();
+      const queued = runTool(
+        runtime,
+        manager.spawn("pi", task("cancelled Direct reservation")),
+        { signal: abort.signal },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(admission.snapshot().queuedByOrigin.direct, 1);
+      abort.abort(new Error("cancel queued Direct spawn"));
+      await assert.rejects(queued, /Operation was aborted/);
+      blocker.release();
+
+      const spawned = await runTool(
+        runtime,
+        Effect.forEach(
+          Array.from({ length: MAX_RUNNING }, (_, index) =>
+            task(`Direct ${index + 1}`),
+          ),
+          (spawnTask) => manager.spawn("pi", spawnTask),
+          { concurrency: "unbounded" },
+        ),
+      );
+      assert.equal(spawned.length, MAX_RUNNING);
+    },
+    { admission },
+  );
+});
+
+test("releases the BTW pool reservation when shared admission is cancelled", async () => {
+  const admission = new ChildExecutionAdmission({ maxActive: 1 });
+  await withManager(
+    async (manager, runtime) => {
+      const blocker = await admission.acquire("workflow");
+      const abort = new AbortController();
+      const queued = runTool(
+        runtime,
+        manager.spawn("pi", {
+          ...task("cancelled BTW reservation"),
+          origin: "btw",
+        }),
+        { signal: abort.signal },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(admission.snapshot().queuedByOrigin.btw, 1);
+      abort.abort(new Error("cancel queued BTW spawn"));
+      await assert.rejects(queued, /Operation was aborted/);
+      blocker.release();
+
+      const spawned = await runTool(
+        runtime,
+        Effect.forEach(
+          Array.from({ length: MAX_RUNNING_BTW }, (_, index) => ({
+            ...task(`BTW ${index + 1}`),
+            origin: "btw" as const,
+          })),
+          (spawnTask) => manager.spawn("pi", spawnTask),
+          { concurrency: "unbounded" },
+        ),
+      );
+      assert.equal(spawned.length, MAX_RUNNING_BTW);
+    },
+    { admission },
+  );
+});
+
+test("releases local pool reservations when shared admission rejects queued spawns", async () => {
+  for (const [origin, limit] of [
+    ["model", MAX_RUNNING],
+    ["btw", MAX_RUNNING_BTW],
+  ] as const) {
+    const admission = new ChildExecutionAdmission({
+      maxActive: 1,
+      maxQueued: 0,
+    });
+    await withManager(
+      async (manager, runtime) => {
+        const blocker = await admission.acquire("workflow");
+        for (let index = 0; index < limit + 1; index++) {
+          await assert.rejects(
+            runTool(
+              runtime,
+              manager.spawn("pi", {
+                ...task(`rejected ${origin} reservation ${index}`),
+                origin,
+              }),
+            ),
+            /Too many child executions are already waiting/,
+          );
+        }
+        blocker.release();
+
+        const spawned = await runTool(
+          runtime,
+          manager.spawn("pi", {
+            ...task(`${origin} after rejection`),
+            origin,
+          }),
+        );
+        assert.equal(spawned.origin, origin === "btw" ? "btw" : "model");
+      },
+      { admission },
+    );
+  }
+});
+
+test("FAIL: an uncertain Direct stop retains its shared slot and cannot restart", async () => {
+  const admission = new ChildExecutionAdmission({ maxActive: 1 });
+  await withManager(
+    async (manager, runtime) => {
+      const snap = await runTool(
+        runtime,
+        manager.spawn("pi", task("HANG: STUCKSTOP: stop remains uncertain")),
+      );
+      await runTool(runtime, manager.cancel([snap.id]));
+      assert.equal(admission.snapshot().held, 1);
+      assert.equal(subagentCompletion(snap).observed.outcome, "uncertain");
+      assert.match(
+        manager.view.get(snap.id)?.errorText ?? "",
+        /termination is uncertain/,
+      );
+      await assert.rejects(
+        runTool(runtime, manager.send(snap.id, "do not restart")),
+        /previous termination is uncertain/,
+      );
+    },
+    { admission, stopTimeoutMs: 10 },
+  );
+});
+
 test("stub subagent completes and delivers a final result", async () => {
   await withManager(async (manager, runtime) => {
     const settled: Array<{ id: string; consumed: boolean }> = [];
@@ -185,6 +397,7 @@ test("stub subagent completes and delivers a final result", async () => {
     const done = manager.view.get(snap.id);
     assert.ok(done);
     assert.equal(done.status, "done");
+    assert.equal(done.outcome, "completed");
     assert.match(
       done.finalText,
       /\[stub:pi\] completed: Say hello to the tests/,
@@ -216,6 +429,7 @@ test("FAIL: prompts settle as errors; unconsumed settles are delivered", async (
     );
     const failed = manager.view.get(snap.id);
     assert.equal(failed?.status, "error");
+    assert.equal(failed?.outcome, "failed");
     assert.match(failed?.errorText ?? "", /task failed/);
     assert.deepEqual(settled, [{ id: snap.id, consumed: false }]);
   });
@@ -225,13 +439,22 @@ test("cancel interrupts a running stub subagent", async () => {
   await withManager(async (manager, runtime) => {
     const snap = await runTool(
       runtime,
-      manager.spawn("pi", task("Long running task")),
+      manager.spawn("pi", {
+        ...task("Long running task"),
+        worktree: {
+          path: "/repo/.git/pi-worktrees/impl-1",
+          branch: "pi/impl-1",
+          repoCwd: "/repo",
+        },
+      }),
     );
+    assert.equal(snap.worktreeBranch, "pi/impl-1");
     const report = await runTool(runtime, manager.cancel([snap.id]));
     assert.deepEqual(report, [
       { id: snap.id, title: "test", status: "error", cancelled: true },
     ]);
     assert.equal(manager.view.get(snap.id)?.errorText, "Run was aborted");
+    assert.equal(manager.view.get(snap.id)?.outcome, "interrupted");
   });
 });
 
@@ -435,6 +658,9 @@ test("send steers an idle subagent into another turn", async () => {
     await runTool(runtime, manager.waitFor([snap.id]));
     const afterFirst = manager.view.get(snap.id);
     assert.equal(afterFirst?.status, "done");
+    const firstGeneration = afterFirst?.runGeneration;
+    assert.equal(firstGeneration, 1);
+    const firstCompletion = subagentCompletion(afterFirst!);
 
     await runTool(runtime, manager.send(snap.id, "Second turn"));
     // The fresh run flips the status back to running...
@@ -444,9 +670,19 @@ test("send steers an idle subagent into another turn", async () => {
       "start the second turn",
       (status) => status === "running",
     );
+    const running = manager.view.get(snap.id)!;
+    assert.equal(running.finalText, "");
+    assert.equal(subagentCompletion(running).observed.evidenceRef, undefined);
+    assert.equal(subagentCompletion(running).modelClaimed.status, "unknown");
     await runTool(runtime, manager.waitFor([snap.id]));
     const afterSecond = manager.view.get(snap.id);
     assert.equal(afterSecond?.status, "done");
+    assert.equal(afterSecond?.runGeneration, 2);
+    assert.equal(afterSecond?.completionGeneration, 2);
+    assert.notEqual(
+      subagentCompletion(afterSecond!).identity.executionId,
+      firstCompletion.identity.executionId,
+    );
     assert.match(afterSecond?.finalText ?? "", /Second turn/);
   });
 });
@@ -485,114 +721,19 @@ test("a wait issued alongside a restart does not return the stale run", () => {
   });
 });
 
-test("a run with no first response is settled by the watchdog and frees its slot", async () => {
-  await withManager(
-    async (manager, runtime) => {
-      const settled: Array<{ id: string; status: string; consumed: boolean }> =
-        [];
-      manager.view.setOnSettled((snap, consumed) =>
-        settled.push({ id: snap.id, status: snap.status, consumed }),
-      );
-
-      // Fill every model slot with runs that accept the prompt but never
-      // emit a first assistant event (stalled provider requests).
-      const hung = await runTool(
-        runtime,
-        Effect.forEach(
-          [1, 2, 3, 4],
-          (n) => manager.spawn("pi", task(`HANG: stall ${n}`)),
-          { concurrency: "unbounded" },
-        ),
-      );
-      await assert.rejects(
-        runTool(runtime, manager.spawn("pi", task("Task 5"))),
-        /Max 4 subagent sessions/,
-      );
-
-      // The watchdog settles each hung run as an explicit error through the
-      // normal settle path (so waits and result delivery observe it).
-      await runTool(runtime, manager.waitFor(hung.map((snap) => snap.id)));
-      for (const snap of hung) {
-        const failed = manager.view.get(snap.id);
-        assert.equal(failed?.status, "error");
-        assert.match(
-          failed?.errorText ?? "",
-          /no assistant response event.*provider request may be stalled/,
-        );
-      }
-      assert.deepEqual(
-        settled.sort((a, b) => a.id.localeCompare(b.id)),
-        hung
-          .map((snap) => ({
-            id: snap.id,
-            status: "error",
-            consumed: true,
-          }))
-          .sort((a, b) => a.id.localeCompare(b.id)),
-      );
-
-      // The freed slots accept new spawns again.
-      const fresh = await runTool(
-        runtime,
-        manager.spawn("pi", task("ok after the stall")),
-      );
-      assert.equal(fresh.status, "running");
-      await runTool(runtime, manager.waitFor([fresh.id]));
-      assert.equal(manager.view.get(fresh.id)?.status, "done");
-    },
-    { firstResponseTimeoutMs: 150 },
-  );
-});
-
-test("a first response clears the watchdog so slower runs are not killed", async () => {
-  await withManager(
-    async (manager, runtime) => {
-      // The stub streams its first assistant delta within one cadence
-      // (~40ms) but needs well over the watchdog budget to finish the whole
-      // turn; without clearing on first response it would be killed mid-run.
-      const snap = await runTool(
-        runtime,
-        manager.spawn("pi", task("Slow but responsive")),
-      );
-      await runTool(runtime, manager.waitFor([snap.id]));
-      const done = manager.view.get(snap.id);
-      assert.equal(done?.status, "done");
-      assert.match(
-        done?.finalText ?? "",
-        /\[stub:pi\] completed: Slow but responsive/,
-      );
-      assert.equal(done?.errorText, undefined);
-    },
-    { firstResponseTimeoutMs: 250 },
-  );
-});
-
-test("a restart whose run never starts is settled by the watchdog", async () => {
-  await withManager(
-    async (manager, runtime) => {
-      const snap = await runTool(runtime, manager.spawn("pi", task("First")));
-      await runTool(runtime, manager.waitFor([snap.id]));
-      assert.equal(manager.view.get(snap.id)?.status, "done");
-
-      // The backend accepts the send but the new run never emits RunStarted,
-      // so the restarting entry holds its slot with nothing to clear it.
-      await runTool(runtime, manager.send(snap.id, "HANG: stalled restart"));
-      await runTool(runtime, manager.waitFor([snap.id]));
-      const after = manager.view.get(snap.id);
-      assert.equal(after?.status, "error");
-      assert.match(
-        after?.errorText ?? "",
-        /no assistant response event.*provider request may be stalled/,
-      );
-
-      // The freed slot accepts a fresh spawn again.
-      const fresh = await runTool(
-        runtime,
-        manager.spawn("pi", task("ok after the stalled restart")),
-      );
-      await runTool(runtime, manager.waitFor([fresh.id]));
-      assert.equal(manager.view.get(fresh.id)?.status, "done");
-    },
-    { firstResponseTimeoutMs: 150 },
-  );
+test("responsive runs preserve their final outcome", async () => {
+  await withManager(async (manager, runtime) => {
+    const snap = await runTool(
+      runtime,
+      manager.spawn("pi", task("Slow but responsive")),
+    );
+    await runTool(runtime, manager.waitFor([snap.id]));
+    const done = manager.view.get(snap.id);
+    assert.equal(done?.status, "done");
+    assert.match(
+      done?.finalText ?? "",
+      /\[stub:pi\] completed: Slow but responsive/,
+    );
+    assert.equal(done?.errorText, undefined);
+  });
 });

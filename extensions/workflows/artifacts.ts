@@ -1,15 +1,24 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  invocationTiming,
+  TIMING_ARTIFACT_MAX_BYTES,
+  type TimingEntry,
+} from "./execution-timing.ts";
 import {
   boundedJournal,
   JOURNAL_MAX_BYTES,
   type JournalEntry,
   parseJournal,
   type WorkflowJournal,
+  type WorkflowJournalAccumulator,
 } from "./journal.ts";
 import {
+  type AgentRecord,
   refreshWorkflowGraph,
   type TranscriptEntry,
+  type WorkflowDelivery,
   type WorkflowDetails,
 } from "./model.ts";
 import {
@@ -20,17 +29,342 @@ import {
 } from "./serialization.ts";
 
 export const JOURNAL_FILE = "journal.json";
+export const WORKFLOW_COMMIT_FILE = ".workflow-commit.json";
 
 const ARTIFACT_TRANSCRIPT_MAX_BYTES = 32 * 1024;
 const ARTIFACT_TRANSCRIPT_ENTRY_MAX_BYTES = 8 * 1024;
 const AGENT_RESULT_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
+const WORKFLOW_MANIFEST_MAX_BYTES = 1024 * 1024;
+const WORKFLOW_TRANSCRIPTS_MAX_BYTES = 2 * 1024 * 1024;
+const WORKFLOW_COMMIT_MAX_BYTES = 3 * 1024 * 1024;
+
+// safeStringify's node budget must never bite before the byte budget. Its
+// default (serialization.ts DEFAULT_MAX_NODES = 20_000) is far below what these
+// byte budgets allow, so it silently dropped trailing artifact fields and whole
+// agent transcripts while the file sat well under its byte cap (issue #558). A
+// value dense enough to reach N nodes always serializes to more than N bytes, so
+// pinning maxNodes to the byte budget makes the honest, reported byte cap the
+// only binding limit here.
+const WORKFLOW_MANIFEST_MAX_NODES = WORKFLOW_MANIFEST_MAX_BYTES;
+const WORKFLOW_TRANSCRIPTS_MAX_NODES = WORKFLOW_TRANSCRIPTS_MAX_BYTES;
 export const WORKFLOW_CHECKPOINT_INTERVAL_MS = 500;
 const ENTRY_TRUNCATION_MARKER = "\n[entry truncated]";
 const TRANSCRIPT_TRUNCATION_MARKER =
   "[artifact transcript truncated: older entries omitted]";
 
+type WorkflowJournalSource =
+  | readonly JournalEntry[]
+  | WorkflowJournalAccumulator;
+
+interface WorkflowArtifactWrite {
+  name: typeof JOURNAL_FILE | "result.json" | "transcripts.json";
+  content: string;
+}
+
+interface WorkflowCommitArtifact {
+  name: WorkflowArtifactWrite["name"];
+  bytes: number;
+  sha256: string;
+}
+
+interface WorkflowCommitMarker {
+  version: 1;
+  runId: string;
+  manifest: string;
+  predecessorSha256: string;
+  artifacts: WorkflowCommitArtifact[];
+}
+
+export type WorkflowCommitRecovery =
+  | "none"
+  | "recovered"
+  | "already-committed"
+  | "incomplete"
+  | "invalid"
+  | "failed";
+
+const artifactLimits = new Map<WorkflowArtifactWrite["name"], number>([
+  ["transcripts.json", WORKFLOW_TRANSCRIPTS_MAX_BYTES],
+  ["result.json", WORKFLOW_MANIFEST_MAX_BYTES],
+  [JOURNAL_FILE, JOURNAL_MAX_BYTES],
+]);
+
 function textBytes(text: string) {
   return Buffer.byteLength(text, "utf8");
+}
+
+function sha256(content: string | Buffer) {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function removeWorkflowCommit(runDir: string, strict = false) {
+  try {
+    fs.unlinkSync(path.join(runDir, WORKFLOW_COMMIT_FILE));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if (strict) throw error;
+  }
+}
+
+function workflowCommitMarker(
+  details: WorkflowDetails,
+  manifest: string,
+  artifacts: WorkflowArtifactWrite[],
+  predecessorSha256: string,
+): WorkflowCommitMarker {
+  for (const { name, content } of artifacts) {
+    const bytes = textBytes(content);
+    const limit = artifactLimits.get(name);
+    if (limit === undefined || bytes > limit) {
+      throw new Error(`Workflow artifact ${name} exceeded its commit budget`);
+    }
+  }
+  return {
+    version: 1,
+    runId: details.runId,
+    manifest,
+    predecessorSha256,
+    artifacts: artifacts.map(({ name, content }) => ({
+      name,
+      bytes: textBytes(content),
+      sha256: sha256(content),
+    })),
+  };
+}
+
+function serializeWorkflowCommitMarker(
+  details: WorkflowDetails,
+  manifest: string,
+  artifacts: WorkflowArtifactWrite[],
+  predecessorSha256: string,
+) {
+  const content = JSON.stringify(
+    workflowCommitMarker(details, manifest, artifacts, predecessorSha256),
+  );
+  if (textBytes(content) > WORKFLOW_COMMIT_MAX_BYTES) {
+    throw new Error(
+      "Workflow artifact commit receipt exceeded its byte budget",
+    );
+  }
+  return content;
+}
+
+function parseWorkflowCommitMarker(
+  runDir: string,
+): WorkflowCommitMarker | "none" | "invalid" {
+  const markerPath = path.join(runDir, WORKFLOW_COMMIT_FILE);
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(markerPath);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? "none"
+      : "invalid";
+  }
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.size <= 0 ||
+    stat.size > WORKFLOW_COMMIT_MAX_BYTES
+  ) {
+    return "invalid";
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+  } catch {
+    return "invalid";
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "invalid";
+  const record = raw as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    typeof record.runId !== "string" ||
+    record.runId !== path.basename(runDir) ||
+    typeof record.predecessorSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(record.predecessorSha256) ||
+    typeof record.manifest !== "string" ||
+    textBytes(record.manifest) > WORKFLOW_MANIFEST_MAX_BYTES ||
+    !Array.isArray(record.artifacts) ||
+    record.artifacts.length < 1 ||
+    record.artifacts.length > artifactLimits.size
+  ) {
+    return "invalid";
+  }
+
+  let manifest: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(record.manifest);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return "invalid";
+    }
+    manifest = parsed as Record<string, unknown>;
+  } catch {
+    return "invalid";
+  }
+  if (
+    manifest.runId !== record.runId ||
+    !["completed", "failed", "aborted", "uncertain"].includes(
+      String(manifest.status),
+    ) ||
+    manifest.transcriptArtifact !== "transcripts.json" ||
+    (manifest.resultArtifact !== undefined &&
+      manifest.resultArtifact !== "result.json")
+  ) {
+    return "invalid";
+  }
+
+  const artifacts: WorkflowCommitArtifact[] = [];
+  const names = new Set<string>();
+  for (const value of record.artifacts) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return "invalid";
+    }
+    const artifact = value as Record<string, unknown>;
+    if (
+      typeof artifact.name !== "string" ||
+      !artifactLimits.has(artifact.name as WorkflowArtifactWrite["name"]) ||
+      names.has(artifact.name) ||
+      typeof artifact.bytes !== "number" ||
+      !Number.isInteger(artifact.bytes) ||
+      artifact.bytes < 0 ||
+      artifact.bytes >
+        (artifactLimits.get(artifact.name as WorkflowArtifactWrite["name"]) ??
+          -1) ||
+      typeof artifact.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(artifact.sha256)
+    ) {
+      return "invalid";
+    }
+    names.add(artifact.name);
+    artifacts.push({
+      name: artifact.name as WorkflowArtifactWrite["name"],
+      bytes: artifact.bytes,
+      sha256: artifact.sha256,
+    });
+  }
+  if (
+    !names.has("transcripts.json") ||
+    (manifest.resultArtifact === "result.json") !== names.has("result.json")
+  ) {
+    return "invalid";
+  }
+  return {
+    version: 1,
+    runId: record.runId,
+    manifest: record.manifest,
+    predecessorSha256: record.predecessorSha256,
+    artifacts,
+  };
+}
+
+function hasCommittedManifest(
+  manifestPath: string,
+  marker: WorkflowCommitMarker,
+) {
+  try {
+    const stat = fs.lstatSync(manifestPath);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      stat.size > WORKFLOW_MANIFEST_MAX_BYTES
+    )
+      return false;
+    const content = fs.readFileSync(manifestPath);
+    if (content.byteLength > WORKFLOW_MANIFEST_MAX_BYTES) return false;
+    const parsed: unknown = JSON.parse(content.toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return false;
+    }
+    const manifest = parsed as Record<string, unknown>;
+    const markerManifest = JSON.parse(marker.manifest) as Record<
+      string,
+      unknown
+    >;
+    return (
+      manifest.runId === marker.runId &&
+      manifest.status === markerManifest.status &&
+      manifest.transcriptArtifact === markerManifest.transcriptArtifact &&
+      manifest.resultArtifact === markerManifest.resultArtifact
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Complete a terminal artifact commit only when every prepared file matches
+ * the exact bounded receipt written before the side-artifact sequence began.
+ */
+export function recoverPendingWorkflowCommit(
+  runDir: string,
+): WorkflowCommitRecovery {
+  const marker = parseWorkflowCommitMarker(runDir);
+  if (marker === "none" || marker === "invalid") return marker;
+
+  for (const artifact of marker.artifacts) {
+    const artifactPath = path.join(runDir, artifact.name);
+    let stat: fs.Stats;
+    let content: Buffer;
+    try {
+      stat = fs.lstatSync(artifactPath);
+      if (
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        stat.size !== artifact.bytes
+      ) {
+        return "incomplete";
+      }
+      content = fs.readFileSync(artifactPath);
+    } catch {
+      return "incomplete";
+    }
+    if (
+      content.byteLength !== artifact.bytes ||
+      sha256(content) !== artifact.sha256
+    ) {
+      return "incomplete";
+    }
+  }
+
+  const manifestPath = path.join(runDir, "workflow.json");
+  try {
+    if (
+      fs.existsSync(manifestPath) &&
+      hasCommittedManifest(manifestPath, marker)
+    ) {
+      removeWorkflowCommit(runDir);
+      return "already-committed";
+    }
+    // A later terminal/cleanup/delivery publication supersedes this receipt.
+    // Artifact validity alone cannot authorize replacing canonical facts.
+    let predecessor: Buffer;
+    try {
+      const stat = fs.lstatSync(manifestPath);
+      if (
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        stat.size > WORKFLOW_MANIFEST_MAX_BYTES
+      ) {
+        return "invalid";
+      }
+      predecessor = fs.readFileSync(manifestPath);
+    } catch {
+      return "invalid";
+    }
+    if (
+      predecessor.byteLength > WORKFLOW_MANIFEST_MAX_BYTES ||
+      sha256(predecessor) !== marker.predecessorSha256
+    ) {
+      return "invalid";
+    }
+    writeFileAtomic(manifestPath, marker.manifest);
+    removeWorkflowCommit(runDir);
+    return "recovered";
+  } catch {
+    return "failed";
+  }
 }
 
 function boundEntry(entry: TranscriptEntry, maxBytes: number) {
@@ -99,6 +433,70 @@ export function boundedArtifactTranscript(
   return [initial, marker, ...tail];
 }
 
+export interface BoundedTranscriptsArtifact {
+  /** Ready-to-write `transcripts.json` content: `{ [agentIndex]: entries[] }`. */
+  content: string;
+  /** Whole agents dropped from the tail, and their bounded entry count. */
+  omitted: { agents: number; entries: number };
+}
+
+/**
+ * Assemble `transcripts.json`, keeping whole agents in index order until the
+ * next one would exceed the byte budget. The dropped tail is counted and
+ * reported (`transcriptsOmitted`) rather than silently discarded by the
+ * serializer's node budget, which previously stopped at 20_000 nodes — roughly
+ * 11 full agents — while the file sat at a quarter of its byte cap (issue #558).
+ */
+export function boundedTranscriptsArtifact(
+  agents: readonly { index: number; transcript: TranscriptEntry[] }[],
+  options: { maxBytes?: number; maxNodes?: number } = {},
+): BoundedTranscriptsArtifact {
+  const maxBytes = Math.max(
+    256,
+    options.maxBytes ?? WORKFLOW_TRANSCRIPTS_MAX_BYTES,
+  );
+  const maxNodes = options.maxNodes ?? WORKFLOW_TRANSCRIPTS_MAX_NODES;
+  // Bound each agent first; a single agent is capped well under maxBytes by
+  // boundedArtifactTranscript, so at least one agent always fits.
+  const bounded = agents.map((agent) => ({
+    index: agent.index,
+    entries: boundedArtifactTranscript(agent.transcript),
+  }));
+  const prefixObject = (count: number) =>
+    Object.fromEntries(
+      bounded.slice(0, count).map((b) => [b.index, b.entries]),
+    );
+  // Measure the uncapped pretty-printed size (the shape safeStringify emits for
+  // these plain, pre-bounded entries) so a tail that overflows the byte cap is
+  // detected here instead of turning the whole file into a preview stub.
+  const prefixBytes = (count: number) =>
+    textBytes(JSON.stringify(prefixObject(count), null, 2));
+
+  let kept = bounded.length;
+  if (prefixBytes(bounded.length) > maxBytes) {
+    // Binary-search the largest whole-agent prefix that fits.
+    let lo = 0;
+    let hi = bounded.length;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi + 1) / 2);
+      if (prefixBytes(mid) <= maxBytes) lo = mid;
+      else hi = mid - 1;
+    }
+    kept = lo;
+  }
+
+  let omittedEntries = 0;
+  for (let i = kept; i < bounded.length; i++) {
+    omittedEntries += bounded[i]!.entries.length;
+  }
+  // The kept prefix already fits maxBytes and holds far fewer than maxNodes
+  // nodes, so safeStringify writes it in full without a second truncation.
+  return {
+    content: safeStringify(prefixObject(kept), { maxBytes, maxNodes }),
+    omitted: { agents: bounded.length - kept, entries: omittedEntries },
+  };
+}
+
 function writeRunFile(runDir: string, name: string, content: string) {
   writeFileAtomic(path.join(runDir, name), content);
 }
@@ -114,11 +512,12 @@ export function persistWorkflowTerminalState(
   delete terminalManifest.result;
   delete terminalManifest.resultArtifact;
   delete terminalManifest.transcriptArtifact;
-  writeRunFile(
-    runDir,
-    "workflow.json",
-    safeStringify(terminalManifest, { maxBytes: 1024 * 1024 }),
-  );
+  const content = safeStringify(terminalManifest, {
+    maxBytes: WORKFLOW_MANIFEST_MAX_BYTES,
+    maxNodes: WORKFLOW_MANIFEST_MAX_NODES,
+  });
+  writeRunFile(runDir, "workflow.json", content);
+  return sha256(content);
 }
 
 /** Persist one successful child result before any handoff/context projection. */
@@ -127,10 +526,10 @@ export function persistWorkflowAgentResult(
   index: number,
   result: { output: string; structured?: unknown },
 ) {
-  const artifact = path.join(
-    "agent-results",
-    `agent-${String(index).padStart(4, "0")}.json`,
-  );
+  // Artifact references are persisted as portable workflow paths. The host
+  // filesystem join happens in writeRunFile; handoff validation and replay
+  // consumers intentionally use `/` regardless of the platform.
+  const artifact = `agent-results/agent-${String(index).padStart(4, "0")}.json`;
   const encoded = encodeCompleteJson(
     {
       output: result.output,
@@ -154,50 +553,98 @@ export function persistWorkflowAgentResult(
   return artifact;
 }
 
+/** Side artifact shares the existing run retention/lifetime; contains no tool payloads. */
+export function persistWorkflowAgentTiming(
+  runDir: string,
+  agent: AgentRecord,
+  entries: readonly TimingEntry[] = [],
+) {
+  if (!agent.invocation) throw new Error("Timing requires invocation identity");
+  const artifact = `agent-timing/agent-${String(agent.index).padStart(4, "0")}.json`;
+  const encoded = encodeCompleteJson(
+    {
+      version: 1,
+      invocation: invocationTiming(agent.invocation),
+      ...(agent.replayOrigin ? { replayOrigin: agent.replayOrigin } : {}),
+      ...(agent.timing ? { summary: agent.timing } : {}),
+      entries,
+    },
+    {
+      maxBytes: TIMING_ARTIFACT_MAX_BYTES,
+      maxDepth: 12,
+      maxNodes: TIMING_ARTIFACT_MAX_BYTES,
+      maxStringBytes: 512,
+    },
+  );
+  if (!encoded.ok)
+    throw new Error("Agent timing artifact exceeded its byte budget");
+  writeRunFile(runDir, artifact, encoded.json);
+  return artifact;
+}
+
 export function persistWorkflowJson(
   runDir: string,
   details: WorkflowDetails,
-  journal?: readonly JournalEntry[],
+  journal?: WorkflowJournalSource,
 ) {
   refreshWorkflowGraph(details);
-  const transcripts = Object.fromEntries(
-    details.agents.map((agent) => [
-      agent.index,
-      boundedArtifactTranscript(agent.transcript),
-    ]),
-  );
+  const boundedTranscripts = boundedTranscriptsArtifact(details.agents, {
+    maxBytes: WORKFLOW_TRANSCRIPTS_MAX_BYTES,
+    maxNodes: WORKFLOW_TRANSCRIPTS_MAX_NODES,
+  });
+  // Recomputed each persist, so set-or-clear rather than accumulate: the field
+  // must describe the transcripts.json actually written this time.
+  if (boundedTranscripts.omitted.agents > 0) {
+    details.transcriptsOmitted = boundedTranscripts.omitted;
+  } else {
+    delete details.transcriptsOmitted;
+  }
 
   // Publish terminal execution facts before dependent side artifacts. If a
   // later artifact write fails, readers still see an explained terminal run
   // instead of the previous `running` manifest. The final manifest below adds
   // the artifact references once every dependent file has committed.
-  if (details.status !== "running") {
-    persistWorkflowTerminalState(runDir, details);
+  const terminal = details.status !== "running";
+  let predecessorSha256: string | undefined;
+  if (terminal) {
+    // A retry supersedes an older unfinished receipt before it publishes a new
+    // terminal fact. Failing to remove it must stop the new commit rather than
+    // let a concurrent reader promote stale artifact identities.
+    removeWorkflowCommit(runDir, true);
+    predecessorSha256 = persistWorkflowTerminalState(runDir, details);
   }
 
-  writeRunFile(
-    runDir,
-    "transcripts.json",
-    safeStringify(transcripts, { maxBytes: 2 * 1024 * 1024 }),
-  );
+  const artifactWrites: WorkflowArtifactWrite[] = [
+    {
+      name: "transcripts.json",
+      content: boundedTranscripts.content,
+    },
+  ];
   // Written alongside the rest so it inherits atomic write, 500ms coalescing,
   // and the final flush. Only present once a call has actually succeeded.
-  // boundedJournal has already brought this under the cap, and plain
-  // JSON.stringify is deliberate: safeStringify would swap an over-cap value
-  // for a preview stub, silently turning the journal into something unusable.
-  if (journal && journal.length > 0) {
-    writeRunFile(
-      runDir,
-      JOURNAL_FILE,
-      JSON.stringify(boundedJournal(journal).journal, null, 2),
-    );
+  // Accumulators already enforce the cap incrementally and can assemble the
+  // canonical JSON from their cached entry fragments. Plain arrays retain the
+  // compatibility path through boundedJournal; plain JSON.stringify is
+  // deliberate because safeStringify would swap an over-cap value for a
+  // preview stub, silently turning the journal into something unusable.
+  if (
+    journal &&
+    (journal.length > 0 || ("toJson" in journal && journal.dropped > 0))
+  ) {
+    const content =
+      "toJson" in journal
+        ? journal.toJson()
+        : JSON.stringify(boundedJournal(journal).journal, null, 2);
+    artifactWrites.push({ name: JOURNAL_FILE, content });
   }
   if (details.result !== undefined) {
-    writeRunFile(
-      runDir,
-      "result.json",
-      safeStringify(details.result, { maxBytes: 1024 * 1024 }),
-    );
+    artifactWrites.push({
+      name: "result.json",
+      content: safeStringify(details.result, {
+        maxBytes: WORKFLOW_MANIFEST_MAX_BYTES,
+        maxNodes: WORKFLOW_MANIFEST_MAX_NODES,
+      }),
+    });
   }
   const compact: WorkflowDetails = {
     ...details,
@@ -207,11 +654,48 @@ export function persistWorkflowJson(
     transcriptArtifact: "transcripts.json",
     agents: details.agents.map((agent) => ({ ...agent, transcript: [] })),
   };
-  writeRunFile(
-    runDir,
-    "workflow.json",
-    safeStringify(compact, { maxBytes: 1024 * 1024 }),
-  );
+  const manifest = safeStringify(compact, {
+    maxBytes: WORKFLOW_MANIFEST_MAX_BYTES,
+    maxNodes: WORKFLOW_MANIFEST_MAX_NODES,
+  });
+
+  if (predecessorSha256 !== undefined) {
+    writeRunFile(
+      runDir,
+      WORKFLOW_COMMIT_FILE,
+      serializeWorkflowCommitMarker(
+        details,
+        manifest,
+        artifactWrites,
+        predecessorSha256,
+      ),
+    );
+  }
+  for (const artifact of artifactWrites) {
+    writeRunFile(runDir, artifact.name, artifact.content);
+  }
+  writeRunFile(runDir, "workflow.json", manifest);
+  if (terminal) removeWorkflowCommit(runDir);
+}
+
+/**
+ * Update only the durable delivery receipt. Completion delivery may retain a
+ * compact memory projection after the run has been evicted, so rewriting the
+ * whole details object here would risk replacing exact result artifacts with
+ * that projection.
+ */
+export function persistWorkflowDeliveryState(
+  runDir: string,
+  delivery: WorkflowDelivery,
+) {
+  recoverPendingWorkflowCommit(runDir);
+  const file = path.join(runDir, "workflow.json");
+  const raw: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid persisted workflow details: ${file}`);
+  }
+  const next = { ...(raw as Record<string, unknown>), delivery };
+  writeFileAtomic(file, JSON.stringify(next));
 }
 
 /** Coalesce live checkpoints while keeping final persistence synchronous. */
@@ -223,10 +707,10 @@ export function createWorkflowPersistence(
     persist?: (
       runDir: string,
       details: WorkflowDetails,
-      journal?: readonly JournalEntry[],
+      journal?: WorkflowJournalSource,
     ) => void;
-    /** Read at write time so callers only have to append to their own array. */
-    journal?: () => readonly JournalEntry[];
+    /** Read at write time so callers only have to append to their journal. */
+    journal?: () => WorkflowJournalSource;
   } = {},
 ) {
   const intervalMs = Math.max(

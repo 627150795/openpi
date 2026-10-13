@@ -11,8 +11,22 @@ import { BackendRegistry, type SubagentBackend } from "./backend.ts";
 import { piBackend } from "./backends/pi.ts";
 import type { BackendName } from "./domain.ts";
 
+/**
+ * Test-only injection seam for extension-level tests that drive real spawns
+ * without a child pi session: production never sets it. The underscore-prefixed
+ * setter name makes any accidental production use self-evidently wrong.
+ */
+let testBackends: readonly SubagentBackend[] | undefined;
+
+/** Test-only: replace the backends the manager can spawn against. */
+export function __setSubagentTestBackends(
+  backends: readonly SubagentBackend[] | undefined,
+) {
+  testBackends = backends;
+}
+
 const BackendRegistryLive = Layer.sync(BackendRegistry, () => {
-  const backends: SubagentBackend[] = [piBackend];
+  const backends: readonly SubagentBackend[] = testBackends ?? [piBackend];
   return new Map<BackendName, SubagentBackend>(
     backends.map((backend) => [backend.name, backend]),
   );
@@ -31,6 +45,9 @@ export function createSubagentRuntime(config: SubagentManagerConfig = {}) {
 
 export type SubagentRuntime = ReturnType<typeof createSubagentRuntime>;
 
+/** Canonical interruption, distinct from a known startup failure. */
+export class SubagentToolInterruptedError extends Error {}
+
 /**
  * Run an effect from an async tool handler. Typed failures and defects are
  * converted to thrown Errors (what pi's tool contract expects); interruption
@@ -46,9 +63,13 @@ export async function runTool<A, E>(
     options.signal ? { signal: options.signal } : undefined,
   );
   if (Exit.isSuccess(exit)) return exit.value;
-  if (Cause.hasInterruptsOnly(exit.cause)) {
-    throw new Error(options.interruptMessage ?? "Operation was aborted.");
-  }
   const [first] = Cause.prettyErrors(exit.cause);
+  if (Cause.hasInterrupts(exit.cause)) {
+    const interrupted = options.interruptMessage ?? "Operation was aborted.";
+    const detail = Cause.hasInterruptsOnly(exit.cause)
+      ? ""
+      : ` ${first?.message ?? Cause.pretty(exit.cause)}`;
+    throw new SubagentToolInterruptedError(`${interrupted}${detail}`);
+  }
   throw new Error(first?.message ?? Cause.pretty(exit.cause));
 }

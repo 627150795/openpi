@@ -1,5 +1,5 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_WORKFLOW_AGENT_CALLS } from "../shared/setup-config.ts";
@@ -19,6 +19,11 @@ const MAX_LOG_MESSAGE_BYTES = 8 * 1024;
  * bypasses the controller entirely.
  */
 export const AGENT_CALL_BACKSTOP_MARGIN = 8;
+/**
+ * Maximum synchronous execution time allowed between async agent boundaries.
+ * Non-yielding code (e.g. while(true){}) after await is terminated by this timeout.
+ */
+const SANDBOX_SYNC_TIMEOUT_MS = 1_000;
 
 export interface SandboxAgentOptions {
   agent_type?: unknown;
@@ -30,6 +35,7 @@ export interface SandboxAgentOptions {
   provider?: unknown;
   effort?: unknown;
   isolation?: unknown;
+  working_dir?: unknown;
   operator?: unknown;
   inputs?: unknown;
 }
@@ -53,7 +59,7 @@ export interface RunWorkflowSandboxOptions {
     signal: AbortSignal,
   ) => Promise<SandboxAgentResult>;
   onPhase: (title: string) => void;
-  onLog: (text: string) => void;
+  onLog: (text: string, kind?: "pipeline-drop") => void;
   /**
    * Cumulative run usage, read at send time so the child's `usage()` reflects
    * the agent that just settled rather than a value captured at launch.
@@ -105,6 +111,9 @@ function sanitizeAgentOptions(value: unknown): SandboxAgentOptions {
     ...(value.provider !== undefined ? { provider: value.provider } : {}),
     ...(value.effort !== undefined ? { effort: value.effort } : {}),
     ...(value.isolation !== undefined ? { isolation: value.isolation } : {}),
+    ...(value.working_dir !== undefined
+      ? { working_dir: value.working_dir }
+      : {}),
     ...(value.operator !== undefined ? { operator: value.operator } : {}),
     ...(value.inputs !== undefined ? { inputs: value.inputs } : {}),
   };
@@ -192,6 +201,28 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
     const activeAgentRequests = new Map<number, AbortController>();
     let requestCount = 0;
     let finished = false;
+    let executionSeq = 0;
+    let executionWatchdog: NodeJS.Timeout | undefined;
+
+    const armWatchdog = (timeoutMs = SANDBOX_SYNC_TIMEOUT_MS) => {
+      if (finished) return 0;
+      if (executionWatchdog) clearTimeout(executionWatchdog);
+      const currentSeq = ++executionSeq;
+      executionWatchdog = setTimeout(() => {
+        if (finished || currentSeq !== executionSeq) return;
+        finish(new Error("Script execution timed out"));
+      }, timeoutMs);
+      executionWatchdog.unref?.();
+      return currentSeq;
+    };
+
+    const disarmWatchdog = (seq?: number) => {
+      if (seq !== undefined && seq !== executionSeq) return;
+      if (executionWatchdog) {
+        clearTimeout(executionWatchdog);
+        executionWatchdog = undefined;
+      }
+    };
 
     // The child parses this and falls back to zeros if it is ever unusable, so
     // a broken snapshot degrades `usage()` to a zero reading instead of
@@ -205,6 +236,7 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
     };
 
     const cleanup = () => {
+      disarmWatchdog();
       for (const abortController of activeAgentRequests.values()) {
         abortController.abort(new Error("Workflow stopped"));
       }
@@ -287,9 +319,18 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
           if (!isRecord(payload) || typeof payload.text !== "string") {
             throw new Error("invalid text");
           }
-          options.onLog(payload.text);
+          if (payload.kind !== undefined && payload.kind !== "pipeline-drop") {
+            throw new Error("invalid log kind");
+          }
+          options.onLog(payload.text, payload.kind);
         } catch {
           finish(new Error("Workflow sandbox sent an invalid log line"));
+        }
+        return;
+      }
+      if (raw.kind === "idle") {
+        if (typeof raw.seq === "number") {
+          disarmWatchdog(raw.seq);
         }
         return;
       }
@@ -345,10 +386,12 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
               error: "Agent result exceeded the workflow IPC output limit",
             });
           }
+          const seq = armWatchdog();
           child.send({
             token,
             kind: "agentResult",
             id,
+            seq,
             resultJson,
             usageJson: usageJson(),
           });
@@ -395,6 +438,10 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
       finish(new Error("Workflow sandbox sent an unknown IPC message"));
     });
 
+    // Arm the synchronous execution watchdog for the initial script invocation
+    // (covers non-yielding code before and after initial microtask yields).
+    const initSeq = armWatchdog();
+
     child.send(
       {
         kind: "init",
@@ -403,6 +450,7 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
         argsJson,
         maxConcurrency: options.maxConcurrency,
         usageJson: usageJson(),
+        seq: initSeq,
       },
       (error) => {
         if (error) finish(error);

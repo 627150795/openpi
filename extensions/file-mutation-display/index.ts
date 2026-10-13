@@ -11,7 +11,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { loadSetupConfig } from "../shared/setup-config.ts";
-import { withActivityRenderer } from "./render.ts";
+import {
+  activityEnabled,
+  activityRenderers,
+  withActivityRenderer,
+} from "./render.ts";
 
 function compact<TParams extends TSchema, TDetails, TState>(
   definition: ToolDefinition<TParams, TDetails, TState>,
@@ -25,17 +29,49 @@ function compact<TParams extends TSchema, TDetails, TState>(
  * native schema, prompt metadata, execute function, result, and details.
  */
 export default function fileMutationDisplay(pi: ExtensionAPI) {
+  // Modern hosts separate presentation from tool execution. Register the same
+  // resolver in TUI and headless Sessions so child inspection inherits it
+  // without replacing the child's shell/filesystem executor.
+  type Presentation = Pick<
+    ToolDefinition,
+    "renderCall" | "renderResult" | "renderShell"
+  >;
+  const host = pi as ExtensionAPI & {
+    registerToolRenderer?: (
+      resolver: (
+        name: string,
+        next: () => Presentation | undefined,
+      ) => Presentation | undefined,
+    ) => void;
+  };
+  const modern = typeof host.registerToolRenderer === "function";
+  if (host.registerToolRenderer) {
+    host.registerToolRenderer((name, next) => {
+      const base = next();
+      if (!base) return base;
+      const display = loadSetupConfig().ui;
+      return activityEnabled(name, display)
+        ? { ...base, ...activityRenderers(name, base) }
+        : base;
+    });
+  }
   pi.on("session_start", (_event, ctx) => {
     const display = loadSetupConfig().ui;
-    if (ctx.mode === "tui") {
-      // Ctrl+O remains a temporary override. A new/reloaded session starts from
-      // the persisted defaults instead of inheriting an old expanded toggle.
-      ctx.ui.setToolsExpanded(
-        display.subagentResultDisplay === "full" &&
-          display.bashToolDisplay === "full" &&
-          display.fileMutationDisplay === "full",
-      );
-    }
+    // This extension changes only the interactive TUI projection. Headless
+    // sessions must keep Pi's native definitions, especially bash: replacing
+    // it here would drop the SettingsManager-provided shellPath and can make
+    // Windows resolve the WSL System32 stub instead of the configured shell.
+    if (ctx.mode !== "tui") return;
+
+    // Ctrl+O remains a temporary override. A new/reloaded session starts from
+    // the persisted defaults instead of inheriting an old expanded toggle.
+    ctx.ui.setToolsExpanded(
+      display.subagentResultDisplay === "full" &&
+        display.bashToolDisplay === "full" &&
+        display.fileMutationDisplay === "full",
+    );
+
+    if (modern) return;
 
     pi.registerTool(
       compact(

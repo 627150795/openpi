@@ -1,15 +1,24 @@
 /** Ephemeral bridge from child tool events to Pi's canonical tool renderer. */
 
 import {
+  type AgentSession,
+  type MarkdownTransformer,
   ToolExecutionComponent,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import {
+  activityEnabled,
+  activityRenderers,
+} from "../file-mutation-display/render.ts";
+import { loadSetupConfig } from "./setup-config.ts";
 
 export interface AgentToolRenderRequest {
   readonly toolId: string;
   readonly name: string;
   readonly cwd?: string;
+  /** The child page's local Pi-native evidence visibility. */
+  readonly expanded?: boolean;
 }
 
 /** Operator-only projection. It is deliberately absent from persisted state. */
@@ -18,7 +27,48 @@ export interface AgentToolRenderer {
     request: AgentToolRenderRequest,
     width: number,
   ): string[] | undefined;
+  readonly messagePresentation?: AgentMessagePresentation;
   invalidate?(): void;
+}
+
+export interface AgentMessagePresentation {
+  readonly hideThinking: boolean;
+  readonly outputPad: number;
+  readonly codeBlockIndent: string;
+  readonly markdownTransformers: readonly MarkdownTransformer[];
+}
+
+type Presentation = Pick<
+  ToolDefinition,
+  "renderCall" | "renderResult" | "renderShell"
+>;
+
+/** Use the child Session's own public presentation chain, never its executor. */
+export function createAgentToolRenderLedger(session: AgentSession) {
+  const runner = session.extensionRunner as typeof session.extensionRunner & {
+    resolveToolRenderers?: (
+      name: string,
+      base: () => Presentation | undefined,
+    ) => Presentation | undefined;
+  };
+  return new AgentToolRenderLedger(
+    (name, definition) => {
+      if (typeof runner.resolveToolRenderers === "function") {
+        return runner.resolveToolRenderers(name, () => definition);
+      }
+      // Older Pi has no presentation resolver. Reuse OpenPI's projection
+      // locally, without registering/replacing the headless child's tools.
+      return definition && activityEnabled(name, loadSetupConfig().ui)
+        ? { ...definition, ...activityRenderers(name, definition) }
+        : definition;
+    },
+    () => ({
+      hideThinking: session.settingsManager.getHideThinkingBlock(),
+      outputPad: session.settingsManager.getOutputPad(),
+      codeBlockIndent: session.settingsManager.getCodeBlockIndent(),
+      markdownTransformers: runner.getMarkdownTransformers(),
+    }),
+  );
 }
 
 type ToolResult = Parameters<ToolExecutionComponent["updateResult"]>[0];
@@ -34,6 +84,7 @@ interface ToolExecutionRecord {
   isPartial: boolean;
   component?: ToolExecutionComponent;
   componentCwd?: string;
+  componentExpanded?: boolean;
 }
 
 const inertTui = {
@@ -87,6 +138,27 @@ function normalizeResult(value: unknown, isError: boolean): ToolResult {
 export class AgentToolRenderLedger implements AgentToolRenderer {
   private executions = new Map<string, ToolExecutionRecord>();
 
+  private resolveRenderers?: (
+    name: string,
+    definition?: ToolDefinition,
+  ) => Presentation | undefined;
+  private getMessagePresentation?: () => AgentMessagePresentation;
+
+  constructor(
+    resolveRenderers?: (
+      name: string,
+      definition?: ToolDefinition,
+    ) => Presentation | undefined,
+    getMessagePresentation?: () => AgentMessagePresentation,
+  ) {
+    this.resolveRenderers = resolveRenderers;
+    this.getMessagePresentation = getMessagePresentation;
+  }
+
+  get messagePresentation() {
+    return this.getMessagePresentation?.();
+  }
+
   start(
     toolId: string,
     name: string,
@@ -99,6 +171,7 @@ export class AgentToolRenderLedger implements AgentToolRenderer {
         current.definition = definition;
         current.component = undefined;
         current.componentCwd = undefined;
+        current.componentExpanded = undefined;
       }
       current.name = name;
       if (current.args !== args) {
@@ -185,17 +258,25 @@ export class AgentToolRenderLedger implements AgentToolRenderer {
         request.toolId,
         execution.args,
         { showImages: false },
-        execution.definition,
+        this.resolveRenderers
+          ? this.resolveRenderers(execution.name, execution.definition)
+          : execution.definition,
         inertTui,
         cwd,
       );
       execution.componentCwd = cwd;
+      execution.componentExpanded = false;
       if (execution.executionStarted)
         execution.component.markExecutionStarted();
       if (execution.argsComplete) execution.component.setArgsComplete();
       if (execution.result) {
         execution.component.updateResult(execution.result, execution.isPartial);
       }
+    }
+    const expanded = request.expanded === true;
+    if (execution.componentExpanded !== expanded) {
+      execution.component.setExpanded(expanded);
+      execution.componentExpanded = expanded;
     }
     return execution.component.render(width);
   }

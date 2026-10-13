@@ -17,8 +17,8 @@ export const SUBAGENT_SCHEMA_BUDGETS = Object.freeze({
 
 /** Describes subagent_spawn, including the fixed concurrency cap. */
 export const SUBAGENT_SPAWN_TOOL_DESCRIPTION =
-  "Spawn a background in-process Pi subagent with its own context, child-safe tools, and normal host permissions. Returns immediately; its final result is delivered automatically. The child cannot see this conversation, ask the user, or orchestrate agents/workflows. Use only trusted working directories. " +
-  `Max ${MAX_RUNNING} subagents can be running at once.`;
+  "Spawn a background Pi subagent with isolated context and child-safe tools. Returns immediately; its result arrives automatically. It cannot see this chat, ask the user, or orchestrate. Use trusted directories. " +
+  `Max ${MAX_RUNNING} subagents can run at once.`;
 
 /** UTF-8 bounded, whitespace-normalized text for the parent-facing roster. */
 function boundedPurpose(description: string) {
@@ -141,17 +141,18 @@ export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
 /** Model-facing schema descriptions for subagent_spawn task and execution options. */
 export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
   prompt:
-    "Task prompt for the subagent. Must be self-contained: include all needed context, file paths, and what to report back.",
+    "Self-contained task: include needed context, file paths, and expected report.",
   name: "Short human-readable name shown in listings and the UI",
   harness: 'Optional; "pi" is the only harness and the default.',
   workingDir:
-    "Trusted child working directory; defaults to the current directory",
+    "Child cwd, absolute or relative to parent. Target project trust is checked separately.",
   isolation:
     'Use "worktree" for concurrent writers and tell the child to commit. See the Subagents Skill for lifecycle details.',
   model:
     'Optional "provider/model-id" or current-provider model override. Omit to use the preset, configured role, or parent default. Never guess a model name.',
   reasoningEffort:
     "Optional child thinking level. Honor the user's requested level. Otherwise choose a level supported by the resolved child model based on the selected role and task difficulty. An explicit value overrides a role default.",
+  outputSchema: "Optional result JSON Schema.",
 };
 
 /** The exact name/description/wire-schema source used by registration/tests. */
@@ -193,6 +194,15 @@ export function createSubagentSpawnToolSurface(
           description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
         }),
       ),
+      output_schema: Type.Optional(
+        Type.Object(
+          {},
+          {
+            additionalProperties: true,
+            description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.outputSchema,
+          },
+        ),
+      ),
     }),
   };
 }
@@ -207,6 +217,7 @@ export function buildSubagentSpawnResult(options: {
   agentTypeName?: string;
   tools?: readonly string[];
   worktreeBranch?: string;
+  structured?: boolean;
 }) {
   const typeNote = options.agentTypeName
     ? ` Agent type "${options.agentTypeName}" applied.`
@@ -226,8 +237,11 @@ export function buildSubagentSpawnResult(options: {
   const worktreeNote = options.worktreeBranch
     ? ` Isolated in its own worktree on branch "${options.worktreeBranch}" — its edits are invisible here until you merge that branch. The checkout stays available for later send/review and is reclaimed on Session retirement only when bounded inspection proves it empty.`
     : "";
+  const structuredNote = options.structured
+    ? " This run must finish with the requested validated structured result."
+    : "";
   return (
-    `Spawned subagent ${options.id} "${options.title}" (${options.harness}: ${options.modelLabel}, ${options.cwd}).${typeNote}${toolNote}${worktreeNote}\n` +
+    `Spawned subagent ${options.id} "${options.title}" (${options.harness}: ${options.modelLabel}, ${options.cwd}).${typeNote}${toolNote}${worktreeNote}${structuredNote}\n` +
     `It runs in the background — keep working on independent work. If none remains in an interactive session, briefly tell the user it is still running and end your turn; its result is delivered automatically and you are automatically re-invoked when it finishes. Do not poll or call subagent_wait merely because a later step depends on it. ` +
     `Use subagent_wait(ids: ["${options.id}"]) only if the user explicitly asked you to keep the current response open for this result, or a non-interactive automation must return it in the same invocation; subagent_cancel stops it, subagent_check peeks at a running one, subagent_list shows all.`
   );
@@ -274,7 +288,7 @@ export function buildSubagentSendResult(options: {
 
 /** Describes nonblocking inspection of a subagent without consuming its result. */
 export const SUBAGENT_CHECK_TOOL_DESCRIPTION =
-  "Peek at a subagent's status and recent activity without blocking. Does not consume its result. Do NOT poll with it to wait for completion — a settled subagent's result is delivered to you automatically. Use it only when you need a running subagent's current partial state right now (e.g. to decide whether to steer it).";
+  "Peek at a subagent's status and recent activity without blocking. Does not consume its result. Do NOT poll with it to wait for completion — a settled subagent's result is delivered to you automatically. Use it when you need a running subagent's partial state (e.g. to decide whether to steer it), or select generation/evidence to retrieve settled Direct owner evidence on the active parent branch. Explicit evidence reads use Pi permissions and native nested-call metadata may include paths; receipts do not. Availability is bounded, not a retention guarantee.";
 
 /** Model-facing schema description for the subagent id to inspect. */
 export const SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS = {
@@ -285,8 +299,11 @@ export const SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS = {
 export const SUBAGENT_LIST_TOOL_DESCRIPTION =
   "List all subagents (running and finished) with their status.";
 
-/** Builds the child completion/failure wrapper injected into the parent model's context. */
-export function buildSubagentResultMessage(options: {
+const SUBAGENT_RESULT_TRANSPORT_INSTRUCTION =
+  "(This result is already shown to the user. Act on it and relay only the decisions or next steps — do not repeat it verbatim.)";
+
+/** Builds the user-visible child completion/failure projection. */
+export function buildSubagentResultDisplayMessage(options: {
   id: string;
   title: string;
   status: "running" | "done" | "error";
@@ -297,9 +314,34 @@ export function buildSubagentResultMessage(options: {
   let text = `Subagent ${options.id} "${options.title}" ${verb}.`;
   if (options.errorText) text += `\nError: ${options.errorText}`;
   text += `\n\n${options.output}`;
+  return text;
+}
+
+/** Builds the child completion/failure wrapper injected into the parent model's context. */
+export function buildSubagentResultMessage(options: {
+  id: string;
+  title: string;
+  status: "running" | "done" | "error";
+  errorText?: string;
+  output: string;
+}) {
+  let text = buildSubagentResultDisplayMessage(options);
   // This message is already displayed to the user, so tell the parent to act on
   // it rather than reprint it verbatim.
-  text +=
-    "\n\n(This result is already shown to the user. Act on it and relay only the decisions or next steps — do not repeat it verbatim.)";
+  text += `\n\n${SUBAGENT_RESULT_TRANSPORT_INSTRUCTION}`;
   return text;
+}
+
+/** Remove the transport-only suffix from results persisted before the split. */
+export function stripSubagentResultTransportInstruction(content: string) {
+  const separator = `\n\n${SUBAGENT_RESULT_TRANSPORT_INSTRUCTION}`;
+  const withoutBatchedSeparators = content.replaceAll(
+    `${separator}\n\nSubagent `,
+    "\n\nSubagent ",
+  );
+  return (
+    withoutBatchedSeparators.endsWith(separator)
+      ? withoutBatchedSeparators.slice(0, -separator.length)
+      : withoutBatchedSeparators
+  ).trimEnd();
 }

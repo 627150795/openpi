@@ -7,7 +7,12 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { sanitizeTerminalText } from "../shared/terminal-text.ts";
 import {
+  hasWebCommandFeedback,
+  notifyWebCommand,
+} from "../shared/web-command-feedback.ts";
+import {
   OPENPI_TOOL_SURFACE,
+  loadOpenPiCapabilities,
   patchOwnedTools,
 } from "../shared/tool-surface.ts";
 import { GOAL_CONTINUATION_TYPE, GoalController } from "./controller.ts";
@@ -96,10 +101,12 @@ export default function sessionGoal(pi: ExtensionAPI) {
     patchOwnedTools(pi, "goal", {
       disable: OPENPI_TOOL_SURFACE.goal.deferred,
     });
-  const showLifecycleTools = () =>
-    patchOwnedTools(pi, "goal", {
+  const showLifecycleTools = () => {
+    loadOpenPiCapabilities(pi, ["session"]);
+    return patchOwnedTools(pi, "goal", {
       enable: OPENPI_TOOL_SURFACE.goal.deferred,
     });
+  };
 
   const updateUi = (ctx: ExtensionContext) => {
     if (!ctx.hasUI) return;
@@ -116,7 +123,8 @@ export default function sessionGoal(pi: ExtensionAPI) {
     message: string,
     level: "info" | "warning" | "error" = "info",
   ) => {
-    if (ctx.hasUI) ctx.ui.notify(message, level);
+    if (ctx.hasUI || hasWebCommandFeedback(ctx.sessionManager))
+      notifyWebCommand(ctx, message, level);
   };
 
   const assertUnlocked = () => {
@@ -327,10 +335,14 @@ export default function sessionGoal(pi: ExtensionAPI) {
           const goal = controller.pause();
           notify(ctx, goalUpdateMessage(goal!));
         } else if (parsed.action === "resume") {
-          if (ctx.mode === "print" || ctx.mode === "json") {
+          if (
+            (ctx.mode === "print" || ctx.mode === "json") &&
+            !hasWebCommandFeedback(ctx.sessionManager)
+          ) {
             throw new Error(`Goal automation is disabled in ${ctx.mode} mode.`);
           }
           controller.resume();
+          showLifecycleTools();
           controller.kickoff(ctx);
           // Report the status AFTER kickoff: dispatching the first turn can
           // change it (e.g. a dispatch failure pauses the goal), so notifying
@@ -402,7 +414,7 @@ export default function sessionGoal(pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     controller.restore(ctx, event.reason === "fork");
-    if (controller.snapshot()) showLifecycleTools();
+    if (controller.snapshot()?.status === "active") showLifecycleTools();
     else hideLifecycleTools();
     if (controller.problem()) {
       notify(
@@ -428,6 +440,7 @@ export default function sessionGoal(pi: ExtensionAPI) {
       );
       if (shouldResume) {
         controller.resume();
+        showLifecycleTools();
         controller.kickoff(ctx);
       }
     }
@@ -436,7 +449,7 @@ export default function sessionGoal(pi: ExtensionAPI) {
 
   pi.on("session_tree", (_event, ctx) => {
     controller.restore(ctx, true);
-    if (controller.snapshot()) showLifecycleTools();
+    if (controller.snapshot()?.status === "active") showLifecycleTools();
     else hideLifecycleTools();
     updateUi(ctx);
   });

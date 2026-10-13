@@ -22,6 +22,9 @@ const UNITS: Record<string, number> = {
 
 export const MIN_INTERVAL_MS = 30_000;
 export const CRON_PROMPT_MAX_CHARS = 2_000;
+export const CRON_MAX_JOBS = 64;
+export const CRON_DELIVERY_MAX_JOBS = 16;
+export const CRON_DELIVERY_MAX_BYTES = 48 * 1024;
 
 /**
  * Parse a duration like `30s`, `5m`, `2h`. Deliberately a small duration
@@ -33,7 +36,8 @@ export function parseDuration(text: string): number | undefined {
   if (!match) return undefined;
   const value = Number(match[1]);
   if (!Number.isFinite(value) || value <= 0) return undefined;
-  return value * UNITS[match[2].toLowerCase()];
+  const durationMs = value * UNITS[match[2].toLowerCase()];
+  return Number.isSafeInteger(durationMs) ? durationMs : undefined;
 }
 
 export interface ParsedCronCommand {
@@ -81,8 +85,14 @@ export function parseCronCommand(raw: string): ParsedCronCommand {
       error: `Minimum interval is ${MIN_INTERVAL_MS / 1000}s (the scheduler polls about that often).`,
     };
   }
-  const prompt = schedule[3].trim().slice(0, CRON_PROMPT_MAX_CHARS);
+  const prompt = schedule[3].trim();
   if (!prompt) return { action: "help", error: "Provide a prompt to run." };
+  if (prompt.length > CRON_PROMPT_MAX_CHARS) {
+    return {
+      action: "help",
+      error: `Prompt is too long. Maximum is ${CRON_PROMPT_MAX_CHARS} characters.`,
+    };
+  }
   return {
     action: "add",
     intervalMs,
@@ -91,9 +101,11 @@ export function parseCronCommand(raw: string): ParsedCronCommand {
   };
 }
 
-/** Jobs whose next run is at or before `now`. */
+/** Oldest due jobs first, so bounded batches cannot starve pending jobs. */
 export function dueJobs(jobs: readonly CronJob[], now: number) {
-  return jobs.filter((job) => job.nextRunAt <= now);
+  return jobs
+    .filter((job) => job.nextRunAt <= now)
+    .sort((a, b) => a.nextRunAt - b.nextRunAt);
 }
 
 /** Advance only jobs whose prompt was successfully queued for delivery. */

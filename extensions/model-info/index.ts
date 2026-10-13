@@ -7,36 +7,16 @@ import {
   MODEL_INFO_CHANNEL,
   REFRESH_CHANNEL,
 } from "../shared/dashboard-state.ts";
+import { createSessionMetricsTracker } from "./session-metrics.ts";
+import {
+  CACHE_DIAGNOSTICS_CHANNEL,
+  createCacheDiagnosticsTracker,
+  fingerprintCacheSurface,
+  type CacheTurnIdentity,
+} from "./cache-diagnostics.ts";
 
 const CHARS_PER_ESTIMATED_TOKEN = 4;
 const LIVE_UPDATE_INTERVAL_MS = 200;
-
-function getSessionMetrics(ctx: ExtensionContext) {
-  let cost = 0;
-  let cacheRead = 0;
-  let promptTokens = 0;
-
-  for (const entry of ctx.sessionManager.getBranch()) {
-    let usage;
-    if (entry.type === "message") {
-      const message = entry.message;
-      if (message.role === "assistant" || message.role === "toolResult") {
-        usage = message.usage;
-      }
-    } else if (entry.type === "compaction" || entry.type === "branch_summary") {
-      usage = entry.usage;
-    }
-    if (!usage) continue;
-    cost += usage.cost.total;
-    cacheRead += usage.cacheRead;
-    promptTokens += usage.input + usage.cacheRead + usage.cacheWrite;
-  }
-
-  return {
-    cost,
-    cachePercent: promptTokens > 0 ? (cacheRead / promptTokens) * 100 : null,
-  };
-}
 
 function estimateContentTokens(characters: number) {
   return Math.ceil(characters / CHARS_PER_ESTIMATED_TOKEN);
@@ -54,6 +34,9 @@ export default function modelInfo(pi: ExtensionAPI) {
   let runContentStreamMs = 0;
   let lastLiveUpdate = 0;
   let currentContext: ExtensionContext | undefined;
+  const sessionMetrics = createSessionMetricsTracker();
+  const cacheDiagnostics = createCacheDiagnosticsTracker();
+  let cacheIdentity: CacheTurnIdentity | undefined;
 
   const publish = () => pi.events.emit(MODEL_INFO_CHANNEL, { ...state });
 
@@ -61,7 +44,6 @@ export default function modelInfo(pi: ExtensionAPI) {
     currentContext = ctx;
     const model = ctx.model;
     const usage = ctx.getContextUsage();
-    const metrics = getSessionMetrics(ctx);
 
     state = {
       ...state,
@@ -72,10 +54,12 @@ export default function modelInfo(pi: ExtensionAPI) {
       contextTokens: usage?.tokens ?? null,
       contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
       contextPercent: usage?.percent ?? null,
-      cachePercent: metrics.cachePercent,
-      cost: metrics.cost,
     };
     publish();
+  }
+
+  function syncSessionMetrics(ctx: ExtensionContext) {
+    state = { ...state, ...sessionMetrics.sync(ctx.sessionManager) };
   }
 
   function resetMessageTracking() {
@@ -97,10 +81,15 @@ export default function modelInfo(pi: ExtensionAPI) {
     runContentTokens = 0;
     runContentStreamMs = 0;
     state = { ...state, tokensPerSecond: null, generating: false };
+    sessionMetrics.reset();
+    cacheDiagnostics.reset();
+    cacheIdentity = undefined;
+    syncSessionMetrics(ctx);
     refresh(ctx);
   });
 
   pi.on("model_select", (event, ctx) => {
+    cacheDiagnostics.mark("model-change");
     state = {
       ...state,
       provider: event.model.provider,
@@ -113,6 +102,7 @@ export default function modelInfo(pi: ExtensionAPI) {
   });
 
   pi.on("thinking_level_select", (event) => {
+    cacheDiagnostics.mark("thinking-change");
     state = { ...state, thinking: event.level };
     publish();
   });
@@ -123,6 +113,17 @@ export default function modelInfo(pi: ExtensionAPI) {
     resetMessageTracking();
     state = { ...state, tokensPerSecond: null, generating: true };
     refresh(ctx);
+  });
+
+  pi.on("before_agent_start", (event, ctx) => {
+    const selectedTools = event.systemPromptOptions.selectedTools ?? [];
+    cacheIdentity = {
+      provider: ctx.model?.provider ?? "",
+      modelId: ctx.model?.id ?? "no-model",
+      thinking: ctx.model?.reasoning ? pi.getThinkingLevel() : "off",
+      toolSurfaceFingerprint: fingerprintCacheSurface(selectedTools),
+      systemPromptFingerprint: fingerprintCacheSurface(event.systemPrompt),
+    };
   });
 
   pi.on("message_start", (event) => {
@@ -213,14 +214,42 @@ export default function modelInfo(pi: ExtensionAPI) {
     refresh(ctx);
   });
 
-  pi.on("turn_end", (_event, ctx) => refresh(ctx));
+  pi.on("turn_end", (event, ctx) => {
+    syncSessionMetrics(ctx);
+    refresh(ctx);
+    // Failed/cancelled responses may carry placeholder zero usage. They do
+    // not establish a cache observation or replace the last valid baseline.
+    if (
+      event.message?.role === "assistant" &&
+      event.message.stopReason !== "error" &&
+      event.message.stopReason !== "aborted" &&
+      cacheIdentity
+    ) {
+      pi.events.emit(
+        CACHE_DIAGNOSTICS_CHANNEL,
+        cacheDiagnostics.observe({
+          turnIndex: event.turnIndex,
+          identity: cacheIdentity,
+          usage: event.message.usage,
+        }),
+      );
+    }
+  });
 
   // Compaction and branch moves rewrite history, so the cached percentage is
   // stale the moment they land. Pi reports unknown occupancy until the next
   // assistant reply, which is the honest state to show.
-  pi.on("session_compact", (_event, ctx) => refresh(ctx));
+  pi.on("session_compact", (_event, ctx) => {
+    cacheDiagnostics.mark("compaction");
+    syncSessionMetrics(ctx);
+    refresh(ctx);
+  });
 
-  pi.on("session_tree", (_event, ctx) => refresh(ctx));
+  pi.on("session_tree", (_event, ctx) => {
+    cacheDiagnostics.mark("branch-change");
+    syncSessionMetrics(ctx);
+    refresh(ctx);
+  });
 
   pi.on("agent_settled", (_event, ctx) => {
     state = { ...state, generating: false };
@@ -230,5 +259,8 @@ export default function modelInfo(pi: ExtensionAPI) {
   pi.on("session_shutdown", () => {
     stopRefreshListener();
     currentContext = undefined;
+    sessionMetrics.reset();
+    cacheDiagnostics.reset();
+    cacheIdentity = undefined;
   });
 }

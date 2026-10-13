@@ -4,17 +4,22 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { SETUP_CONFIG_CHANGED_CHANNEL } from "../../../extensions/shared/setup-config.ts";
+import { SETUP_APPLY_CHANNEL } from "../../../extensions/shared/setup-apply.ts";
 import {
   OPENPI_TOOL_SURFACE,
   patchOwnedTools,
 } from "../../../extensions/shared/tool-surface.ts";
 import { createCapabilitiesExtension } from "../../../extensions/capabilities/index.ts";
+import runtimeSnapshot from "../../../extensions/runtime-snapshot/index.ts";
+
+const SUBAGENT_SKILL_PATH_PATTERN =
+  /skills(?:\\\\|[\\/])subagents(?:\\\\|[\\/])SKILL\.md/;
 
 interface CapturedTool {
   name: string;
   description: string;
   parameters: unknown;
+  defaultActive?: boolean;
   promptGuidelines?: string[];
   execute(
     toolCallId: string,
@@ -29,7 +34,9 @@ interface CapturedTool {
   }>;
 }
 
-function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
+function harness(
+  options: { discovery?: "explicit" | "adaptive"; runtimeFirst?: boolean } = {},
+) {
   let discovery = options.discovery ?? "explicit";
   const available = [
     "read",
@@ -37,6 +44,7 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
     "edit",
     "write",
     "openpi_load_tools",
+    "runtime_snapshot",
     "fd",
     "rg",
     "subagent_spawn",
@@ -87,6 +95,9 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
     },
     registerTool(tool: CapturedTool) {
       tools.set(tool.name, tool);
+      if (tool.defaultActive === false) {
+        active = active.filter((name) => name !== tool.name);
+      }
     },
     getActiveTools: () => [...active],
     getAllTools: () => available.map((name) => ({ name })),
@@ -97,7 +108,9 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
   const extension = createCapabilitiesExtension({
     loadConfig: () => ({ capabilities: { discovery } }),
   });
+  if (options.runtimeFirst) runtimeSnapshot(pi as unknown as ExtensionAPI);
   extension(pi as unknown as ExtensionAPI);
+  if (!options.runtimeFirst) runtimeSnapshot(pi as unknown as ExtensionAPI);
   starts.push(() => {
     patchOwnedTools(pi, "fileSearch", {
       enable: OPENPI_TOOL_SURFACE.fileSearch.entry,
@@ -129,7 +142,7 @@ function harness(options: { discovery?: "explicit" | "adaptive" } = {}) {
     },
     setDiscovery(mode: "explicit" | "adaptive") {
       discovery = mode;
-      pi.events.emit(SETUP_CONFIG_CHANGED_CHANNEL, {});
+      pi.events.emit(SETUP_APPLY_CHANNEL, { tasks: [] });
     },
     tool: () => tools.get("openpi_load_tools")!,
   };
@@ -139,6 +152,30 @@ test("ordinary sessions add no resident OpenPI model tool", () => {
   const h = harness();
   h.start();
   assert.deepEqual(h.active(), ["read", "bash", "edit", "write"]);
+});
+
+test("session_start leaves the real runtime tool inactive until a gateway request", async () => {
+  for (const discovery of ["explicit", "adaptive"] as const) {
+    for (const runtimeFirst of [false, true]) {
+      const h = harness({ discovery, runtimeFirst });
+      const ordinaryTools = ["read", "bash", "edit", "write"];
+      if (discovery === "adaptive") ordinaryTools.push("openpi_load_tools");
+      h.start();
+      assert.deepEqual(h.active(), ordinaryTools);
+      const listing = await h.tool().execute("list", {});
+      assert.match(JSON.stringify(listing), /runtime/);
+      assert.deepEqual(h.active(), ordinaryTools);
+      const result = await h.tool().execute("load-runtime", {
+        groups: ["runtime"],
+      });
+      assert.deepEqual(result.details.activatedTools, ["runtime_snapshot"]);
+      assert.deepEqual(h.active(), [...ordinaryTools, "runtime_snapshot"]);
+      await h.tool().execute("load-runtime-again", { groups: ["runtime"] });
+      assert.deepEqual(h.active(), [...ordinaryTools, "runtime_snapshot"]);
+      h.start();
+      assert.deepEqual(h.active(), ordinaryTools);
+    }
+  }
 });
 
 test("adaptive discovery keeps only the capability gateway resident", () => {
@@ -187,7 +224,14 @@ test("the gateway exposes a provider-portable string enum for capability groups"
 
   assert.deepEqual(parameters.properties.groups.items, {
     type: "string",
-    enum: ["search", "delegate", "workflow", "background", "session"],
+    enum: [
+      "search",
+      "delegate",
+      "workflow",
+      "background",
+      "session",
+      "runtime",
+    ],
   });
 });
 
@@ -238,17 +282,36 @@ test("an explicit subagent request loads delegation directly", () => {
     "subagent_check",
     "subagent_list",
   ]);
-  assert.match(JSON.stringify(results), /skills\/subagents\/SKILL\.md/);
+  assert.match(JSON.stringify(results), SUBAGENT_SKILL_PATH_PATTERN);
 });
 
-test("reserved capability words load their groups without action verbs", () => {
+test("standalone capability selections expose only the selected group", () => {
+  for (const [prompt, selectedTool, otherTool] of [
+    ["subagent", "subagent_spawn", "workflow"],
+    [" Subagents ", "subagent_spawn", "workflow"],
+    ["workflow", "workflow", "subagent_spawn"],
+    [" WORKFLOWS ", "workflow", "subagent_spawn"],
+  ]) {
+    const h = harness();
+    h.start();
+    h.before(prompt);
+    assert.equal(h.active().includes(selectedTool), true, prompt);
+    assert.equal(h.active().includes(otherTool), false, prompt);
+    assert.equal(h.active().includes("bg_start"), false, prompt);
+    assert.equal(h.active().includes("openpi_load_tools"), false, prompt);
+  }
+});
+
+test("a list of capability names loads both groups without executing them", () => {
   const h = harness();
   h.start();
 
   h.before("subagent, workflow");
 
-  assert.ok(h.active().includes("subagent_spawn"));
-  assert.ok(h.active().includes("workflow"));
+  assert.equal(h.active().includes("subagent_spawn"), true);
+  assert.equal(h.active().includes("workflow"), true);
+  assert.equal(h.active().includes("bg_start"), false);
+  assert.equal(h.active().includes("openpi_load_tools"), false);
 });
 
 test("common Chinese and multi-agent delegation requests are explicit intent", () => {
@@ -310,25 +373,36 @@ test("the gateway returns progressive skill guidance for a loaded group", async 
     groups: ["delegate"],
   });
 
-  assert.match(result.content[0]!.text, /skills\/subagents\/SKILL\.md/);
+  assert.match(result.content[0]!.text, SUBAGENT_SKILL_PATH_PATTERN);
 });
 
-test("conditional or negated capability boilerplate does not widen the tool surface", () => {
+test("named capability discovery leaves execution judgment to the model", () => {
   for (const prompt of [
-    "Work autonomously. If you delegate any work, every child must inherit the parent model.",
-    "If you delegate this task, make sure every child reports back.",
-    "If needed, delegate this task only after checking the repository.",
     "Do not use subagents.",
     "I prefer not to use subagents.",
     "You cannot use subagents.",
-    "No parallel agents.",
-    "Never delegate this task.",
-    "Delegate this task if needed.",
     "如果需要，请使用子代理。",
     "不要使用子代理。",
-    "不能使用子代理。",
     "子代理是什么？",
     "子代理的设计有哪些取舍？",
+  ]) {
+    const h = harness();
+    h.start();
+    const guidance = h.before(prompt);
+    assert.ok(h.active().includes("subagent_spawn"), prompt);
+    assert.equal(h.active().includes("workflow"), false, prompt);
+    assert.equal(h.active().includes("openpi_load_tools"), false, prompt);
+    assert.match(JSON.stringify(guidance), /discovery only/);
+    assert.match(JSON.stringify(guidance), SUBAGENT_SKILL_PATH_PATTERN);
+  }
+});
+
+test("non-name conditional rules and the gateway retain their prior policy", () => {
+  for (const prompt of [
+    "If you delegate this task, make sure every child reports back.",
+    "Never delegate this task.",
+    "Delegate this task if needed.",
+    "No parallel agents.",
     "Do not use OpenPI tools.",
   ]) {
     const h = harness();

@@ -8,6 +8,8 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   WorkflowNavigationEditor,
+  workflowActivityFooter,
+  workflowStripEntryKey,
   WorkflowStripState,
   WorkflowStripWidget,
   workflowStripInput,
@@ -164,6 +166,21 @@ function workflow(): WorkflowDetails {
   };
 }
 
+test("workflow strip repaint key changes only when its selected status changes", () => {
+  const running = workflow();
+  const updatedProgress = { ...running, currentPhase: "Review" };
+  const settled = { ...running, status: "completed" as const };
+
+  assert.equal(
+    workflowStripEntryKey({ runId: running.runId, details: running }),
+    workflowStripEntryKey({ runId: running.runId, details: updatedProgress }),
+  );
+  assert.notEqual(
+    workflowStripEntryKey({ runId: running.runId, details: running }),
+    workflowStripEntryKey({ runId: running.runId, details: settled }),
+  );
+});
+
 test("workflow strip sanitizes restored or legacy metadata defensively", () => {
   const details = workflow();
   details.name = "audit\u001b]52;c;clipboard\u0007\nnow";
@@ -227,4 +244,113 @@ test("workflow strip repaints on the shared spinner cadence", (t) => {
   } finally {
     widget.dispose();
   }
+});
+
+test("settled workflow strip does not request renders while idle", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const details = workflow();
+  details.status = "completed";
+  let renders = 0;
+  const widget = new WorkflowStripWidget(
+    {
+      requestRender() {
+        renders += 1;
+      },
+    } as unknown as TUI,
+    theme,
+    new WorkflowStripState(),
+    () => ({ runId: "wf_test", details }),
+  );
+  try {
+    t.mock.timers.tick(60_000);
+    assert.equal(renders, 0);
+  } finally {
+    widget.dispose();
+  }
+});
+
+test("workflow strip stops repainting after its entry settles", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const details = workflow();
+  let renders = 0;
+  const widget = new WorkflowStripWidget(
+    {
+      requestRender() {
+        renders += 1;
+      },
+    } as unknown as TUI,
+    theme,
+    new WorkflowStripState(),
+    () => ({ runId: "wf_test", details }),
+  );
+  try {
+    t.mock.timers.tick(SPINNER_INTERVAL_MS);
+    assert.equal(renders, 1);
+    details.status = "completed";
+    t.mock.timers.tick(SPINNER_INTERVAL_MS);
+    assert.equal(renders, 2);
+    t.mock.timers.tick(SPINNER_INTERVAL_MS * 2);
+    assert.equal(renders, 2);
+
+    details.status = "running";
+    widget.render(100);
+    t.mock.timers.tick(SPINNER_INTERVAL_MS);
+    assert.equal(renders, 3);
+  } finally {
+    widget.dispose();
+  }
+});
+
+test("ordinary strip hides metrics without mutating canonical facts", () => {
+  const details = workflow();
+  const before = structuredClone(details);
+  const widget = new WorkflowStripWidget(
+    { requestRender() {} } as unknown as TUI,
+    theme,
+    new WorkflowStripState(),
+    () => ({ runId: details.runId, details }),
+  );
+  try {
+    const line = widget.render(100).join("\n");
+    assert.match(line, /repair-docs.*↓ to manage/);
+    assert.doesNotMatch(line, /Draft|Restore missing|agents|tokens|10s/);
+    assert.deepEqual(details, before);
+    for (const width of [1, 4, 16, 32]) {
+      assert.ok(
+        widget.render(width).every((row) => visibleWidth(row) <= width),
+      );
+    }
+    details.agents[0]!.state = "uncertain";
+    details.agents[0]!.worktreePath = "/repo/retained";
+    const attention = widget.render(100).join("\n");
+    assert.match(attention, /1 uncertain.*worktree retained/);
+    assert.notEqual(
+      workflowStripEntryKey({ runId: details.runId, details: before }),
+      workflowStripEntryKey({ runId: details.runId, details }),
+    );
+  } finally {
+    widget.dispose();
+  }
+});
+
+test("footer deduplicates ordinary TUI activity and preserves aggregate failures", () => {
+  assert.equal(
+    workflowActivityFooter(theme, { running: 2, done: 1, failed: 0 }, true),
+    undefined,
+  );
+  const exceptional = workflowActivityFooter(
+    theme,
+    { running: 2, done: 1, failed: 1 },
+    true,
+  );
+  assert.match(exceptional!, /1 failed.*\/workflows/);
+  assert.doesNotMatch(exceptional!, /running|done/);
+  assert.match(
+    workflowActivityFooter(theme, { running: 2, done: 0, failed: 0 }, false)!,
+    /2 running/,
+  );
+  assert.equal(
+    workflowActivityFooter(theme, { running: 0, done: 0, failed: 0 }, false),
+    undefined,
+  );
 });

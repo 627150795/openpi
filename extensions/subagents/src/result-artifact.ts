@@ -20,6 +20,7 @@ export interface ResultProjection {
   readonly text: string;
   readonly truncated: boolean;
   readonly artifactPath?: string;
+  readonly artifactSaveFailed?: boolean;
 }
 
 function sliceStartToUtf8Bytes(content: string, maxBytes: number) {
@@ -76,6 +77,38 @@ export function persistResultArtifact(agentDir: string, content: string) {
   return artifactPath;
 }
 
+/** Persist one complete validated structured value under a JSON identity. */
+export function persistStructuredResultArtifact(
+  agentDir: string,
+  content: string,
+) {
+  let directory = path.resolve(agentDir);
+  for (const segment of RESULT_ARTIFACT_DIR) {
+    directory = ensureDirectory(directory, segment);
+  }
+
+  const digest = createHash("sha256").update(content).digest("hex");
+  const artifactPath = path.join(directory, `${digest}.json`);
+  try {
+    writeFileSync(artifactPath, content, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const stat = lstatSync(artifactPath);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      readFileSync(artifactPath, "utf8") !== content
+    ) {
+      throw new Error(`Structured result artifact collision: ${artifactPath}`);
+    }
+  }
+  return artifactPath;
+}
+
 /**
  * Build the single model-visible projection used by automatic delivery and
  * explicit waits. Short answers pass through byte-for-byte. Long answers keep
@@ -96,11 +129,13 @@ export function projectResult(
   const tailLines = Math.max(1, options.maxLines - headLines);
 
   let artifactPath: string | undefined;
+  let artifactSaveFailed = false;
   try {
     artifactPath = options.writeArtifact(content);
   } catch {
     // Delivery is more important than the optional recovery cache. The footer
     // below stays explicit so a failed write never advertises a false path.
+    artifactSaveFailed = true;
   }
 
   let bodyBudget = options.maxBytes;
@@ -138,5 +173,6 @@ export function projectResult(
     text,
     truncated: true,
     ...(artifactPath ? { artifactPath } : {}),
+    ...(artifactSaveFailed ? { artifactSaveFailed: true } : {}),
   };
 }

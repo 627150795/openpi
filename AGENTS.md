@@ -70,9 +70,17 @@ If those answers are unclear, investigate before adding surface area.
 - Runtime provenance: before diagnosing installed behavior, provider compatibility, a manual Pi smoke, or any UI result, read README section “开发运行时：区分 npm 与当前源码”. Prove both the checkout revision and the single OpenPI source reported by `pi list` before reasoning from source code.
 - Preserve ignored local evidence as user work. Never use `git clean -fdx`; ignored benchmark runs, logs, and harnesses may be the only local copy.
 
+### Knowledge and evidence
+
+- Use GitHub Issues for discussion and work tracking. Preserve a reusable conclusion in the appropriate `docs/` category and link the Issue and record both ways.
+- Keep facts, inferences, recommendations, unknowns, protocols, and validated results distinct. A research recommendation or complete-looking design is not a project constraint without an accepted Decision.
+- Formal Benchmark records must retain frozen source, model, task, and verifier identities; usage accounting; failure classification; limitations; and a verifiable evidence reference.
+- Before publishing or materially revising a governed record, read [`docs/README.md`](docs/README.md) and the relevant category index. Existing legacy documents are not silently reclassified or rewritten.
+- Preserve large or sensitive raw evidence outside the repository under a stable identity. Never bulk-add, move, overwrite, clean, or publish ignored Benchmark assets, credentials, or private Session data.
+
 ## Package configuration contract
 
-- `/openpi-setup [natural-language request]` is the single canonical user-facing configuration entry point. `/my-pi-setup` is a compatibility alias only. Do not add extension-specific setup commands for package-owned choices.
+- `/openpi-setup [natural-language request]` is the canonical natural-language configuration entry point. `/my-pi-setup` is a compatibility alias only. Web controls may directly persist presentation preferences (theme, chat width, font size, default thinking expansion, and pinned conversation sort) through the shared validated configuration writer, without a model turn. Other package-owned choices retain the setup episode. Do not add extension-specific setup commands.
 - A user-selectable model, feature toggle, permission, concurrency limit, theme/UI preference, or other package-owned choice must update `extensions/setup/`, `extensions/shared/setup-config.ts`, the no-argument `/openpi-setup` status output, `SETUP.md`, and the canonical defaults and prose in `README.md`.
 - Classify every new model-facing tool at the child-session boundary. Parent-only tools belong in `CHILD_EXCLUDED_TOOL_NAMES`; read-only child-safe tools belong in `CHILD_SAFE_PACKAGE_TOOL_NAMES` in `extensions/shared/child-session.ts`. The drift guard must fail closed on every unclassified tool, including factory-registered tools.
 - Installation must remain side-effect-safe: no provider/model names hardcoded as defaults, no model calls before explicit configuration, and expensive or privileged behavior must be opt-in.

@@ -1020,11 +1020,6 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
     expect(await readFile(implementationFile, "utf8")).toBe(
       "written after explicit submission",
     );
-    expect(provider.requests).toHaveLength(7);
-    expect(provider.requests[5]).toBeDefined();
-    expect(JSON.stringify(provider.requests[5]!.body)).toContain(
-      editedInstruction,
-    );
     await expect(
       page.getByText("Implementation finished.", { exact: true }),
     ).toBeVisible();
@@ -1035,6 +1030,11 @@ test("Plan Ready stays gated through browser preview and unsupported fresh hando
             .runtime.status,
       )
       .toBe("idle");
+    expect(provider.requests).toHaveLength(7);
+    expect(provider.requests[5]).toBeDefined();
+    expect(JSON.stringify(provider.requests[5]!.body)).toContain(
+      editedInstruction,
+    );
   } finally {
     await closePlanProvider(connection, provider, workspace);
   }

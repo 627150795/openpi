@@ -263,12 +263,12 @@ test("real file evidence, authenticated downloads, edits, refresh and failure st
       .getByRole("button", { name: /关闭预览|Close preview/u })
       .click();
     await expect(page.locator(".session-changes-trigger")).toHaveCount(0);
-    for (const group of await page.locator(".process-sequence > summary").all())
-      await group.click();
-    for (const summary of await page
-      .locator(".tool-evidence-card > summary")
-      .all())
-      await summary.click();
+    for (const group of await page.locator(".process-sequence").all())
+      if ((await group.getAttribute("open")) === null)
+        await group.locator(":scope > summary").press("Enter");
+    for (const card of await page.locator(".tool-evidence-card").all())
+      if ((await card.getAttribute("open")) === null)
+        await card.locator(":scope > summary").press("Enter");
     const readCard = page
       .locator(".tool-evidence-card")
       .filter({ has: page.locator("summary strong", { hasText: "read" }) });
@@ -312,8 +312,14 @@ test("real file evidence, authenticated downloads, edits, refresh and failure st
     ).toHaveCount(0);
     await expect(
       page.getByRole("figure", { name: "Test evidence" }),
-    ).toContainText("1 failed");
-    await expect(page.locator(".evidence-terminal")).toContainText("cancelled");
+    ).toContainText(/1 (?:failed|失败)/u);
+    await expect(page.locator(".evidence-terminal")).toHaveAttribute(
+      "data-state",
+      "cancelled",
+    );
+    await expect(page.locator(".evidence-terminal")).toContainText(
+      /已停止|Stopped/u,
+    );
     expect(
       (await new AxeBuilder({ page }).include(".tool-evidence-card").analyze())
         .violations,

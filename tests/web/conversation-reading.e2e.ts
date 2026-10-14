@@ -97,13 +97,15 @@ test("conversation text stays readable and file links retain their exact target"
         { exact: true },
       ),
     ).toBeInViewport({ ratio: 1 });
-    const link = page.getByRole("button", {
-      name: "session-history.ts",
-      exact: true,
-    });
+    const link = page
+      .locator(".message-row.response .markdown")
+      .getByRole("button", {
+        name: "session-history.ts",
+        exact: true,
+      });
     await expect(link).toHaveAttribute("title", `Open read-only file: ${path}`);
     await expect(link.locator(".artifact-link-path")).toBeHidden();
-    await expect(page.locator(".process-sequence")).toBeVisible();
+    await expect(page.locator(".tool-evidence-card")).toBeVisible();
     expect(
       await conversation.evaluate(
         (element) => element.scrollWidth <= element.clientWidth,

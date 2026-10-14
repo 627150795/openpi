@@ -73,6 +73,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(notice.locator("p")).toHaveCSS("font-size", "16px");
     await expect(notice.locator("svg.lucide-circle-alert")).toBeVisible();
     await expect(notice).toHaveCSS("border-top-style", "solid");
+    await page.evaluate(() => document.fonts.ready);
     const compactBounds = (await compaction.boundingBox())!;
     const retryBounds = (await reconnect.boundingBox())!;
     const errorBounds = (await notice.boundingBox())!;
@@ -338,6 +339,7 @@ for (const touch of [false, true]) {
         await page.mouse.move(0, 0);
         await expect(counts).toHaveCSS("opacity", "0");
         await expect(arrow).toHaveCSS("opacity", "0");
+        await page.evaluate(() => document.fonts.ready);
         const before = await summary.boundingBox();
         await summary.hover();
         await expect(counts).toHaveCSS("opacity", "1");

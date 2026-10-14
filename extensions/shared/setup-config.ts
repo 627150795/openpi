@@ -175,6 +175,9 @@ export const POST_EDIT_COMMAND_MAX_CHARS = 500;
 export const SETUP_CONFIG_CHANGED_CHANNEL = "my-pi-setup:config-changed";
 
 export interface MyPiSetupConfig {
+  readonly codeMode: {
+    readonly enabled: boolean;
+  };
   readonly capabilities: {
     readonly discovery: CapabilityDiscoveryMode;
   };
@@ -223,6 +226,7 @@ export interface MyPiSetupConfig {
 }
 
 export const DEFAULT_SETUP_CONFIG: MyPiSetupConfig = {
+  codeMode: { enabled: true },
   capabilities: { discovery: "explicit" },
   suggestions: { enabled: false },
   webSearch: { enabled: false, modelSupport: [] },
@@ -527,6 +531,7 @@ export function parseSetupConfig(value: unknown): MyPiSetupConfig {
   if (!isRecord(value)) return DEFAULT_SETUP_CONFIG;
 
   const capabilities = isRecord(value.capabilities) ? value.capabilities : {};
+  const codeMode = isRecord(value.codeMode) ? value.codeMode : {};
 
   // `summaries` is the pre-suggestion config key. Read it once as a migration
   // source; every subsequent save writes only the canonical `suggestions` key.
@@ -567,6 +572,7 @@ export function parseSetupConfig(value: unknown): MyPiSetupConfig {
         ? capabilities.discovery
         : "explicit",
     },
+    codeMode: { enabled: codeMode.enabled !== false },
     webSearch: {
       enabled:
         webSearch.enabled === true &&
@@ -712,6 +718,7 @@ const modelShape = {
 const suggestionShape = { enabled: booleanValue, model: modelShape };
 const setupShape: ConfigShape = {
   configVersion: (value) => value === SETUP_CONFIG_VERSION,
+  codeMode: { enabled: booleanValue },
   capabilities: { discovery: isCapabilityDiscoveryMode },
   suggestions: suggestionShape,
   summaries: suggestionShape,
@@ -1463,6 +1470,7 @@ export function formatSetupConfig(config = loadSetupConfig()) {
     ? `on · ${config.ui.footerStyle} · ${formatFooterLines(config.ui.footerLines)}`
     : "off";
   return [
+    `Code Mode default: ${config.codeMode.enabled ? "on" : "off"} · Pi native codemode in CLI and Web parents · native tool selections take precedence · children retain inherited tool limits`,
     `Capability discovery: ${config.capabilities.discovery}`,
     suggestions,
     `Browser control: ${config.browser.control ? "on" : "off"} · default ${config.browser.defaultBrowser} · embedded ${config.browser.embedded ? "allowed" : "blocked"} · external ${config.browser.externalBrowsers.join(", ") || "none"}`,

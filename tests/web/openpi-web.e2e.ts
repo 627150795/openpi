@@ -14,6 +14,7 @@ import {
 import { DEFAULT_SETUP_CONFIG } from "../../extensions/shared/setup-config.ts";
 import type { WebSnapshot } from "../../web/protocol/types.ts";
 import { projectWebSetupConfig } from "../../web/runtime/settings-catalog.ts";
+import type { WebProviderAuthProjection } from "../../web/runtime/types.ts";
 import {
   installThinkingFixture,
   MOCK_SESSION_ID,
@@ -791,7 +792,9 @@ test("left divider still expands after the workbar takes the main view", async (
   await save;
   await workbar.getByRole("button", { name: "返回聊天", exact: true }).click();
   await expect(right).toHaveCount(1);
-  await workbar.getByRole("button", { name: "关闭", exact: true }).click();
+  await workbar
+    .getByRole("button", { name: "收起工具栏", exact: true })
+    .click();
   await expect(sidebar).toHaveCSS("width", "300px");
   await page.reload();
   await expect(sidebar).toHaveCSS("width", "300px");
@@ -1154,14 +1157,13 @@ test("terminal launcher creates independent real workspace shells and closes onl
     .poll(() => terminal.locator(".xterm-rows").textContent())
     .toContain("OPENPI_WEB_TERMINAL_OK");
   await workbar.locator(".workbar-add-tab").click();
-  const launcher = workbar.getByRole("region", { name: "打开工具" });
+  const launcher = page.getByRole("menu");
   await expect(launcher).toBeVisible();
-  await expect(launcher.getByRole("button")).toHaveCount(5);
-  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(launcher.getByRole("menuitem")).toHaveCount(5);
   await page.screenshot({
     path: testInfo.outputPath("multi-terminal-launcher.png"),
   });
-  await launcher.getByRole("button", { name: /^终端/u }).click();
+  await launcher.getByRole("menuitem", { name: /^新建终端/u }).click();
   const second = workbar.locator(
     '[data-tab^="terminal:"] .interactive-terminal',
   );
@@ -1217,7 +1219,7 @@ test("terminal launcher creates independent real workspace shells and closes onl
   });
   await workbar
     .getByRole("toolbar")
-    .getByRole("button", { name: "关闭 开发服务", exact: true })
+    .getByRole("button", { name: "关闭 开发服务 并结束进程", exact: true })
     .click();
   await expect(workbar.locator('[data-tool="terminal"]')).toHaveCount(1);
   await expect(second).toBeVisible();
@@ -1364,9 +1366,9 @@ test("native iframe browser supports input, selection, scrolling and independent
     await workbar
       .getByRole("button", { name: "打开工具", exact: true })
       .click();
-    await workbar
-      .locator(".workbar-launcher")
-      .getByRole("button", { name: /^文件/u })
+    await page
+      .getByRole("menu")
+      .getByRole("menuitem", { name: /^文件/u })
       .click();
     await expect(workbar.locator('div[data-tool="browser"]')).toHaveAttribute(
       "inert",
@@ -1408,7 +1410,9 @@ test("native iframe browser supports input, selection, scrolling and independent
       "src",
       `${origin}/toolbar`,
     );
-    await workbar.getByRole("button", { name: "关闭", exact: true }).click();
+    await workbar
+      .getByRole("button", { name: "收起工具栏", exact: true })
+      .click();
     await expect(page.locator(".workbar-panel iframe")).toHaveCount(0);
     await page
       .locator('button.task-tools-trigger[aria-label="打开工具"]')
@@ -2663,12 +2667,24 @@ test("inspects session-scoped runtime and terminal details on desktop and mobile
                 refreshRequired: false,
               }
             : endpoint === "providers/auth-status"
-              ? {
+              ? ({
                   providers: [
-                    { id: "example", name: "Example", configured: true },
+                    {
+                      id: "example",
+                      name: "Example",
+                      configured: true,
+                      authMethods: ["api_key"],
+                      subscription: false,
+                      nameTruncated: false,
+                    },
                   ],
-                  truncation: { truncated: false },
-                }
+                  truncation: {
+                    truncated: false,
+                    providersOmitted: 0,
+                    namesTruncated: 0,
+                    maxProviders: 200,
+                  },
+                } satisfies WebProviderAuthProjection)
               : {
                   sessionId,
                   detail: {

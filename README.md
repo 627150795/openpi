@@ -478,7 +478,7 @@ Web 常规设置提供 Subagent、Bash 和 Write/Edit 的完整／紧凑显示�
 
 <!-- config-contract: codeMode.enabled webSearch.enabled webSearch.modelSupport capabilities.discovery suggestions.enabled suggestions.model workflows.concurrency workflows.maxAgentCalls childExecutions childExecutions.maxActive browser.control browser.embedded browser.defaultBrowser browser.externalBrowsers ui.webTheme ui.webChatWidth ui.webSidebarWidth ui.webAuxiliaryWidth ui.webChatFontSize ui.webExpandThinking ui.webPinnedSort ui.showHeader ui.customFooter ui.footerStyle ui.footerLines ui.subagentResultDisplay ui.bashToolDisplay ui.fileMutationDisplay postEdit.command subagents.roleModels -->
 
-浏览器模型控制默认关闭。打开 Web「设置 → 浏览器」，可点击完成安装引导、连接检查、总开关、逐个浏览器授权和默认浏览器选择；也可用 `/openpi-setup` 自然语言设置 `browser_control`、`browser_embedded`、`browser_default`、`browser_external`。默认值依次为 `false`、`true`、`embedded`、`[]`：总开关关闭时所有模型浏览器操作都被拒绝，普通 iframe 浏览不受影响。设置中的授权变更通过同一配置写入器和 Pi 原生扩展事件生效，无需一次模型调用。
+浏览器模型控制默认关闭。Web「设置 → 浏览器」提供安装引导和连接检查；总开关、逐个浏览器授权及默认浏览器选择会提交 `/openpi-setup` 请求，由当前模型在设置流程中通过配置工具保存。也可直接用 `/openpi-setup` 设置 `browser_control`、`browser_embedded`、`browser_default`、`browser_external`。默认值依次为 `false`、`true`、`embedded`、`[]`：总开关关闭时所有模型浏览器操作都被拒绝，普通 iframe 浏览不受影响。请求受理不代表配置已保存；控件以实际持久化状态为准。
 
 普通浏览器可选择 `chrome`、`edge`、`brave`、`chromium`、`safari`、`firefox`。安装引导可打开独立窗口，在支持 Document Picture-in-Picture 的浏览器中浮动显示，其他浏览器使用普通弹窗。步骤中的圈选是操作示意；浏览器管理页仍由浏览器自身管理。Safari 26+（macOS）和 Firefox 128+ 使用随包提供的兼容扩展控制普通标签，内置控制仍需要 Chromium 系浏览器。开发安装为临时扩展，重启后需要重新加载；正式一键安装需要另行发布签名扩展。
 

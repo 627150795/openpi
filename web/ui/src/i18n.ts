@@ -762,9 +762,11 @@ const resources = {
       browserSettingsIntro:
         "Let OpenPI read pages, click, type and take screenshots.",
       browserControl: "Browser control",
-      browserControlHint: "Turn off to stop the browser tool’s access.",
+      browserControlHint:
+        "Requests a setup change. Access changes after the configuration is saved.",
       browserDefault: "Default browser",
-      browserDefaultHint: "Used when you don’t name a browser.",
+      browserDefaultHint:
+        "Requests a setup change for the browser used when none is named.",
       browserEmbedded: "OpenPI browser",
       browserAllowedTitle: "Allowed browsers",
       browserOffHint: "Your choices take effect when browser control is on.",
@@ -2463,9 +2465,9 @@ const resources = {
         "帮我更换已安装 Pi Web Access 插件的搜索服务。介绍可用服务与权限，保留无关偏好，密钥留在搜索插件中，不要自动重新加载。",
       browserSettingsIntro: "让 OpenPI 阅读网页、点击、输入和截图。",
       browserControl: "浏览器控制",
-      browserControlHint: "关闭后，停止浏览器工具的访问。",
+      browserControlHint: "提交设置变更请求，保存配置后生效。",
       browserDefault: "默认浏览器",
-      browserDefaultHint: "没有指定浏览器时使用。",
+      browserDefaultHint: "提交设置变更请求，选择未指定浏览器时使用的默认项。",
       browserEmbedded: "OpenPI 内置浏览器",
       browserAllowedTitle: "允许使用的浏览器",
       browserOffHint: "下方选择将在开启浏览器控制后生效。",

@@ -35,7 +35,7 @@ const hostAgentDirectory = await mkdtemp(join(tmpdir(), "openpi-host-agent-"));
 const previousHostAgentDirectory = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = hostAgentDirectory;
 const { WebHost } = await import("../../web/host/web-host.ts");
-const { loadSetupConfig, formatSetupConfig } = await import(
+const { loadSetupConfig, formatSetupConfig, updateSetupConfig } = await import(
   "../../extensions/shared/setup-config.ts"
 );
 after(async () => {
@@ -45,7 +45,7 @@ after(async () => {
   await rm(hostAgentDirectory, { recursive: true, force: true });
 });
 
-test("browser settings hot-apply without a model turn and native credentials cannot authorize Web APIs", async () => {
+test("browser preferences require setup and native credentials cannot authorize Web APIs", async () => {
   const path = join(hostAgentDirectory, "my-pi-setup.json");
   const before = await readFile(path, "utf8").catch(() => undefined);
   const cwd = await mkdtemp(join(tmpdir(), "openpi-browser-host-"));
@@ -106,11 +106,23 @@ test("browser settings hot-apply without a model turn and native credentials can
       defaultBrowser: "chrome",
       externalBrowsers: ["chrome"],
     });
-    assert.equal(saved.status, 200);
-    assert.equal((await saved.json()).config.defaultBrowser, "chrome");
-    assert.equal(loadSetupConfig().browser.control, true);
-    assert.equal(applied, 1);
+    assert.equal(saved.status, 403);
+    assert.match((await saved.json()).error, /\/openpi-setup/);
+    assert.equal(loadSetupConfig().browser.control, false);
+    assert.equal(loadSetupConfig().browser.defaultBrowser, "embedded");
+    assert.deepEqual(loadSetupConfig().browser.externalBrowsers, []);
+    assert.equal(applied, 0);
     assert.equal(prompted, 0);
+    // Simulate the canonical setup writer for the transport authorization checks.
+    await updateSetupConfig((current) => ({
+      ...current,
+      browser: {
+        ...current.browser,
+        control: true,
+        defaultBrowser: "chrome",
+        externalBrowsers: ["chrome"],
+      },
+    }));
     const identity = {
       browser: "chrome",
       profileId: controller,
@@ -184,10 +196,16 @@ test("browser settings hot-apply without a model turn and native credentials can
       403,
     );
     const revoked = await post("/api/settings/browser", { control: false });
-    assert.equal(revoked.status, 200);
+    assert.equal(revoked.status, 403);
+    assert.equal(loadSetupConfig().browser.control, true);
+    await updateSetupConfig((current) => ({
+      ...current,
+      browser: { ...current.browser, control: false },
+    }));
+    host.publish("settings_changed", {});
     const polling = await post(route, { pages: [] }, scoped);
     assert.equal((await polling.json()).enabled, false);
-    assert.equal(applied, 2);
+    assert.equal(applied, 0);
     assert.equal(prompted, 0);
   } finally {
     await host.stop();

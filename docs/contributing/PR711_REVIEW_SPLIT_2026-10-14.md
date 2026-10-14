@@ -53,3 +53,63 @@ Browser acceptance and remote CI are tracked separately in #788. A custom-port f
 Current CI rebuilds Web and rejects stale committed `web/dist`; source archives also depend on those assets. Excluding generated output from feature diffs therefore makes the new source-only Drafts unsuitable for independent landing under that guard. Maintainers must synchronize assets with the corresponding source at landing, or review a separate build/distribution change. The split does not weaken CI or select that policy for them. #818 keeps this prerequisite explicit.
 
 Review the dependency chain in order, resolve browser overlap and observed CI failures, and confirm source/asset synchronization on the actual landing head. The original #711 and the earlier Draft heads remain comparison sources, not evidence that every extracted intermediate head is mergeable.
+
+## Author-requested CI and conflict repair — 2026-10-14
+
+This amendment supersedes the operational instructions above about preserving
+Draft status, retaining alternatives, and delaying generated-asset synchronization.
+The frozen source identities and historical validation receipts above remain
+unchanged. Tracking and the latest exact-head CI audit are in [#788](https://github.com/openpi-dev/openpi/issues/788).
+
+The author subsequently requested that every active split resolve conflicts, pass
+its own CI, and become Ready for review. Duplicate alternatives #803–#806 were
+closed, with their branches retained. #720 was also closed as superseded by #809
+plus #817; its head `6168bdf086ac1ab61501a09509cc2c61302d547e` is an ancestor
+of frozen #711, so this retires an overlapping PR rather than dropping unique work.
+
+Current `main` at `bcf74cad8a576b0e765d0636bdc2dbd5615d8a69` was integrated
+at the chain's root and propagated forward. Updates preserve the published topic
+heads as ancestors. Where source conflicts arise, both the topic's behavior and
+accepted upstream fixes must be retained. In particular, sidebar fork replay must
+coexist with the upstream exact-child confirmation race protection.
+
+Each affected feature now carries generated Web output matching its own source.
+This satisfies the existing committed-build and source-install contract without
+weakening the freshness gate. Long research notes remain in #825. The separate
+generated companion #824 becomes redundant once its output is covered by these
+feature commits; it is not an additional feature to merge.
+
+The repair retains regression coverage rather than relaxing time limits: Plan
+fixtures retire their exact native turn before restoring configuration and closing
+the provider; reading fixtures distinguish an older anchor from explicit bottom
+following; workbar/menu fixtures use the corresponding topic's actual controls;
+provider login waits for asynchronous control readiness; Windows process-heavy
+workflow fixtures use the existing isolated group. Upstream #726 seeds the bounded
+workbar store instead of repeatedly rendering 31 identical setup interactions.
+No new product abstraction, permission path, or testing framework is introduced.
+
+### Review and landing order
+
+`#802 → #807 → #808 → #809 → #810 → #812 → #815 → #816 → #817 → #819 → #820 → #821 → #822 → #823 → #825`
+
+- Review **Files changed against each declared base**, so the diff shows that
+  topic. Read browser #809 with policy #817, and search #810 with hardening #812,
+  before approving the final behavior. #825 is documentation only.
+- Ready status is earned per published head: its full CI must pass and GitHub must
+  report no conflict with its current base. A passing descendant cannot substitute
+  for a failing parent. #788 records heads and CI run links rather than inferring
+  readiness from this document.
+- Land parent before child. A child currently targets a predecessor branch;
+  **do not merge it into that unmerged predecessor**. After the parent lands,
+  prepare the next topic against current `main`, inspect the remaining diff,
+  synchronize that source's output, and rerun CI on the landing head.
+- Follow the [linear-history guide](linear-git-history.md) when landing. Squash or
+  rebase changes parent identities, so merely changing a child's base may retain
+  duplicate ancestor changes; refresh the dependent history before merge. An
+  internal conflict-resolution merge is development history, not an instruction
+  to create merge commits on `main` or bypass branch protection.
+
+The combined feature scope remains #711 with the intentional #755 native-search
+hardening, setup-only browser policy, accepted upstream fixes, and scoped CI
+repairs. The original #711 is a frozen comparison source, not a further landing
+step. No PR is merged by the splitting or readiness work itself.

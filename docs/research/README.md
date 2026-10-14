@@ -8,6 +8,10 @@ Research records preserve sourced investigation and distinguish observations, in
 
 ## Draft investigations
 
+- [`WEB_TOOL_GROUP_DETAILS_2026-10-13.md`](WEB_TOOL_GROUP_DETAILS_2026-10-13.md) — 工具组摘要、图标、对齐和动态的 Codex 安装包 / PR #711 状态对照；保留 OpenPI 分组的可选精修，原生 Codex 动态仍未验证（[#597](https://github.com/openpi-dev/openpi/issues/597)、[PR #711](https://github.com/openpi-dev/openpi/pull/711)）。
+- [`WEB_CODEX_SIDEBAR_REWORK_2026-10-12.md`](WEB_CODEX_SIDEBAR_REWORK_2026-10-12.md) — Codex 侧栏多轮返工的原因、REA 证据边界、视觉验收遗漏与追加差距审计（[#597](https://github.com/openpi-dev/openpi/issues/597)、[PR #711](https://github.com/openpi-dev/openpi/pull/711)）。
+- [`WEB_SUBAGENTS_2026-10-13.md`](WEB_SUBAGENTS_2026-10-13.md) — Codex local subagent activity, parent/child lifecycle, state matrix and Pi-native Web parity; native Codex runtime observation remains unavailable ([#597](https://github.com/openpi-dev/openpi/issues/597), [PR #711](https://github.com/openpi-dev/openpi/pull/711)).
+
 - [`WORKFLOW_FULLSCREEN_IMAGE_OWNER_2026-10-04.md`](WORKFLOW_FULLSCREEN_IMAGE_OWNER_2026-10-04.md) — Pi-owned fullscreen image suppression candidate and isolated protocol evidence; OpenPI adoption deferred pending upstream review and terminal acceptance ([#657](https://github.com/openpi-dev/openpi/issues/657)).
 
 - [`WEB_CONTINUOUS_USE_2026-10-02.md`](WEB_CONTINUOUS_USE_2026-10-02.md) — 旧消息原生重跑、刷新阅读恢复、文件整理、多终端与可操作常规设置的所有者、验证和平台边界（[#641](https://github.com/openpi-dev/openpi/issues/641)，后续于 [#639](https://github.com/openpi-dev/openpi/issues/639) 与已合并 [PR #640](https://github.com/openpi-dev/openpi/pull/640)）。
@@ -15,6 +19,19 @@ Research records preserve sourced investigation and distinguish observations, in
 - [`WEB_INTERACTION_COMPARISON_2026-09-30.md`](WEB_INTERACTION_COMPARISON_2026-09-30.md) — PR #598 竞品截图对照与后续 Web 迭代：基础交互、普通附件、原始子代理结果、第三栏、真实 Luna 文件读取；追加现场演示、工具菜单焦点、Codex / Maka 历史分页与导航、两小时阅读连续性、发布整合及浏览器输入/滚动边界/Windows 定位，保留独立冻结、失败、消融和未验证边界（[#639](https://github.com/openpi-dev/openpi/issues/639)、[PR #640](https://github.com/openpi-dev/openpi/pull/640)、[#597](https://github.com/openpi-dev/openpi/issues/597)、[PR #598](https://github.com/openpi-dev/openpi/pull/598)）。
 
 ## Validated investigations
+
+- [`HARNESS_LATENCY_OWNERSHIP_2026-10-14.md`](HARNESS_LATENCY_OWNERSHIP_2026-10-14.md) — frozen Codex, Claude reconstruction, Maka and Pi source comparison; existing batching/output/background/cache mechanisms, Pi-owned lifecycle gaps and gateway incident boundaries; no comparative speedup claimed ([#763](https://github.com/openpi-dev/openpi/issues/763), [PR #711](https://github.com/openpi-dev/openpi/pull/711)).
+
+- [`WEB_DOCUMENT_FEEDBACK_2026-10-13.md`](WEB_DOCUMENT_FEEDBACK_2026-10-13.md) — document-reported timing, retry, conversation continuation and typography symptoms; current Codex artifact evidence, Pi-native fixes and local validation ([#763](https://github.com/openpi-dev/openpi/issues/763), [PR #711](https://github.com/openpi-dev/openpi/pull/711)).
+
+- [`CODEX_DEFAULT_FONT_2026-10-13.md`](CODEX_DEFAULT_FONT_2026-10-13.md) — shipped Codex font defaults, bounded REA evidence, actual Mac glyphs, legacy preference compatibility and browser validation ([#767](https://github.com/openpi-dev/openpi/issues/767), [PR #711](https://github.com/openpi-dev/openpi/pull/711)).
+- [`CODEX_CHAT_TYPOGRAPHY_2026-10-14.md`](CODEX_CHAT_TYPOGRAPHY_2026-10-14.md) — assistant text metrics, grouped tool spacing, native font fallbacks and container-aware before/after comparison ([#767](https://github.com/openpi-dev/openpi/issues/767), [PR #711](https://github.com/openpi-dev/openpi/pull/711)).
+
+- [`PI_1_2_COMPATIBILITY_2026-10-13.md`](PI_1_2_COMPATIBILITY_2026-10-13.md) — managed Web host dependency resolution, Pi 1.2.0 custom runs, cancellation, Plan admission and terminal cursor compatibility, with isolated package/native/browser evidence ([#765](https://github.com/openpi-dev/openpi/issues/765)).
+
+- [`CODEMODE_DEFAULT_2026-10-13.md`](CODEMODE_DEFAULT_2026-10-13.md) — default native Code Mode activation in CLI/Web, configuration and authority boundaries, real entry receipts and ablations; original-task speedup remains unmeasured ([#763](https://github.com/openpi-dev/openpi/issues/763), [PR #711](https://github.com/openpi-dev/openpi/pull/711)).
+
+- [`WEB_CONFIGURATION_2026-10-13.md`](WEB_CONFIGURATION_2026-10-13.md) — Codex shipped Configuration and same-version app-server traces, frozen state matrix, Pi-native preferences and local browser/request validation with ablation; Codex runtime and remote-provider acceptance remain unverified ([#754](https://github.com/openpi-dev/openpi/issues/754), [PR #711](https://github.com/openpi-dev/openpi/pull/711)).
 
 - [`WEB_SEARCH_INTEGRATION_2026-10-10.md`](WEB_SEARCH_INTEGRATION_2026-10-10.md) — optional package comparison and subsequent current-Session-model native search, default-off setup, original-image replay, protocol/UI evidence, and ablation; provider-wide search quality remains unmeasured ([#169](https://github.com/openpi-dev/openpi/issues/169), [PR #711](https://github.com/openpi-dev/openpi/pull/711)).
 

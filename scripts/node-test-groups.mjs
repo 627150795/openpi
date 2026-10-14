@@ -23,6 +23,13 @@ const workflowExecutionTest = resolve(
   "workflows",
   "execute.e2e.test.ts",
 );
+// These real Node subprocesses also use a one-second execution watchdog.
+const gitInfoProcessTest = resolve(
+  "tests",
+  "extensions",
+  "git-info",
+  "process.test.ts",
+);
 
 function isBackgroundTerminalsTest(file) {
   const relativePath = relative(backgroundTerminalsRoot, file);
@@ -47,7 +54,8 @@ export function partitionNodeTestsByPlatform(
   for (const file of files) {
     (isBackgroundTerminalsTest(file) ||
     file === setupIntegrationTest ||
-    file === workflowExecutionTest
+    file === workflowExecutionTest ||
+    file === gitInfoProcessTest
       ? serial
       : parallel
     ).push(file);

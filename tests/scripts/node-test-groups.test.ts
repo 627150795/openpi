@@ -23,6 +23,10 @@ const setupIntegrationTest = resolve(
   "tests/extensions/setup/integration.test.ts",
 );
 const setupUnitTest = resolve("tests/extensions/setup/index.test.ts");
+const workflowExecutionTest = resolve(
+  "tests/extensions/workflows/execute.e2e.test.ts",
+);
+const workflowUnitTest = resolve("tests/extensions/workflows/model.test.ts");
 const unrelatedTest = resolve("tests", "test-discovery.test.ts");
 
 test("Windows isolates background-terminal tests from other Node files", () => {
@@ -54,7 +58,13 @@ test("Windows isolates the real Pi subprocess but keeps setup unit tests paralle
 test("non-Windows keeps all Node files in the parallel group", () => {
   assert.deepEqual(
     partitionNodeTestsByPlatform(
-      [backgroundTest, unrelatedTest, backgroundUnitTest, setupIntegrationTest],
+      [
+        backgroundTest,
+        unrelatedTest,
+        backgroundUnitTest,
+        setupIntegrationTest,
+        workflowExecutionTest,
+      ],
       "linux",
     ),
     {
@@ -63,8 +73,22 @@ test("non-Windows keeps all Node files in the parallel group", () => {
         unrelatedTest,
         backgroundUnitTest,
         setupIntegrationTest,
+        workflowExecutionTest,
       ],
       serial: [],
+    },
+  );
+});
+
+test("Windows isolates sandbox execution but keeps workflow unit tests parallel", () => {
+  assert.deepEqual(
+    partitionNodeTestsByPlatform(
+      [workflowUnitTest, workflowExecutionTest, unrelatedTest],
+      "win32",
+    ),
+    {
+      parallel: [workflowUnitTest, unrelatedTest],
+      serial: [workflowExecutionTest],
     },
   );
 });

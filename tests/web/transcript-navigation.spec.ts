@@ -1017,6 +1017,7 @@ it("returns keyboard focus to the latest native message when the latest button d
     scrollHeight: { get: () => 900 },
   });
   viewport.scrollTo = vi.fn();
+  fireEvent.wheel(viewport, { deltaY: -100 });
   viewport.scrollTop = 100;
   fireEvent.scroll(viewport);
   const jump = screen.getByRole("button", { name: i18n.t("jumpToLatest") });
@@ -1110,6 +1111,7 @@ it.each(["closed process", "folded turn"])(
         scrollHeight: { get: () => 900 },
       });
       viewport.scrollTo = vi.fn();
+      fireEvent.wheel(viewport, { deltaY: -100 });
       viewport.scrollTop = 100;
       fireEvent.scroll(viewport);
       await act(async () =>
@@ -1160,6 +1162,7 @@ it("falls back to the conversation when its only native rows are inside a closed
     scrollHeight: { get: () => 900 },
   });
   viewport.scrollTo = vi.fn();
+  fireEvent.wheel(viewport, { deltaY: -100 });
   viewport.scrollTop = 100;
   fireEvent.scroll(viewport);
   await act(async () =>

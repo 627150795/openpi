@@ -6,6 +6,7 @@
 - Complete source candidate: `feb079a853ce6659a748e2645d842dc825ce295f`; generated companion: `9e3c3a8c443e8da00c46195f9f9fe67dded15a9a`.
 - Tracking: [#788](https://github.com/openpi-dev/openpi/issues/788); source/artifact landing prerequisite: [#818](https://github.com/openpi-dev/openpi/issues/818).
 - Supersedes no accepted Decision or historical research conclusion.
+- Latest operational guidance: [author-requested CI/conflict repair and ordered landing](#author-requested-ci-and-conflict-repair--2026-10-14). Earlier sections retain the initial split's historical boundaries.
 
 ## Review boundaries
 

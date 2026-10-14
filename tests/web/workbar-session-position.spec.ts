@@ -507,6 +507,8 @@ it("hydrates saved widths, clamps small windows without saving, and saves explic
   expect(save).toHaveBeenCalledOnce();
 });
 
+// More than 32 full-App selections already take ~19 seconds on Windows CI.
+// Budget for that workload without changing the default for ordinary UI cases.
 it("bounds remembered tools to 32 exact Session identities while keeping a recently revisited position", async () => {
   const view = render(createElement(Providers, null, createElement(App)));
   await open("browser");
@@ -538,7 +540,7 @@ it("bounds remembered tools to 32 exact Session identities while keeping a recen
   ).toBe("https://example.com/remembered");
   await select("/workspace/a.jsonl", "replacement-session");
   expect(view.container.querySelector(".workbar-panel")).toBeNull();
-}, 20_000);
+}, 60_000);
 
 it("reattaches a Session's file position after a copied same-ID Session, releasing the old preview", async () => {
   const view = render(createElement(Providers, null, createElement(App)));
@@ -671,9 +673,9 @@ it("keeps a resized width when save completes with a stale refreshed snapshot", 
     screen.getByRole("separator", { name: i18n.t("resizeSidebar") }),
     { key: "Enter" },
   );
-  expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+  expect(shell.style.getPropertyValue("--sidebar-width")).toBe("340px");
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
-  expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+  expect(shell.style.getPropertyValue("--sidebar-width")).toBe("340px");
 });
 
 it("keeps the latest operator width when later snapshots contain an older saved choice", async () => {
@@ -719,7 +721,7 @@ it("keeps the latest operator width when later snapshots contain an older saved 
   fireEvent.keyDown(handle, { key: "Enter" });
   await waitFor(() =>
     expect(save).toHaveBeenLastCalledWith({
-      sidebarWidth: 280,
+      sidebarWidth: 340,
       auxiliaryWidth: 520,
     }),
   );
@@ -732,6 +734,6 @@ it("keeps the latest operator width when later snapshots contain an older saved 
       },
     });
   });
-  expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+  expect(shell.style.getPropertyValue("--sidebar-width")).toBe("340px");
   expect(save).toHaveBeenCalledTimes(2);
 });

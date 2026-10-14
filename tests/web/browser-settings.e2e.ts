@@ -269,7 +269,7 @@ test("browser setup preserves the settings shell, works during a turn and explai
   ).toBeVisible();
   await expect(
     panel.getByRole("switch", { name: "浏览器控制", exact: true }),
-  ).toBeEnabled();
+  ).toBeDisabled();
   await dialog.screenshot({
     path: info.outputPath("browser-settings-light.png"),
   });

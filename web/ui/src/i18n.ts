@@ -1009,7 +1009,7 @@ const resources = {
       appearanceBackground: "Background",
       appearanceForeground: "Foreground",
       appearanceFont: "Font",
-      appearanceFont_system: "System",
+      appearanceFont_codex: "Codex default",
       appearanceFont_sans: "Sans serif",
       appearanceFont_serif: "Serif",
       appearanceFont_mono: "Monospace",
@@ -1562,7 +1562,7 @@ const resources = {
         "Switch to this session to use interactive tools.",
       activateViewedSession: "Switch to this session",
       activateViewedSessionHint:
-        "Switch to this session to continue the conversation.",
+        "Send a message to continue this conversation.",
       addWorkspace: "Add workspace",
       addWorkspaceMenu: "Add workspace...",
       archiveConversation: "Archive conversation",
@@ -1961,6 +1961,13 @@ const resources = {
       toolRequestedFile: "File:",
       toolWorkspace: "Workspace",
       toolRawEvidence: "Arguments and original result",
+      toolCodemodeDetails: "Script and original result",
+      toolNestedOutputMissing:
+        "This session records the call and its status, but not the nested tool output.",
+      toolNestedArgumentsMissing:
+        "This session omits the full arguments and nested tool output.",
+      toolNestedIncomplete:
+        "The nested-call record is incomplete; some calls, arguments or final states are unavailable.",
       toolPartialEvidence:
         "Partial output: a byte, line or item limit was reached. The original result may also be truncated.",
       toolFileChange_created: "File created",
@@ -2908,7 +2915,7 @@ const resources = {
       appearanceBackground: "背景",
       appearanceForeground: "前景",
       appearanceFont: "字体",
-      appearanceFont_system: "系统",
+      appearanceFont_codex: "Codex 默认",
       appearanceFont_sans: "无衬线",
       appearanceFont_serif: "衬线",
       appearanceFont_mono: "等宽",
@@ -3393,7 +3400,7 @@ const resources = {
       observedSessionTools: "{{count}} 个正在执行的工具",
       toolsRequireCurrentSession: "切换到此会话后可使用交互工具。",
       activateViewedSession: "切换到此会话",
-      activateViewedSessionHint: "切换到此会话后可继续对话。",
+      activateViewedSessionHint: "发送消息即可继续此会话。",
       acceptedHint: "OpenPI Web 已接收消息。",
       promptAdmissionUnknown: "无法确认上次发送的消息是否已被接收。",
       promptAdmissionUnknownDetail:
@@ -3771,6 +3778,12 @@ const resources = {
       toolRequestedFile: "文件：",
       toolWorkspace: "工作区",
       toolRawEvidence: "参数与原始结果",
+      toolCodemodeDetails: "脚本与原始结果",
+      toolNestedOutputMissing:
+        "会话记录保留了调用和状态，未保存此子工具的输出。",
+      toolNestedArgumentsMissing: "会话记录未保留完整参数和此子工具的输出。",
+      toolNestedIncomplete:
+        "子调用记录不完整，部分调用、参数或最终状态不可用。",
       toolPartialEvidence:
         "输出未完整显示：已达到字节、行数或条目上限。原始结果也可能被截断。",
       toolFileChange_created: "已创建文件",

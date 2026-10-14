@@ -510,9 +510,10 @@ it("bounds remembered tools to 32 exact Session identities while keeping a recen
       target: { value: "https://example.com/remembered" },
     },
   );
+  // The other positions need identity/eviction coverage, not 31 browser trees.
   for (let index = 1; index < 32; index++) {
     await select(`/workspace/cache-${index}.jsonl`, `cache-${index}`);
-    await open("browser");
+    await open("review");
   }
   await select("/workspace/a.jsonl");
   expect(
@@ -521,7 +522,7 @@ it("bounds remembered tools to 32 exact Session identities while keeping a recen
     }).value,
   ).toBe("https://example.com/remembered");
   await select("/workspace/cache-32.jsonl", "cache-32");
-  await open("browser");
+  await open("review");
   await select("/workspace/cache-1.jsonl", "cache-1");
   expect(view.container.querySelector(".workbar-panel")).toBeNull();
   await select("/workspace/a.jsonl");

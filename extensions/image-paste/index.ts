@@ -531,6 +531,7 @@ export default function imagePaste(
   );
 
   pi.on("session_start", (_event, ctx) => {
+    attachments.clearDraft();
     installImagePasteEditor(pi, ctx, attachments);
   });
 

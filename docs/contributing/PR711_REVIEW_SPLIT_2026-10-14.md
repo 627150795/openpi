@@ -84,7 +84,8 @@ fixtures retire their exact native turn before restoring configuration and closi
 the provider; reading fixtures distinguish an older anchor from explicit bottom
 following; workbar/menu fixtures use the corresponding topic's actual controls;
 provider login waits for asynchronous control readiness; Windows process-heavy
-workflow fixtures use the existing isolated group. Upstream #726 seeds the bounded
+workflow and short-watchdog git-info fixtures use the existing isolated group.
+Upstream #726 seeds the bounded
 workbar store instead of repeatedly rendering 31 identical setup interactions.
 No new product abstraction, permission path, or testing framework is introduced.
 

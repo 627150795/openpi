@@ -27,8 +27,8 @@ import {
   webCapabilityDetail,
   webCapabilitySnapshot,
 } from "../../extensions/shared/web-observer-registry.ts";
-import { isDetailDisplay, isFooterStyle, isWebTheme, loadSetupConfig, updateSetupConfig } from "../../extensions/shared/setup-config.ts";
-import { projectWebSetupConfig } from "../runtime/settings-catalog.ts";
+import { inspectSetupConfig, isDetailDisplay, isFooterStyle, isHiddenThinkingLevels, isWebAppearancePreference, isWebTheme, loadSetupConfig, updateSetupConfig } from "../../extensions/shared/setup-config.ts";
+import { projectWebSetupConfig, projectWebSetupInspection } from "../runtime/settings-catalog.ts";
 import { validModelConfiguration, validProviderConfigurationChange } from "../runtime/model-configuration.ts";
 import { projectPlanControl } from "../../extensions/plan-mode/control.ts";
 import { projectSetupOutcome } from "../protocol/setup-outcome.ts";
@@ -1262,10 +1262,11 @@ export class WebHost {
     if (url.pathname === "/api/settings/preferences" && request.method === "POST") {
       const body = await this.readJson(request);
       const keys = Object.keys(body);
-      const { theme, chatWidth, sidebarWidth, auxiliaryWidth, chatFontSize, expandThinking, pinnedSort, subagentResultDisplay, bashToolDisplay, fileMutationDisplay, customFooter, footerStyle } = body;
+      const { theme, appearance, chatWidth, sidebarWidth, auxiliaryWidth, chatFontSize, expandThinking, hiddenThinkingLevels, pinnedSort, subagentResultDisplay, bashToolDisplay, fileMutationDisplay, customFooter, footerStyle } = body;
       // Browser appearance is package-wide and independent of agent execution.
       // Keep this surface restricted to presentation fields, including on Plan turns.
-      if (!keys.length || keys.some((key) => !["theme", "chatWidth", "sidebarWidth", "auxiliaryWidth", "chatFontSize", "expandThinking", "pinnedSort", "subagentResultDisplay", "bashToolDisplay", "fileMutationDisplay", "customFooter", "footerStyle"].includes(key)) ||
+      if (!keys.length || keys.some((key) => !["theme", "appearance", "chatWidth", "sidebarWidth", "auxiliaryWidth", "chatFontSize", "expandThinking", "hiddenThinkingLevels", "pinnedSort", "subagentResultDisplay", "bashToolDisplay", "fileMutationDisplay", "customFooter", "footerStyle"].includes(key)) ||
+        (hiddenThinkingLevels !== undefined && !isHiddenThinkingLevels(hiddenThinkingLevels)) ||
         (subagentResultDisplay !== undefined && !isDetailDisplay(subagentResultDisplay)) ||
         (bashToolDisplay !== undefined && !isDetailDisplay(bashToolDisplay)) ||
         (fileMutationDisplay !== undefined && !isDetailDisplay(fileMutationDisplay)) ||
@@ -1273,6 +1274,7 @@ export class WebHost {
         (footerStyle !== undefined && !isFooterStyle(footerStyle)) ||
         (pinnedSort !== undefined && pinnedSort !== "manual" && pinnedSort !== "updated") ||
         (theme !== undefined && !isWebTheme(theme)) ||
+        (appearance !== undefined && !isWebAppearancePreference(appearance)) ||
         (chatWidth !== undefined && (typeof chatWidth !== "number" || !Number.isInteger(chatWidth) || chatWidth < 820 || chatWidth > 2000)) ||
         (sidebarWidth !== undefined && (typeof sidebarWidth !== "number" || !Number.isInteger(sidebarWidth) || sidebarWidth < 220 || sidebarWidth > 420)) ||
         (auxiliaryWidth !== undefined && (typeof auxiliaryWidth !== "number" || !Number.isInteger(auxiliaryWidth) || auxiliaryWidth < 360 || auxiliaryWidth > 720)) ||
@@ -1286,11 +1288,13 @@ export class WebHost {
           ui: {
             ...current.ui,
             ...(theme !== undefined ? { webTheme: theme } : {}),
+            ...(isWebAppearancePreference(appearance) ? { webAppearance: appearance } : {}),
             ...(chatWidth !== undefined ? { webChatWidth: chatWidth } : {}),
             ...(sidebarWidth !== undefined ? { webSidebarWidth: sidebarWidth } : {}),
             ...(auxiliaryWidth !== undefined ? { webAuxiliaryWidth: auxiliaryWidth } : {}),
             ...(chatFontSize !== undefined ? { webChatFontSize: chatFontSize } : {}),
             ...(expandThinking !== undefined ? { webExpandThinking: expandThinking } : {}),
+            ...(isHiddenThinkingLevels(hiddenThinkingLevels) ? { webHiddenThinkingLevels: hiddenThinkingLevels } : {}),
             ...(pinnedSort !== undefined ? { webPinnedSort: pinnedSort } : {}),
             ...(isDetailDisplay(subagentResultDisplay) ? { subagentResultDisplay } : {}),
             ...(isDetailDisplay(bashToolDisplay) ? { bashToolDisplay } : {}),
@@ -1900,12 +1904,17 @@ export class WebHost {
           error: "Pi settings resources are unavailable",
         });
       }
+      const inspectedSetup = inspectSetupConfig();
+      const resources = this.runtime.listSettingsResources();
+      const setupErrors = inspectedSetup.diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
       return this.json(response, 200, {
         sessionId: diagnosticSession,
         sessionPath: this.runtime.sessionManager.getSessionFile(),
-        setup: projectWebSetupConfig(loadSetupConfig()),
+        ...projectWebSetupInspection(inspectedSetup),
         webSearch: this.runtime.getWebSearchSupport?.() ?? { available: false, reason: "unknown-connection" },
-        resources: this.runtime.listSettingsResources(),
+        responseSupport: this.runtime.getResponseSupport?.() ?? { verbosity: false, reasoningSummary: false },
+        ...(this.runtime.getThinkingState ? { thinking: { ...boundThinkingProjection(this.runtime.getThinkingState()), revision: this.sequence } } : {}),
+        resources: { ...resources, diagnostics: { ...resources.diagnostics, settingsErrors: (resources.diagnostics.settingsErrors ?? 0) + setupErrors } },
       });
     }
     if (url.pathname === "/api/session-sources" || url.pathname === "/api/session-sources/image") {
@@ -2075,6 +2084,11 @@ export class WebHost {
       }
     }
     if (url.pathname === "/api/sessions/archived") {
+      const sort = url.searchParams.get("sort");
+      if ((sort !== null && sort !== "updated" && sort !== "created") ||
+        url.searchParams.getAll("sort").length > 1 || url.searchParams.getAll("cwd").length > 1) {
+        return this.json(response, 400, { code: "INVALID_ARCHIVED_SESSION_QUERY", error: "archived Session sort and project must be unambiguous" });
+      }
       const rawLimit = url.searchParams.get("limit");
       const limit = rawLimit === null ? undefined : Number(rawLimit);
       if (
@@ -2090,6 +2104,8 @@ export class WebHost {
         });
       }
       const result = await this.adapter.listArchivedSessions({
+        ...(sort !== null ? { sort } : {}),
+        ...(url.searchParams.has("cwd") ? { cwd: url.searchParams.get("cwd") ?? "" } : {}),
         ...(url.searchParams.has("cursor")
           ? { cursor: url.searchParams.get("cursor") ?? "" }
           : {}),
@@ -2297,11 +2313,13 @@ export class WebHost {
         cursor,
         preferences: {
           theme: setup.ui.webTheme,
+          appearance: { ...setup.ui.webAppearance },
           chatWidth: setup.ui.webChatWidth,
           sidebarWidth: setup.ui.webSidebarWidth,
           auxiliaryWidth: setup.ui.webAuxiliaryWidth,
           chatFontSize: setup.ui.webChatFontSize,
           expandThinking: setup.ui.webExpandThinking,
+          hiddenThinkingLevels: setup.ui.webHiddenThinkingLevels,
           pinnedSort: setup.ui.webPinnedSort,
           subagentResultDisplay: setup.ui.subagentResultDisplay,
           bashToolDisplay: setup.ui.bashToolDisplay,

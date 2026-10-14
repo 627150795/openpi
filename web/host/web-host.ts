@@ -725,18 +725,7 @@ export class WebHost {
         if (!Object.keys(body).length || Object.keys(body).some((key) => !["control", "embedded", "defaultBrowser", "externalBrowsers"].includes(key)) ||
           (control !== undefined && typeof control !== "boolean") || (embedded !== undefined && typeof embedded !== "boolean") ||
           (defaultBrowser !== undefined && !isBrowserId(defaultBrowser)) || (externalBrowsers !== undefined && !isBrowserList(externalBrowsers))) return this.json(response, 400, { error: "Invalid browser preferences" });
-        try {
-          await updateSetupConfig((current) => ({ ...current, browser: { ...current.browser,
-            ...(typeof control === "boolean" ? { control } : {}), ...(typeof embedded === "boolean" ? { embedded } : {}),
-            ...(isBrowserId(defaultBrowser) ? { defaultBrowser } : {}), ...(isBrowserList(externalBrowsers) ? { externalBrowsers } : {}),
-          } }));
-          // Revocation is enforced before tool-surface projection, including during an active turn.
-          this.browser.reconcile();
-          await this.runtime.applySetupConfiguration?.();
-          this.publish("settings_changed", {});
-        } catch {
-          return this.json(response, 422, { error: "Browser settings could not be fully applied. Refresh to inspect the saved state before retrying." });
-        }
+        return this.json(response, 403, { error: "Browser permissions and default selection require /openpi-setup." });
       } else if (request.method !== "GET") return this.json(response, 405, { error: "Use GET or POST" });
       return this.json(response, 200, { config: loadSetupConfig().browser, profiles: this.browser.profiles(typeof controller === "string" ? controller : undefined), browsers: await installedBrowsers(), extensionPath: browserExtensionPath, portableExtensionPath: portableBrowserExtensionPath, extensionVersion: BROWSER_EXTENSION_VERSION });
     }

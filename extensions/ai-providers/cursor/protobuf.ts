@@ -447,13 +447,12 @@ function compileMapField(desc: MapFieldDesc): CompiledField {
     decode(message, reader, wireType, _fieldNumber) {
       assertWireType(wireType, 2);
       const target = mapField(message, name);
-      const limit = reader.uint32();
-      const end = reader.pos + limit;
+      const entryReader = new Reader(reader.bytes());
       let entryKey = "";
       let entryValue: unknown = valCodec.defaultValue;
 
-      while (reader.pos < end) {
-        const tag = reader.uint32();
+      while (entryReader.pos < entryReader.len) {
+        const tag = entryReader.uint32();
         const entryNumber = tag >>> 3;
         const entryWireType = tag & 7;
         if (!isWireType(entryWireType)) {
@@ -463,12 +462,12 @@ function compileMapField(desc: MapFieldDesc): CompiledField {
         }
         if (entryNumber === 1) {
           assertWireType(entryWireType, key.wireType);
-          entryKey = requireString(key.decode(reader));
+          entryKey = requireString(key.decode(entryReader));
         } else if (entryNumber === 2) {
           assertWireType(entryWireType, valCodec.wireType);
-          entryValue = valCodec.decode(reader);
+          entryValue = valCodec.decode(entryReader);
         } else {
-          reader.skip(entryWireType);
+          entryReader.skip(entryWireType);
         }
       }
 

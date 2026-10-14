@@ -2577,9 +2577,10 @@ test("inspects session-scoped runtime and terminal details on desktop and mobile
 }, testInfo) => {
   const sessionId = "inspection-browser-session";
   const reads: string[] = [];
+  let baselineSnapshot: Promise<string> | undefined;
   await page.route("**/api/snapshot**", async (route) => {
-    const response = await route.fetch();
-    const snapshot = await response.json();
+    baselineSnapshot ??= route.fetch().then((response) => response.text());
+    const snapshot = JSON.parse(await baselineSnapshot);
     snapshot.currentSessionId = sessionId;
     snapshot.workspaces = [
       { path: "/inspection", name: "Inspection", current: true },
@@ -2640,7 +2641,7 @@ test("inspects session-scoped runtime and terminal details on desktop and mobile
       },
     ];
     alignControlledSessionFixture(snapshot);
-    await route.fulfill({ response, json: snapshot });
+    await route.fulfill({ json: snapshot });
   });
   await page.route("**/events?**", (route) =>
     route.fulfill({

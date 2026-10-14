@@ -485,7 +485,13 @@ for (const theme of ["light", "dark"] as const) {
         },
       });
       expect(model.status()).toBe(200);
+      const appearance = await page.request.post("/api/settings/preferences", {
+        headers,
+        data: { theme },
+      });
+      expect(appearance.status()).toBe(200);
       await page.goto("/");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
       const input = page.getByRole("textbox", { name: "描述任务" });
       if (theme === "light") await togglePlan(page);
       const prompt = `${theme === "dark" ? "/plan " : ""}规划会话导出，先询问 Markdown 或 JSON，不修改代码。`;

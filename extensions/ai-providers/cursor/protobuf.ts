@@ -945,6 +945,9 @@ class Reader {
     let shift = 0n;
     while (this.pos < this.len) {
       const byte = this.buf[this.pos++];
+      if (shift === 63n && byte > 0x01) {
+        throw new Error("Varint exceeds 64 bits");
+      }
       result |= BigInt(byte & 0x7f) << shift;
       if ((byte & 0x80) === 0) return BigInt.asIntN(64, result);
       shift += 7n;

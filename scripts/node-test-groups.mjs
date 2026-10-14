@@ -15,6 +15,14 @@ const setupIntegrationTest = resolve(
   "setup",
   "integration.test.ts",
 );
+// Real sandbox subprocesses have short execution watchdogs. Keep their cold
+// Windows startup isolated without increasing the runtime's timeout budget.
+const workflowExecutionTest = resolve(
+  "tests",
+  "extensions",
+  "workflows",
+  "execute.e2e.test.ts",
+);
 
 function isBackgroundTerminalsTest(file) {
   const relativePath = relative(backgroundTerminalsRoot, file);
@@ -37,7 +45,9 @@ export function partitionNodeTestsByPlatform(
   const parallel = [];
   const serial = [];
   for (const file of files) {
-    (isBackgroundTerminalsTest(file) || file === setupIntegrationTest
+    (isBackgroundTerminalsTest(file) ||
+    file === setupIntegrationTest ||
+    file === workflowExecutionTest
       ? serial
       : parallel
     ).push(file);

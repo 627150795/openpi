@@ -2065,6 +2065,15 @@ export function createWebStore(
             sessionSwitching: true,
           });
           let confirmed = await actions.refreshSnapshot({ epoch: nextEpoch });
+          if (
+            !confirmed &&
+            nextEpoch === sessionEpoch &&
+            get().selectedPath === result.sessionPath
+          ) {
+            // A concurrent refresh may supersede this confirmation. Recheck
+            // canonical state once without repeating the fork or prompt.
+            confirmed = await actions.refreshSnapshot({ epoch: nextEpoch });
+          }
           if (nextEpoch !== sessionEpoch) return false;
           let current = get().snapshot;
           // A delivered fork whose response was lost can be replayed after the
@@ -2087,6 +2096,7 @@ export function createWebStore(
           }
           if (
             !confirmed ||
+            get().selectedPath !== result.sessionPath ||
             current?.selectedSession?.id !== result.sessionId ||
             current.selectedSession.path !== result.sessionPath ||
             !isControlledSession(current)
@@ -2187,7 +2197,7 @@ export function createWebStore(
           });
           if (
             sessionEpoch === ownedEpoch &&
-            get().selectedPath !== anchor.sessionPath &&
+            ownedEpoch !== epoch &&
             get().sessionSwitching
           )
             set({ sessionSwitching: false });

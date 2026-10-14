@@ -4,10 +4,15 @@ import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  KeybindingsManager,
+} from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
 import {
   collapseClipboardPaths,
+  default as imagePaste,
   ImageAttachmentEditor,
   ImageAttachmentStore,
 } from "../../../extensions/image-paste/index.ts";
@@ -106,6 +111,27 @@ function harness() {
   editor.onSubmit = (text) => submitted.push(text);
   return { store, base, editor, submitted };
 }
+
+test("new sessions do not retain prior image placeholder mappings", () => {
+  const store = new ImageAttachmentStore();
+  const path = temporaryImage("png", "previous-session");
+  store.attachClipboardPath(path, "");
+  const hooks = new Map<
+    string,
+    (event: unknown, ctx: ExtensionContext) => void
+  >();
+  const api = {
+    on(name: string, handler: (event: unknown, ctx: ExtensionContext) => void) {
+      hooks.set(name, handler);
+    },
+    registerMarkdownTransformer() {},
+  } as unknown as ExtensionAPI;
+
+  imagePaste(api, store);
+  hooks.get("session_start")?.({}, { mode: "rpc" } as ExtensionContext);
+
+  assert.equal(store.expandPlaceholders("[Image #1]"), "[Image #1]");
+});
 
 /**
  * Mirrors Pi's InteractiveMode.handleFollowUp(): it reads the text through

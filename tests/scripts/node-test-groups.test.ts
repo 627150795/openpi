@@ -27,6 +27,10 @@ const workflowExecutionTest = resolve(
   "tests/extensions/workflows/execute.e2e.test.ts",
 );
 const workflowUnitTest = resolve("tests/extensions/workflows/model.test.ts");
+const gitInfoProcessTest = resolve("tests/extensions/git-info/process.test.ts");
+const gitInfoUnitTest = resolve(
+  "tests/extensions/git-info/refresh-coordinator.test.ts",
+);
 const unrelatedTest = resolve("tests", "test-discovery.test.ts");
 
 test("Windows isolates background-terminal tests from other Node files", () => {
@@ -64,6 +68,7 @@ test("non-Windows keeps all Node files in the parallel group", () => {
         backgroundUnitTest,
         setupIntegrationTest,
         workflowExecutionTest,
+        gitInfoProcessTest,
       ],
       "linux",
     ),
@@ -74,6 +79,7 @@ test("non-Windows keeps all Node files in the parallel group", () => {
         backgroundUnitTest,
         setupIntegrationTest,
         workflowExecutionTest,
+        gitInfoProcessTest,
       ],
       serial: [],
     },
@@ -89,6 +95,19 @@ test("Windows isolates sandbox execution but keeps workflow unit tests parallel"
     {
       parallel: [workflowUnitTest, unrelatedTest],
       serial: [workflowExecutionTest],
+    },
+  );
+});
+
+test("Windows isolates short-watchdog commands but keeps git-info unit tests parallel", () => {
+  assert.deepEqual(
+    partitionNodeTestsByPlatform(
+      [gitInfoUnitTest, gitInfoProcessTest, unrelatedTest],
+      "win32",
+    ),
+    {
+      parallel: [gitInfoUnitTest, unrelatedTest],
+      serial: [gitInfoProcessTest],
     },
   );
 });

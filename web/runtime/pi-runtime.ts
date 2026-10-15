@@ -1,7 +1,7 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, unlinkSync } from "node:fs";
 import { readConfiguredPackages } from "./configured-packages.ts";
-import { mkdir, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createTurnChangeRecorder } from "./turn-changes.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -46,6 +46,8 @@ import {
   type WebSessionForkCancelResult,
   type WebSessionDeleteRequest,
   type WebSessionDeleteResult,
+  type WebWorktreeReleaseRequest,
+  type WebWorktreeReleaseResult,
   type WebSessionExecution,
   type WebThinkingProjection,
   type WebThinkingSelectionOptions,
@@ -92,7 +94,7 @@ import {
 import { applySetupConfiguration } from "../../extensions/shared/setup-apply.ts";
 import { loadSetupConfig } from "../../extensions/shared/setup-config.ts";
 import { resolveWebSearchSupport } from "../../extensions/web-search/support.ts";
-import { createSessionWorktree, inspectSessionWorktree, cleanupSessionWorktree, SessionWorktreeError } from "./session-worktree.ts";
+import { createSessionWorktree, inspectSessionWorktree, cleanupSessionWorktree, bindSessionWorktree, listSessionWorktrees, readSessionWorktreeReceipt, sessionWorktreeReleaseTarget, SessionWorktreeError } from "./session-worktree.ts";
 
 const setupEvents = new WeakMap<object, ReturnType<typeof createEventBus>>();
 
@@ -147,7 +149,7 @@ function observePromptOutcome(trace: PromptTrace, event: AgentSessionEvent) {
   }
   // Pi 1.1+ reports aborts even without an assistant message. Keep the retry
   // cancellation receipt for hosts predating that terminal flag.
-  if (event.type === "agent_settled" && event.aborted || event.type === "auto_retry_end" && !event.success && event.finalError === "Retry cancelled") {
+  if (event.type === "agent_settled" && "aborted" in event && event.aborted === true || event.type === "auto_retry_end" && !event.success && event.finalError === "Retry cancelled") {
     trace.outcome = "cancelled";
     trace.resultMessage = undefined;
     return;
@@ -239,7 +241,7 @@ function inspectSavedWebSession(path: string, id: string, directory: string, pur
     const header: unknown = JSON.parse(buffer.subarray(0, end).toString("utf8"));
     if (!header || typeof header !== "object" || !("type" in header) || header.type !== "session" || !("id" in header) || header.id !== id || !("cwd" in header) || typeof header.cwd !== "string" || !("timestamp" in header) || typeof header.timestamp !== "string" || basename(path) !== `${header.timestamp.replace(/[:.]/g, "-")}_${id}.jsonl`) throw unavailable();
     if (purpose === "fork" && (!("version" in header) || header.version !== CURRENT_SESSION_VERSION)) throw unavailable();
-    return { dev: opened.dev, ino: opened.ino };
+    return { dev: opened.dev, ino: opened.ino, cwd: header.cwd };
   } catch (error) {
     if (error instanceof WebRuntimeRequestError) throw error;
     throw unavailable();
@@ -1968,6 +1970,7 @@ export class PiWebRuntime implements WebRuntimeController {
       if (snapshot.interrupted) manager.appendCustomMessageEntry("openpi-web-fork-snapshot", "This conversation starts from a frozen persisted prefix. The source conversation was not stopped by the fork and may continue independently. Unpersisted assistant text and pending messages were not copied. Missing tool results are explicitly marked as unknown in this child; they are not actual tool results or proof that external work failed.", false, { source, snapshot });
       manager.appendSessionInfo(title);
       manager.appendCustomEntry(WEB_SESSION_FORK, { version: 1, sessionId, ...resultContext } satisfies WebSessionForkMetadata);
+      if (createdWorktree) await bindSessionWorktree(createdWorktree.cleanupReceipt, { sessionId, sessionPath });
       const replacement = await PiWebRuntime.createRuntime(resultContext.cwd, manager, this.dispatcherLease, { type: "session_start", reason: "fork", previousSessionFile: exact.sessionPath });
       if (replacement.runtime.modelFallbackMessage) {
         await this.disposeAgentRuntime(replacement.runtime);
@@ -2159,6 +2162,83 @@ export class PiWebRuntime implements WebRuntimeController {
     return settled;
   }
 
+  async listRetainedWorktrees(workspacePath: string, cursor?: string) {
+    this.assertActive();
+    try { return await listSessionWorktrees(workspacePath, this.webSessionDirectory, cursor); }
+    catch (error) {
+      if (error instanceof SessionWorktreeError && error.code === "cursor")
+        throw new WebRuntimeRequestError(error.message, "WORKTREE_LIST_CHANGED", 409);
+      throw error;
+    }
+  }
+
+  private worktreeReleaseReceipts?: Map<string, { request: WebWorktreeReleaseRequest; result: Promise<WebWorktreeReleaseResult> }>;
+
+  releaseSessionWorktree(request: WebWorktreeReleaseRequest, hasExternalHolders?: () => boolean) {
+    const exact = { ...request };
+    if ([exact.commandId, exact.sessionId, exact.sessionPath, exact.worktreePath].some((value) => typeof value !== "string" || !value || /[\u0000-\u001f\u007f]/u.test(value)) ||
+        exact.commandId.length > 128 || exact.sessionId.length > 128 || exact.sessionPath.length > 4096 || exact.worktreePath.length > 4096 ||
+        !isAbsolute(exact.worktreePath) || dirname(exact.sessionPath) !== resolve(this.webSessionDirectory))
+      return Promise.reject(new WebRuntimeRequestError("An exact managed worktree and native child identity are required", "INVALID_WORKTREE_RELEASE", 400));
+    const receipts = this.worktreeReleaseReceipts ??= new Map<string, { request: WebWorktreeReleaseRequest; result: Promise<WebWorktreeReleaseResult> }>();
+    const previous = receipts.get(exact.commandId);
+    if (previous) {
+      if (previous.request.sessionId !== exact.sessionId || previous.request.sessionPath !== exact.sessionPath || previous.request.worktreePath !== exact.worktreePath)
+        return Promise.reject(new WebRuntimeRequestError("Worktree release command belongs to another resource", "SESSION_CONFLICT", 409));
+      return previous.result.then((result) => ({ ...result, replayed: true }));
+    }
+    if (receipts.size >= 1024 || this.sessionMutationPending)
+      return Promise.reject(new WebRuntimeRequestError("Worktree release is unavailable while another mutation is pending or receipt capacity is full", "WORKTREE_RELEASE_UNAVAILABLE", 409));
+    const result = this.serializeControllerMutation(async (): Promise<WebWorktreeReleaseResult> => {
+      const preserve = (reason: string): WebWorktreeReleaseResult => ({ ...exact, state: "preserved", reason });
+      try {
+        this.assertActive();
+        const receipt = await readSessionWorktreeReceipt(exact.worktreePath, this.webSessionDirectory);
+        if (receipt.ownerSession.sessionId !== exact.sessionId || receipt.ownerSession.sessionPath !== exact.sessionPath)
+          return preserve("The private worktree receipt belongs to another native child.");
+        if (receipt.releaseState === "uncertain") return { ...exact, state: "uncertain", reason: "A prior release attempt is uncertain. Automatic removal cannot be repeated." };
+        if (hasExternalHolders?.()) return preserve("A Host terminal or pending process still owns this worktree, or its shutdown cannot be verified.");
+        if (existsSync(exact.sessionPath)) return preserve("The original native child Session still exists. Delete the Session before releasing its worktree.");
+        const inside = (cwd: string) => {
+          const suffix = relative(exact.worktreePath, cwd);
+          return suffix === "" || !isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`);
+        };
+        if (this.runtimeDisposals.size > 0) return preserve("Native runtime shutdown is still pending.");
+        this.assertActive();
+        if (this.runtimeDisposalFailure !== undefined) return preserve("Native runtime shutdown could not be verified.");
+        const owners = new Set([this.runtime, ...this.retainedRuntimes, ...this.candidateRuntimes, ...this.inFlightRuntimes.keys()]);
+        for (const owner of owners) {
+          // Includes an idle native replacement whose new Session still uses this cwd.
+          if (inside(await realpath(owner.session.sessionManager.getCwd())))
+            return preserve("A native runtime still owns this worktree. Leave it before releasing the checkout.");
+        }
+        const files = (await readdir(this.webSessionDirectory, { withFileTypes: true })).filter((entry) => entry.name.endsWith(".jsonl"));
+        if (files.length > 5000 || files.some((entry) => !entry.isFile()))
+          return preserve("The native Session reference catalog is incomplete or exceeds its inspection limit.");
+        // Only native headers own cwd. Do not load unbounded private transcripts
+        // or treat the sidebar's bounded/paginated projection as the full catalog.
+        const deadline = Date.now() + 90_000;
+        for (const file of files) {
+          if (Date.now() >= deadline) return preserve("Native Session reference inspection reached its time limit.");
+          const id = file.name.slice(file.name.lastIndexOf("_") + 1, -6);
+          const header = inspectSavedWebSession(join(this.webSessionDirectory, file.name), id, this.webSessionDirectory, "fork");
+          if (inside(await realpath(header.cwd)))
+            return preserve("A saved native Session still references this worktree. Delete or move its references first.");
+        }
+        this.assertActive();
+        if (hasExternalHolders?.()) return preserve("A Host process acquired the worktree during reference inspection.");
+        const cleanup = await cleanupSessionWorktree(receipt);
+        return { ...exact, state: cleanup.removed ? "removed" : "uncertain" in cleanup ? "uncertain" : "preserved", ...(cleanup.reason ? { reason: cleanup.reason } : {}) };
+      } catch (error) {
+        return { ...exact, state: error instanceof SessionWorktreeError && error.code === "uncertain" || !existsSync(exact.worktreePath) ? "uncertain" : "preserved", reason: errorText(error) };
+      }
+    }, true);
+    this.sessionMutationPending = true;
+    const settled = result.finally(() => { this.sessionMutationPending = false; });
+    receipts.set(exact.commandId, { request: exact, result: settled });
+    return settled;
+  }
+
   deleteSession(request: WebSessionDeleteRequest) {
     if ([request.commandId, request.sessionId, request.sessionPath].some((value) => typeof value !== "string" || !value || /[\u0000-\u001f\u007f]/u.test(value)) || request.commandId.length > 128 || request.sessionId.length > 128 || request.sessionPath.length > 4096)
       return Promise.reject(new WebRuntimeRequestError("A bounded deletion command and exact Session identity are required", "SESSION_DELETE_UNAVAILABLE", 400));
@@ -2175,6 +2255,12 @@ export class PiWebRuntime implements WebRuntimeController {
     const exact = { ...request };
     const result = this.serializeControllerMutation(async () => {
       const before = inspectSavedWebSession(exact.sessionPath, exact.sessionId, this.webSessionDirectory, "delete");
+      let worktreeReleaseTarget: WebSessionDeleteResult["worktreeReleaseTarget"];
+      try {
+        const manager = SessionManager.open(exact.sessionPath, this.webSessionDirectory);
+        const fork = readSessionFork(manager.getBranch(), exact.sessionId, manager.getCwd());
+        if (fork?.worktree) worktreeReleaseTarget = sessionWorktreeReleaseTarget(await readSessionWorktreeReceipt(fork.worktree.path, this.webSessionDirectory));
+      } catch { /* Retention remains safe when private release authority is unavailable. */ }
       // A recently released runtime may still be running its native shutdown
       // hooks. They must finish before its backing file can disappear.
       await Promise.all([...this.runtimeDisposals]);
@@ -2223,9 +2309,9 @@ export class PiWebRuntime implements WebRuntimeController {
         deleted = true;
         this.completedSessionTurns?.delete(JSON.stringify([exact.sessionPath, exact.sessionId]));
         this.emit("session_deleted", { ...exact, activeSessionChanged });
-        return { ...exact, state: "deleted", ...(activeSessionChanged ? { activeSessionChanged } : {}) } satisfies WebSessionDeleteResult;
+        return { ...exact, state: "deleted", ...(activeSessionChanged ? { activeSessionChanged } : {}), ...(worktreeReleaseTarget ? { worktreeReleaseTarget } : {}) } satisfies WebSessionDeleteResult;
       } catch (error) {
-        if (deleted) return { ...exact, state: "deleted", ...(activeSessionChanged ? { activeSessionChanged } : {}) } satisfies WebSessionDeleteResult;
+        if (deleted) return { ...exact, state: "deleted", ...(activeSessionChanged ? { activeSessionChanged } : {}), ...(worktreeReleaseTarget ? { worktreeReleaseTarget } : {}) } satisfies WebSessionDeleteResult;
         if (!replacementStarted) throw error;
         // A native replacement can fail after disposing the original Session.
         // Never rerun this command or restore write authority from a stale view.

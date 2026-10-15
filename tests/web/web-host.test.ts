@@ -26,7 +26,10 @@ import {
   WEB_SESSION_MARKDOWN_MAX_BYTES,
 } from "../../web/adapter/pi-adapter.ts";
 import type { GitReviewService } from "../../web/host/git-review.ts";
-import type { InteractiveTerminalService } from "../../web/host/interactive-terminal.ts";
+import {
+  InteractiveTerminalManager,
+  type InteractiveTerminalService,
+} from "../../web/host/interactive-terminal.ts";
 import type { WebHostOptions } from "../../web/host/web-host.ts";
 import {
   WEB_PROMPT_IMAGE_MAX_BYTES,
@@ -6823,6 +6826,133 @@ test("stop disposes the runtime before waiting for an in-flight prompt request",
     assert.equal((await response).status, 202);
   } finally {
     releasePrompt();
+    await host.stop();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("managed worktree endpoints bind discovery to a known workspace and forward only exact release identity", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "openpi-worktree-host-"));
+  const runtime = testRuntime(cwd);
+  const calls: unknown[] = [];
+  const target = {
+    sessionId: "deleted-native-child",
+    sessionPath: join(runtime.sessionDirectory, "deleted.jsonl"),
+    worktreePath: join(cwd, ".git", "pi-worktrees", "retained"),
+  };
+  runtime.listRetainedWorktrees = async (path, cursor) => {
+    calls.push({ path, cursor });
+    return {
+      worktrees: [target],
+      truncated: true,
+      unavailable: 1,
+      nextCursor: "opaque-next",
+    };
+  };
+  let externalHolder: boolean | undefined;
+  runtime.releaseSessionWorktree = async (request, hasExternalHolders) => {
+    externalHolder = hasExternalHolders?.();
+    calls.push(request);
+    return {
+      ...request,
+      state: "preserved",
+      reason: "A saved Session still references this checkout.",
+    };
+  };
+  const { host, launched, headers } = await startTestHost(runtime);
+  const route = `${launched.origin}/api/workspaces/worktrees?path=${encodeURIComponent(cwd)}`;
+  const release = { ...target, commandId: "explicit-release" };
+  const post = (body: unknown, authenticated = true) =>
+    fetch(`${launched.origin}/api/sessions/worktree-release`, {
+      method: "POST",
+      headers: {
+        ...(authenticated ? headers : {}),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  try {
+    assert.equal((await fetch(route)).status, 401);
+    const listing = await fetch(`${route}&cursor=opaque`, { headers });
+    assert.equal(listing.status, 200);
+    assert.deepEqual(await listing.json(), {
+      worktrees: [target],
+      truncated: true,
+      unavailable: 1,
+      nextCursor: "opaque-next",
+    });
+    assert.deepEqual(calls.shift(), { path: cwd, cursor: "opaque" });
+    assert.notEqual(
+      (
+        await fetch(
+          `${launched.origin}/api/workspaces/worktrees?path=${encodeURIComponent(join(cwd, "unknown"))}`,
+          { headers },
+        )
+      ).status,
+      200,
+    );
+    assert.equal(calls.length, 0);
+    assert.equal((await post(release, false)).status, 401);
+    for (const body of [
+      { ...release, token: "browser-authority" },
+      { ...release, worktreePath: "relative" },
+      { ...release, sessionId: "bad\nidentity" },
+    ])
+      assert.equal((await post(body)).status, 400);
+    assert.equal(calls.length, 0);
+    const response = await post(release);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ...release,
+      state: "preserved",
+      reason: "A saved Session still references this checkout.",
+    });
+    assert.deepEqual(calls, [release]);
+    assert.equal(externalHolder, false);
+    delete runtime.releaseSessionWorktree;
+    assert.equal((await post(release)).status, 501);
+  } finally {
+    await host.stop();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("release treats an injected terminal service without holder evidence as unknown", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "openpi-holder-host-"));
+  const runtime = testRuntime(cwd);
+  const terminals: InteractiveTerminalService =
+    new InteractiveTerminalManager();
+  terminals.hasWorktreeReferences = undefined;
+  runtime.releaseSessionWorktree = async (request, holders) => ({
+    ...request,
+    state: holders?.() ? "preserved" : "removed",
+  });
+  const { host, launched, headers } = await startTestHost(runtime, {
+    interactiveTerminals: terminals,
+  });
+  try {
+    for (const evidence of [undefined, () => true, () => false]) {
+      terminals.hasWorktreeReferences = evidence;
+      const response = await fetch(
+        `${launched.origin}/api/sessions/worktree-release`,
+        {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            commandId: "release",
+            sessionId: "deleted",
+            sessionPath: join(runtime.sessionDirectory, "deleted.jsonl"),
+            worktreePath: cwd,
+          }),
+        },
+      );
+      assert.equal(response.status, 200);
+      assert.equal(
+        (await response.json()).state,
+        evidence?.() === false ? "removed" : "preserved",
+      );
+    }
+  } finally {
     await host.stop();
     await rm(cwd, { recursive: true, force: true });
   }

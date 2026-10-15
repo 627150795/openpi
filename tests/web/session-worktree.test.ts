@@ -30,6 +30,9 @@ const {
   cleanupSessionWorktree,
   createSessionWorktree,
   inspectSessionWorktree,
+  bindSessionWorktree,
+  readSessionWorktreeReceipt,
+  listSessionWorktrees,
   SessionWorktreeError,
 } = await import("../../web/runtime/session-worktree.ts");
 childProcess.execFile = originalExecFile;
@@ -683,4 +686,249 @@ test("large snapshots fail before creating a worktree instead of silently omitti
     git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)?.length,
     1,
   );
+});
+
+test("successful worktree private authority survives restart and never comes from display paths", async (t) => {
+  const { repo } = fixture(t);
+  const sessions = path.join(repo, "sessions");
+  fs.mkdirSync(sessions);
+  const child = await createSessionWorktree(repo, "bound-child");
+  await assert.rejects(
+    readSessionWorktreeReceipt(child.worktree.path, sessions),
+  );
+  assert.deepEqual(await listSessionWorktrees(repo, sessions), {
+    worktrees: [],
+    truncated: false,
+    unavailable: 1,
+  });
+  const ownerSession = {
+    sessionId: "native-child",
+    sessionPath: path.join(sessions, "child.jsonl"),
+  };
+  await bindSessionWorktree(child.cleanupReceipt, ownerSession);
+  const recovered = await readSessionWorktreeReceipt(
+    child.worktree.path,
+    sessions,
+  );
+  assert.deepEqual(recovered.ownerSession, ownerSession);
+  const listing = await listSessionWorktrees(repo, sessions);
+  assert.deepEqual(listing.worktrees, [
+    { ...ownerSession, worktreePath: child.worktree.path },
+  ]);
+  assert.deepEqual(Object.keys(listing.worktrees[0]!).sort(), [
+    "sessionId",
+    "sessionPath",
+    "worktreePath",
+  ]);
+  assert.equal(JSON.stringify(listing).includes("fingerprint"), false);
+  await assert.rejects(
+    readSessionWorktreeReceipt(
+      child.worktree.path,
+      path.join(repo, "other-sessions"),
+    ),
+  );
+  fs.writeFileSync(
+    path.join(child.worktree.path, "private.env"),
+    "user bytes\n",
+  );
+  assert.equal((await cleanupSessionWorktree(recovered)).removed, false);
+  fs.unlinkSync(path.join(child.worktree.path, "private.env"));
+  assert.equal((await cleanupSessionWorktree(recovered)).removed, true);
+  assert.deepEqual(await listSessionWorktrees(repo, sessions), {
+    worktrees: [],
+    truncated: false,
+    unavailable: 0,
+  });
+});
+
+test("managed worktree discovery pages past unavailable markers and rejects stale cursors", async (t) => {
+  const { repo } = fixture(t);
+  const sessions = path.join(repo, "sessions");
+  const child = await createSessionWorktree(repo, "paged-child");
+  await bindSessionWorktree(child.cleanupReceipt, {
+    sessionId: "native-child",
+    sessionPath: path.join(sessions, "child.jsonl"),
+  });
+  const parent = path.dirname(child.worktree.path);
+  for (let index = 0; index < 128; index++) {
+    fs.mkdirSync(
+      path.join(
+        parent,
+        `session-000000000000-${String(index).padStart(36, "0")}`,
+      ),
+    );
+  }
+  const first = await listSessionWorktrees(repo, sessions);
+  assert.equal(first.truncated, true);
+  assert.equal(first.unavailable, 128);
+  assert.ok(first.nextCursor);
+  const next = await listSessionWorktrees(repo, sessions, first.nextCursor);
+  assert.equal(next.worktrees[0]?.worktreePath, child.worktree.path);
+  assert.equal(next.truncated, false);
+  await assert.rejects(
+    listSessionWorktrees(repo, sessions, "invalid"),
+    /refresh/u,
+  );
+  const anchor = Buffer.from(first.nextCursor, "base64url").toString("utf8");
+  fs.rmdirSync(path.join(parent, anchor));
+  await assert.rejects(
+    listSessionWorktrees(repo, sessions, first.nextCursor),
+    /refresh/u,
+  );
+});
+
+test("uncertain destructive release is terminal for the exact private resource after recovery", async (t) => {
+  const { repo, root } = fixture(t);
+  const sessions = path.join(root, "sessions");
+  fs.mkdirSync(sessions);
+  const child = await createSessionWorktree(repo, "uncertain-terminal");
+  await bindSessionWorktree(child.cleanupReceipt, {
+    sessionId: "child",
+    sessionPath: path.join(sessions, "child.jsonl"),
+  });
+  const stale = { ...child.cleanupReceipt };
+  const counter = path.join(root, "remove-count");
+  gitBoundary(
+    t,
+    root,
+    `if(args.includes('worktree')&&args.includes('remove')) { const count=${JSON.stringify(counter)}; fs.writeFileSync(count,String((fs.existsSync(count)?Number(fs.readFileSync(count,'utf8')):0)+1)); process.stderr.write('injected unknown removal failure');process.exit(42); } ${runReal}`,
+  );
+  const first = await cleanupSessionWorktree(child.cleanupReceipt);
+  assert.equal(first.removed, false);
+  assert.equal("uncertain" in first, true);
+  assert.equal(fs.readFileSync(counter, "utf8"), "1");
+  assert.equal(fs.existsSync(child.worktree.path), true);
+  const marker = JSON.parse(
+    fs.readFileSync(
+      path.join(child.cleanupReceipt.gitDir, "openpi-session-worktree.json"),
+      "utf8",
+    ),
+  );
+  assert.equal(marker.releaseState, "uncertain");
+  assert.equal(marker.fingerprint, stale.fingerprint);
+  assert.deepEqual(marker.ownerSession, stale.ownerSession);
+  const recovered = await readSessionWorktreeReceipt(
+    child.worktree.path,
+    sessions,
+  );
+  assert.equal(recovered.releaseState, "uncertain");
+  for (const receipt of [stale, recovered]) {
+    const repeated = await cleanupSessionWorktree(receipt);
+    assert.equal("uncertain" in repeated, true);
+    assert.equal(repeated.removed, false);
+  }
+  assert.equal(fs.readFileSync(counter, "utf8"), "1");
+});
+
+test("an external-process release claim blocks removal even if marker update never completed", async (t) => {
+  const { repo, root } = fixture(t);
+  const sessions = path.join(root, "sessions");
+  fs.mkdirSync(sessions);
+  const child = await createSessionWorktree(repo, "claim-before-marker");
+  await bindSessionWorktree(child.cleanupReceipt, {
+    sessionId: "child",
+    sessionPath: path.join(sessions, "child.jsonl"),
+  });
+  const claimPath = path.join(
+    child.cleanupReceipt.gitDir,
+    "openpi-session-worktree.json.release-lock",
+  );
+  execFileSync(process.execPath, [
+    "-e",
+    "const fs=require('node:fs');const fd=fs.openSync(process.argv[1],'wx',0o600);fs.writeFileSync(fd,process.argv[2]);fs.fsyncSync(fd);fs.closeSync(fd)",
+    claimPath,
+    JSON.stringify(child.cleanupReceipt),
+  ]);
+  const recovered = await readSessionWorktreeReceipt(
+    child.worktree.path,
+    sessions,
+  );
+  assert.equal(recovered.releaseState, "uncertain");
+  assert.equal(
+    "uncertain" in (await cleanupSessionWorktree(child.cleanupReceipt)),
+    true,
+  );
+  assert.equal("uncertain" in (await cleanupSessionWorktree(recovered)), true);
+  assert.equal(fs.existsSync(child.worktree.path), true);
+  assert.throws(() => fs.openSync(claimPath, "wx"), /EEXIST/u);
+});
+
+test("claim acquisition failure is preserved only before creation with unchanged original authority", async (t) => {
+  const { repo } = fixture(t);
+  const child = await createSessionWorktree(repo, "claim-denied");
+  const markerPath = path.join(
+    child.cleanupReceipt.gitDir,
+    "openpi-session-worktree.json",
+  );
+  const claimPath = `${markerPath}.release-lock`;
+  const originalMarker = fs.readFileSync(markerPath, "utf8");
+  const originalOpen = fs.promises.open;
+  fs.promises.open = async (...args) => {
+    if (String(args[0]) === claimPath)
+      throw Object.assign(
+        new Error("permission denied before claim creation"),
+        { code: "EACCES" },
+      );
+    return originalOpen(...args);
+  };
+  syncBuiltinESMExports();
+  let result;
+  try {
+    result = await cleanupSessionWorktree(child.cleanupReceipt);
+  } finally {
+    fs.promises.open = originalOpen;
+    syncBuiltinESMExports();
+  }
+  assert.equal(result.removed, false);
+  assert.equal("uncertain" in result, false);
+  assert.equal(fs.existsSync(claimPath), false);
+  assert.equal(fs.readFileSync(markerPath, "utf8"), originalMarker);
+  assert.equal(
+    (await cleanupSessionWorktree(child.cleanupReceipt)).removed,
+    true,
+  );
+});
+
+test("failure after exclusive claim creation leaves a durable uncertain barrier and never calls remove", async (t) => {
+  const { repo, root } = fixture(t);
+  const child = await createSessionWorktree(repo, "claim-write-failed");
+  const markerPath = path.join(
+    child.cleanupReceipt.gitDir,
+    "openpi-session-worktree.json",
+  );
+  const claimPath = `${markerPath}.release-lock`;
+  const originalMarker = fs.readFileSync(markerPath, "utf8");
+  const removeLog = path.join(root, "unexpected-remove");
+  gitBoundary(
+    t,
+    root,
+    `if(args.includes('worktree')&&args.includes('remove')) { fs.writeFileSync(${JSON.stringify(removeLog)},'remove invoked');process.exit(42); } ${runReal}`,
+  );
+  const originalOpen = fs.promises.open;
+  fs.promises.open = async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === claimPath)
+      handle.writeFile = async () => {
+        throw new Error("injected claim write failure");
+      };
+    return handle;
+  };
+  syncBuiltinESMExports();
+  let result;
+  try {
+    result = await cleanupSessionWorktree(child.cleanupReceipt);
+  } finally {
+    fs.promises.open = originalOpen;
+    syncBuiltinESMExports();
+  }
+  assert.equal(result.removed, false);
+  assert.equal("uncertain" in result, true);
+  assert.equal(fs.existsSync(claimPath), true);
+  assert.equal(fs.readFileSync(markerPath, "utf8"), originalMarker);
+  assert.equal(
+    "uncertain" in (await cleanupSessionWorktree(child.cleanupReceipt)),
+    true,
+  );
+  assert.equal(fs.existsSync(removeLog), false);
+  assert.equal(fs.existsSync(child.worktree.path), true);
 });

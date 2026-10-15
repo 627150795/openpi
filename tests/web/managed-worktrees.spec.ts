@@ -11,6 +11,7 @@ import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { ManagedWorktreesDialog } from "../../web/ui/src/features/sessions/ManagedWorktreesDialog.tsx";
 import { i18n } from "../../web/ui/src/i18n.ts";
+import { WebApiError } from "../../web/ui/src/protocol/client.ts";
 
 beforeAll(() => {
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
@@ -203,4 +204,51 @@ it("keeps the continuation reachable after a full 128-target discovery page", as
   expect(
     screen.getAllByRole("button", { name: i18n.t("managedWorktreeReview") }),
   ).toHaveLength(129);
+});
+
+it("requires an explicit fresh listing when a continuation cursor becomes stale", async () => {
+  const h = mount();
+  h.client.workspaceWorktrees
+    .mockResolvedValueOnce({
+      worktrees: [target],
+      truncated: true,
+      nextCursor: "stale-cursor",
+      unavailable: 0,
+    })
+    .mockRejectedValueOnce(
+      new WebApiError("list changed", 409, "WORKTREE_LIST_CHANGED"),
+    );
+  h.unmount();
+  render(
+    createElement(
+      I18nextProvider,
+      { i18n },
+      createElement(ManagedWorktreesDialog, {
+        workspace: "/project",
+        client: h.client,
+        actions: h.actions,
+        connected: true,
+        onClose: h.onClose,
+      }),
+    ),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: i18n.t("managedWorktreesMore") }),
+  );
+  await screen.findByText(i18n.t("managedWorktreesChanged"));
+  expect(
+    screen.getByRole<HTMLButtonElement>("button", {
+      name: i18n.t("managedWorktreeReview"),
+    }).disabled,
+  ).toBe(true);
+  expect(h.client.workspaceWorktrees).toHaveBeenCalledTimes(3);
+  fireEvent.click(
+    screen.getByRole("button", { name: i18n.t("managedWorktreesRefresh") }),
+  );
+  await waitFor(() =>
+    expect(h.client.workspaceWorktrees).toHaveBeenLastCalledWith(
+      "/project",
+      undefined,
+    ),
+  );
 });

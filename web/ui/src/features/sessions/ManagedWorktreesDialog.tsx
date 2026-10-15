@@ -5,7 +5,7 @@ import type {
   WebWorktreeReleaseTarget,
   WebWorktreeReleaseResult,
 } from "../../../../runtime/types.ts";
-import type { WebClient } from "../../protocol/client.ts";
+import { WebApiError, type WebClient } from "../../protocol/client.ts";
 import type { WebStoreActions } from "../../store/web-store.ts";
 
 /** Discovery is a preview; only the native release action decides ownership. */
@@ -26,7 +26,7 @@ export function ManagedWorktreesDialog({
   const [targets, setTargets] = useState<WebWorktreeReleaseTarget[]>([]);
   const [cursor, setCursor] = useState<string>();
   const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState(false);
+  const [loadError, setLoadError] = useState<"changed" | "failed" | null>(null);
   const [unavailable, setUnavailable] = useState(0);
   const [target, setTarget] = useState<WebWorktreeReleaseTarget | null>(null);
   const [result, setResult] = useState<WebWorktreeReleaseResult | null>(null);
@@ -40,7 +40,7 @@ export function ManagedWorktreesDialog({
     async (next?: string) => {
       const id = ++request.current;
       setLoading(true);
-      setLoadError(false);
+      setLoadError(null);
       try {
         const page = await client.workspaceWorktrees(workspace, next);
         if (!mounted.current || id !== request.current) return;
@@ -62,8 +62,14 @@ export function ManagedWorktreesDialog({
         });
         setCursor(page.nextCursor);
         setUnavailable((count) => (next ? count : 0) + page.unavailable);
-      } catch {
-        if (mounted.current && id === request.current) setLoadError(true);
+      } catch (error) {
+        if (mounted.current && id === request.current)
+          setLoadError(
+            error instanceof WebApiError &&
+              error.code === "WORKTREE_LIST_CHANGED"
+              ? "changed"
+              : "failed",
+          );
       } finally {
         if (mounted.current && id === request.current) setLoading(false);
       }
@@ -196,7 +202,7 @@ export function ManagedWorktreesDialog({
                   <p className="sidebar-dialog-path">{item.worktreePath}</p>
                   <button
                     type="button"
-                    disabled={!connected || loading}
+                    disabled={!connected || loading || Boolean(loadError)}
                     onClick={() => {
                       setTarget(item);
                       setResult(null);
@@ -214,7 +220,15 @@ export function ManagedWorktreesDialog({
             {unavailable > 0 && (
               <p>{t("managedWorktreesUnavailable", { count: unavailable })}</p>
             )}
-            {loadError && <p role="alert">{t("managedWorktreesLoadFailed")}</p>}
+            {loadError && (
+              <p role="alert">
+                {t(
+                  loadError === "changed"
+                    ? "managedWorktreesChanged"
+                    : "managedWorktreesLoadFailed",
+                )}
+              </p>
+            )}
             <div className="dialog-actions">
               <button type="button" data-autofocus onClick={close}>
                 {t("close")}
@@ -223,9 +237,15 @@ export function ManagedWorktreesDialog({
                 <button
                   type="button"
                   disabled={loading || !connected}
-                  onClick={() => void load(cursor)}
+                  onClick={() =>
+                    void load(loadError === "changed" ? undefined : cursor)
+                  }
                 >
-                  {t("managedWorktreesRetry")}
+                  {t(
+                    loadError === "changed"
+                      ? "managedWorktreesRefresh"
+                      : "managedWorktreesRetry",
+                  )}
                 </button>
               )}
               {cursor && !loadError && (

@@ -1746,6 +1746,9 @@ const resources = {
       sidebarDelete: "Permanently delete",
       managedWorktreeRecoveryFull:
         "Check earlier unfinished removal requests before starting another.",
+      managedWorktreesChanged:
+        "The worktree list changed. Refresh it before reviewing a target.",
+      managedWorktreesRefresh: "Refresh worktrees",
       managedWorktreesBack: "Back to worktrees",
       managedWorktreesRetry: "Retry request",
       managedWorktrees: "Retained worktrees",
@@ -3600,6 +3603,8 @@ const resources = {
       sidebarDelete: "永久删除",
       managedWorktreeRecoveryFull:
         "请先核对先前未确认的移除请求，再开始新的请求。",
+      managedWorktreesChanged: "工作树列表已变化，请刷新后重新核对目标。",
+      managedWorktreesRefresh: "刷新工作树列表",
       managedWorktreesBack: "返回工作树列表",
       managedWorktreesRetry: "重试请求",
       managedWorktrees: "保留的工作树",

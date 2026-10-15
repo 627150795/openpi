@@ -162,3 +162,45 @@ it("only removes the row after a confirmed removed result", async () => {
   );
   expect(screen.queryByText(target.worktreePath)).toBeNull();
 });
+
+it("keeps the continuation reachable after a full 128-target discovery page", async () => {
+  const h = mount();
+  const firstPage = Array.from({ length: 128 }, (_, index) => ({
+    ...target,
+    sessionId: `child-${index}`,
+    sessionPath: `/sessions/${index}.jsonl`,
+    worktreePath: `/managed/child-${index}`,
+  }));
+  h.client.workspaceWorktrees.mockResolvedValueOnce({
+    worktrees: firstPage,
+    truncated: true,
+    nextCursor: "after-128",
+    unavailable: 0,
+  });
+  h.unmount();
+  render(
+    createElement(
+      I18nextProvider,
+      { i18n },
+      createElement(ManagedWorktreesDialog, {
+        workspace: "/project",
+        client: h.client,
+        actions: h.actions,
+        connected: true,
+        onClose: h.onClose,
+      }),
+    ),
+  );
+  await screen.findByText("/managed/child-127");
+  fireEvent.click(
+    screen.getByRole("button", { name: i18n.t("managedWorktreesMore") }),
+  );
+  await screen.findByText(target.worktreePath);
+  expect(h.client.workspaceWorktrees).toHaveBeenLastCalledWith(
+    "/project",
+    "after-128",
+  );
+  expect(
+    screen.getAllByRole("button", { name: i18n.t("managedWorktreeReview") }),
+  ).toHaveLength(129);
+});

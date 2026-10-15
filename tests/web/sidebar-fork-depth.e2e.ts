@@ -938,6 +938,17 @@ test("retained managed worktrees remain discoverable after reload and native res
     await page.keyboard.press("Escape");
     await expect(view.dialog).toBeHidden();
     await expect(view.trigger).toBeFocused();
+    // A native local descendant shares this actual cwd and must retain it too.
+    const descendant = requireChild(
+      (await fixture.api("/api/session/fork", {
+        commandId: "retained-local-descendant",
+        scope: "conversation",
+        environment: "local",
+        sessionId: child.sessionId,
+        sessionPath: child.sessionPath,
+      })) as WebSessionForkResult,
+    );
+    expect(descendant.cwd).toBe(child.cwd);
     // Delete only the Session through its exact native identity, retaining cwd.
     await rowFor(page, "Git conversation").locator("button.session").click();
     await expect
@@ -961,6 +972,23 @@ test("retained managed worktrees remain discoverable after reload and native res
     await expect(
       view.dialog.getByText(child.cwd, { exact: true }),
     ).toBeVisible();
+    await view.dialog
+      .getByRole("button", { name: "Remove worktree", exact: true })
+      .click();
+    await expect(view.dialog.getByRole("status")).toContainText(
+      "Worktree kept:",
+    );
+    await page.keyboard.press("Escape");
+    await fixture.api("/api/sessions/delete", {
+      commandId: "retained-delete-descendant",
+      sessionId: descendant.sessionId,
+      sessionPath: descendant.sessionPath,
+    });
+    await page.reload();
+    view = await openRetained();
+    await view.dialog
+      .getByRole("button", { name: "Review removal", exact: true })
+      .click();
     const requests: Record<string, unknown>[] = [];
     let loseFirstReceipt = true;
     await page.route("**/api/sessions/worktree-release", async (route) => {

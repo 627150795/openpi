@@ -480,7 +480,7 @@ test("worktree holders survive close until native exit and bound closing capacit
     });
   } finally {
     manager.dispose();
-    ptys.forEach((pty) => pty.emitExit(0));
+    for (const pty of ptys) pty.emitExit(0);
   }
 });
 

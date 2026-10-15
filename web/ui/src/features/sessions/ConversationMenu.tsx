@@ -181,6 +181,14 @@ export function ConversationMenu({
   }, []);
 
   useEffect(() => {
+    // A reused pathname with a new native identity is a different menu target.
+    // Keep an existing delete confirmation frozen so its mismatch stays visible.
+    setOpen(false);
+    setTargets(null);
+    setForkOptions(null);
+  }, [session.id, session.path]);
+
+  useEffect(() => {
     if (!open || !session.cwd || !connected) return;
     const request = ++targetRequest.current;
     setTargets(null);

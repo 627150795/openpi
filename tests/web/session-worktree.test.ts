@@ -30,6 +30,9 @@ const {
   cleanupSessionWorktree,
   createSessionWorktree,
   inspectSessionWorktree,
+  bindSessionWorktree,
+  readSessionWorktreeReceipt,
+  listSessionWorktrees,
   SessionWorktreeError,
 } = await import("../../web/runtime/session-worktree.ts");
 childProcess.execFile = originalExecFile;
@@ -682,5 +685,94 @@ test("large snapshots fail before creating a worktree instead of silently omitti
   assert.equal(
     git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)?.length,
     1,
+  );
+});
+
+test("successful worktree private authority survives restart and never comes from display paths", async (t) => {
+  const { repo } = fixture(t);
+  const sessions = path.join(repo, "sessions");
+  fs.mkdirSync(sessions);
+  const child = await createSessionWorktree(repo, "bound-child");
+  await assert.rejects(
+    readSessionWorktreeReceipt(child.worktree.path, sessions),
+  );
+  assert.deepEqual(await listSessionWorktrees(repo, sessions), {
+    worktrees: [],
+    truncated: false,
+    unavailable: 1,
+  });
+  const ownerSession = {
+    sessionId: "native-child",
+    sessionPath: path.join(sessions, "child.jsonl"),
+  };
+  await bindSessionWorktree(child.cleanupReceipt, ownerSession);
+  const recovered = await readSessionWorktreeReceipt(
+    child.worktree.path,
+    sessions,
+  );
+  assert.deepEqual(recovered.ownerSession, ownerSession);
+  const listing = await listSessionWorktrees(repo, sessions);
+  assert.deepEqual(listing.worktrees, [
+    { ...ownerSession, worktreePath: child.worktree.path },
+  ]);
+  assert.deepEqual(Object.keys(listing.worktrees[0]!).sort(), [
+    "sessionId",
+    "sessionPath",
+    "worktreePath",
+  ]);
+  assert.equal(JSON.stringify(listing).includes("fingerprint"), false);
+  await assert.rejects(
+    readSessionWorktreeReceipt(
+      child.worktree.path,
+      path.join(repo, "other-sessions"),
+    ),
+  );
+  fs.writeFileSync(
+    path.join(child.worktree.path, "private.env"),
+    "user bytes\n",
+  );
+  assert.equal((await cleanupSessionWorktree(recovered)).removed, false);
+  fs.unlinkSync(path.join(child.worktree.path, "private.env"));
+  assert.equal((await cleanupSessionWorktree(recovered)).removed, true);
+  assert.deepEqual(await listSessionWorktrees(repo, sessions), {
+    worktrees: [],
+    truncated: false,
+    unavailable: 0,
+  });
+});
+
+test("managed worktree discovery pages past unavailable markers and rejects stale cursors", async (t) => {
+  const { repo } = fixture(t);
+  const sessions = path.join(repo, "sessions");
+  const child = await createSessionWorktree(repo, "paged-child");
+  await bindSessionWorktree(child.cleanupReceipt, {
+    sessionId: "native-child",
+    sessionPath: path.join(sessions, "child.jsonl"),
+  });
+  const parent = path.dirname(child.worktree.path);
+  for (let index = 0; index < 128; index++) {
+    fs.mkdirSync(
+      path.join(
+        parent,
+        `session-000000000000-${String(index).padStart(36, "0")}`,
+      ),
+    );
+  }
+  const first = await listSessionWorktrees(repo, sessions);
+  assert.equal(first.truncated, true);
+  assert.equal(first.unavailable, 128);
+  assert.ok(first.nextCursor);
+  const next = await listSessionWorktrees(repo, sessions, first.nextCursor);
+  assert.equal(next.worktrees[0]?.worktreePath, child.worktree.path);
+  assert.equal(next.truncated, false);
+  await assert.rejects(
+    listSessionWorktrees(repo, sessions, "invalid"),
+    /refresh/u,
+  );
+  const anchor = Buffer.from(first.nextCursor, "base64url").toString("utf8");
+  fs.rmdirSync(path.join(parent, anchor));
+  await assert.rejects(
+    listSessionWorktrees(repo, sessions, first.nextCursor),
+    /refresh/u,
   );
 });

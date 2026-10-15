@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { readdirSync, writeFileSync } from "node:fs";
 import {
   link,
   mkdir,
@@ -1864,4 +1865,185 @@ test("an event subscriber failure cannot turn a confirmed unlink into an uncerta
     ...result,
     replayed: true,
   });
+});
+
+test("explicit release retains shared and replacement cwd owners, then recovers private authority after restart", {
+  timeout: 30_000,
+}, async (t) => {
+  const { root, runtime, request } = await fixture(t);
+  const git = await gitFixture(root);
+  const fork = await runtime.forkSession({
+    ...conversation(request),
+    environment: "worktree",
+  });
+  assert.equal(fork.state, "forked");
+  const target = {
+    sessionId: fork.sessionId!,
+    sessionPath: fork.sessionPath!,
+    worktreePath: fork.worktree!.path,
+  };
+  const release = { ...target, commandId: "release-exact" };
+  assert.equal(
+    (await runtime.releaseSessionWorktree(release)).state,
+    "preserved",
+  );
+  const descendant = await runtime.forkSession(
+    conversation(target, "shared-descendant"),
+  );
+  assert.equal(descendant.cwd, fork.cwd);
+  const deleted = await runtime.deleteSession({
+    commandId: "delete-owner",
+    sessionId: target.sessionId,
+    sessionPath: target.sessionPath,
+  });
+  assert.ok("worktreeReleaseTarget" in deleted);
+  assert.deepEqual(deleted.worktreeReleaseTarget, target);
+  assert.equal(
+    (
+      await runtime.releaseSessionWorktree({
+        ...release,
+        commandId: "release-shared",
+      })
+    ).state,
+    "preserved",
+  );
+  await runtime.deleteSession({
+    commandId: "delete-descendant",
+    sessionId: descendant.sessionId!,
+    sessionPath: descendant.sessionPath!,
+  });
+  assert.equal(runtime.cwd, fork.cwd);
+  const replacement = await runtime.releaseSessionWorktree({
+    ...release,
+    commandId: "release-replacement",
+  });
+  assert.equal(replacement.state, "preserved");
+  assert.match(replacement.reason!, /runtime/u);
+  await runtime.newSession(root, { commandId: "leave-worktree" });
+  await runtime.dispose();
+  const restarted = await PiWebRuntime.create(root);
+  t.after(() => restarted.dispose());
+  assert.deepEqual((await restarted.listRetainedWorktrees(root)).worktrees, [
+    target,
+  ]);
+  await assert.rejects(
+    restarted.releaseSessionWorktree({
+      ...release,
+      sessionPath: join(root, "outside.jsonl"),
+    }),
+    /exact/u,
+  );
+  const first = restarted.releaseSessionWorktree({
+    ...release,
+    commandId: "release-after-restart",
+  });
+  const duplicate = restarted.releaseSessionWorktree({
+    ...release,
+    commandId: "release-after-restart",
+  });
+  assert.equal((await first).state, "removed");
+  assert.equal((await duplicate).replayed, true);
+  assert.equal(
+    (
+      await restarted.releaseSessionWorktree({
+        ...release,
+        commandId: "release-after-restart",
+      })
+    ).state,
+    "removed",
+  );
+  assert.equal(
+    (await restarted.listRetainedWorktrees(root)).worktrees.length,
+    0,
+  );
+  assert.equal(
+    (await git("worktree", "list", "--porcelain")).stdout.includes(
+      target.worktreePath,
+    ),
+    false,
+  );
+  await restarted.dispose();
+});
+
+test("explicit release preserves modified checkout and rejects forged native binding without erasing authority", {
+  timeout: 20_000,
+}, async (t) => {
+  const { root, runtime, request } = await fixture(t);
+  await gitFixture(root);
+  const fork = await runtime.forkSession({
+    ...conversation(request),
+    environment: "worktree",
+  });
+  const target = {
+    sessionId: fork.sessionId!,
+    sessionPath: fork.sessionPath!,
+    worktreePath: fork.worktree!.path,
+  };
+  await runtime.deleteSession({
+    commandId: "delete-dirty",
+    sessionId: target.sessionId,
+    sessionPath: target.sessionPath,
+  });
+  await runtime.newSession(root, { commandId: "leave-dirty" });
+  const file = join(target.worktreePath, "private.env");
+  await writeFile(file, "operator evidence\n");
+  const wrong = await runtime.releaseSessionWorktree({
+    ...target,
+    sessionId: "forged-child",
+    commandId: "wrong-binding",
+  });
+  assert.equal(wrong.state, "preserved");
+  assert.match(wrong.reason!, /another native child/u);
+  const dirty = await runtime.releaseSessionWorktree({
+    ...target,
+    commandId: "dirty-release",
+  });
+  assert.equal(dirty.state, "preserved");
+  assert.equal(await readFile(file, "utf8"), "operator evidence\n");
+  assert.deepEqual((await runtime.listRetainedWorktrees(root)).worktrees, [
+    target,
+  ]);
+  await rm(file);
+  const removed = await runtime.releaseSessionWorktree({
+    ...target,
+    commandId: "explicit-retry",
+  });
+  assert.equal(removed.state, "removed");
+  await assert.rejects(
+    runtime.releaseSessionWorktree({
+      ...target,
+      commandId: "explicit-retry",
+      sessionId: "different",
+    }),
+    /another resource/u,
+  );
+});
+
+test("private native binding persistence failure is uncertain and preserves both child and checkout", {
+  timeout: 20_000,
+}, async (t) => {
+  const { root, runtime, request, hooks } = await fixture(t);
+  await gitFixture(root);
+  hooks.onFork = () => {
+    for (const entry of readdirSync(join(root, ".git", "worktrees")))
+      writeFileSync(
+        join(root, ".git", "worktrees", entry, "openpi-session-worktree.json"),
+        "changed ownership marker",
+      );
+  };
+  const result = await runtime.forkSession({
+    ...conversation(request),
+    environment: "worktree",
+  });
+  assert.equal(result.state, "uncertain");
+  assert.ok(result.sessionPath);
+  assert.ok(result.preservedWorktreePath);
+  assert.ok(await readFile(result.sessionPath, "utf8"));
+  assert.equal(
+    await readFile(join(result.preservedWorktreePath, "tracked.txt"), "utf8"),
+    "dirty source contents\n",
+  );
+  const listing = await runtime.listRetainedWorktrees(root);
+  assert.equal(listing.worktrees.length, 0);
+  assert.equal(listing.unavailable, 1);
 });

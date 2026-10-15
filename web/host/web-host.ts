@@ -1105,6 +1105,37 @@ export class WebHost {
       this.publish("session_renamed", { sessionPath: body.path, name });
       return this.json(response, 200, { path: body.path, name });
     }
+    if (url.pathname === "/api/workspaces/worktrees" && request.method === "GET") {
+      const path = url.searchParams.get("path");
+      const cursor = url.searchParams.get("cursor") ?? undefined;
+      if (!path || path.length > 4096 || !isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path) ||
+          [...url.searchParams.keys()].some((key) => !["path", "cursor"].includes(key) || url.searchParams.getAll(key).length !== 1) || (cursor?.length ?? 0) > 256)
+        return this.json(response, 400, { error: "An exact workspace and bounded cursor are required" });
+      if (!this.runtime.listRetainedWorktrees) return this.json(response, 501, { error: "Managed worktree discovery is unavailable" });
+      try {
+        const workspace = await this.adapter.requireWorkspace(path);
+        return this.json(response, 200, await this.runtime.listRetainedWorktrees(workspace, cursor));
+      } catch (error) {
+        const failure = this.runtimeRequestFailure(error, "WORKTREE_LIST_FAILED", "Managed worktrees could not be inspected");
+        return this.json(response, failure.status, { code: failure.code, error: failure.error });
+      }
+    }
+    if (url.pathname === "/api/sessions/worktree-release" && request.method === "POST") {
+      const body = await this.readJson(request);
+      if (Object.keys(body).length !== 4 || !Object.keys(body).every((key) => ["commandId", "sessionId", "sessionPath", "worktreePath"].includes(key)) ||
+          !boundedIdentity(body.commandId) || !boundedIdentity(body.sessionId) || !validSessionPath(body.sessionPath) || body.sessionPath.length > 4096 ||
+          typeof body.worktreePath !== "string" || !isAbsolute(body.worktreePath) || body.worktreePath.length > 4096 || /[\u0000-\u001f\u007f]/u.test(body.worktreePath))
+        return this.json(response, 400, { error: "An exact managed worktree and native child identity are required" });
+      if (!this.runtime.releaseSessionWorktree) return this.json(response, 501, { error: "Managed worktree release is unavailable" });
+      const exact = { commandId: body.commandId, sessionId: body.sessionId, sessionPath: body.sessionPath, worktreePath: body.worktreePath };
+      try {
+        const result = await this.serializeSessionFileMutation(() => this.runtime.releaseSessionWorktree!(exact));
+        return this.json(response, 200, result);
+      } catch (error) {
+        const failure = this.runtimeRequestFailure(error, "WORKTREE_RELEASE_FAILED", "The managed worktree release could not be confirmed");
+        return this.json(response, failure.status, { code: failure.code, error: failure.error });
+      }
+    }
     if (url.pathname === "/api/sessions/delete" && request.method === "POST") {
       const body = await this.readJson(request);
       if (Object.keys(body).length !== 3 || !Object.keys(body).every((key) => ["commandId", "sessionId", "sessionPath"].includes(key)) ||

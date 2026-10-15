@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import fs, { readdirSync, writeFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
 import {
   link,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   realpath,
@@ -14,6 +14,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -30,8 +31,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { readMessageRerun } from "../../web/protocol/message-rerun.ts";
 import {
-  WEB_SESSION_FORK,
   readSessionFork,
+  WEB_SESSION_FORK,
 } from "../../web/protocol/session-fork.ts";
 import { formatSourceReference } from "../../web/protocol/session-sources.ts";
 import { PiWebRuntime } from "../../web/runtime/pi-runtime.ts";
@@ -2318,8 +2319,19 @@ test("release authority unknowns never downgrade a resource terminal across clai
   }
   const gitFile = join(target.worktreePath, ".git");
   const originalGitFile = await readFile(gitFile, "utf8");
+  // Git marks this existing file hidden on Windows; opening with w yields EPERM.
+  const replaceGitFile = async (contents: string) => {
+    const handle = await open(gitFile, "r+");
+    try {
+      await handle.truncate(0);
+      await handle.writeFile(contents);
+    } finally {
+      await handle.close();
+    }
+    assert.equal(await readFile(gitFile, "utf8"), contents);
+  };
   try {
-    await writeFile(gitFile, "gitdir: missing-private-admin\n");
+    await replaceGitFile("gitdir: missing-private-admin\n");
     assert.equal(
       (
         await runtime.releaseSessionWorktree({
@@ -2330,7 +2342,7 @@ test("release authority unknowns never downgrade a resource terminal across clai
       "uncertain",
     );
   } finally {
-    await writeFile(gitFile, originalGitFile);
+    await replaceGitFile(originalGitFile);
   }
 });
 

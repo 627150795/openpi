@@ -906,7 +906,7 @@ test("retained managed worktrees remain discoverable after reload and native res
     });
     const openRetained = async () => {
       const trigger = project.getByRole("button", {
-        name: "Project options",
+        name: "Workspace options",
         exact: true,
       });
       await trigger.focus();

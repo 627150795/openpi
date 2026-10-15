@@ -812,19 +812,17 @@ export class WebHost {
               "an exact Session id and bounded terminal dimensions are required",
           });
         }
-        const cwd = await this.requireActiveToolSession(
-          body.sessionId,
-          response,
-        );
-        if (!cwd) return;
-        const terminal = await this.interactiveTerminals.create({
-          sessionId: body.sessionId,
-          cwd,
-          cols: body.cols,
-          rows: body.rows,
-          ...(typeof body.createKey === "string" ? { createKey: body.createKey } : {}),
+        const terminalRequest = { sessionId: body.sessionId, cols: body.cols, rows: body.rows,
+          ...(typeof body.createKey === "string" ? { createKey: body.createKey } : {}) };
+        return this.serializeSessionFileMutation(async () => {
+          const cwd = await this.requireActiveToolSession(terminalRequest.sessionId, response);
+          if (!cwd) return;
+          const terminal = await this.interactiveTerminals.create({
+            ...terminalRequest,
+            cwd,
+          });
+          return this.json(response, terminal.reused ? 200 : 201, terminal);
         });
-        return this.json(response, terminal.reused ? 200 : 201, terminal);
       }
       const sessionId = url.searchParams.get("sessionId");
       const id = url.searchParams.get("id");
@@ -1129,7 +1127,8 @@ export class WebHost {
       if (!this.runtime.releaseSessionWorktree) return this.json(response, 501, { error: "Managed worktree release is unavailable" });
       const exact = { commandId: body.commandId, sessionId: body.sessionId, sessionPath: body.sessionPath, worktreePath: body.worktreePath };
       try {
-        const result = await this.serializeSessionFileMutation(() => this.runtime.releaseSessionWorktree!(exact));
+        const result = await this.serializeSessionFileMutation(() => this.runtime.releaseSessionWorktree!(exact,
+          () => this.interactiveTerminals.hasWorktreeReferences?.(exact.worktreePath) !== false));
         return this.json(response, 200, result);
       } catch (error) {
         const failure = this.runtimeRequestFailure(error, "WORKTREE_RELEASE_FAILED", "The managed worktree release could not be confirmed");

@@ -354,7 +354,7 @@ export interface WebRuntimeController {
   cancelSessionFork?(request: WebSessionForkCancelRequest): Promise<WebSessionForkCancelResult>;
   deleteSession?(request: WebSessionDeleteRequest): Promise<WebSessionDeleteResult>;
   listRetainedWorktrees?(workspacePath: string, cursor?: string): Promise<WebRetainedWorktrees>;
-  releaseSessionWorktree?(request: WebWorktreeReleaseRequest): Promise<WebWorktreeReleaseResult>;
+  releaseSessionWorktree?(request: WebWorktreeReleaseRequest, hasExternalHolders?: () => boolean): Promise<WebWorktreeReleaseResult>;
   listModels(): WebModelSummary[];
   searchModels(query: string, limit?: number, provider?: string): WebModelSearchResult;
   listCommands?(): WebCommandDiscoveryResult;

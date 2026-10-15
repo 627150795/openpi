@@ -2029,6 +2029,29 @@ test("explicit release preserves modified checkout and rejects forged native bin
   assert.match(shuttingDown.reason!, /shutdown is still pending/u);
   pending.runtimeDisposals.delete(disposal.promise);
   disposal.resolve();
+  for (const [commandId, holder] of [
+    ["host-present", () => true],
+    [
+      "host-unknown",
+      () => {
+        throw new Error("unknown holder state");
+      },
+    ],
+  ] as const) {
+    const held = await runtime.releaseSessionWorktree(
+      { ...target, commandId },
+      holder,
+    );
+    assert.equal(held.state, "preserved");
+    assert.ok(await readFile(join(target.worktreePath, "tracked.txt"), "utf8"));
+  }
+  let holderInspections = 0;
+  const acquired = await runtime.releaseSessionWorktree(
+    { ...target, commandId: "host-acquired" },
+    () => ++holderInspections > 1,
+  );
+  assert.equal(acquired.state, "preserved");
+  assert.equal(holderInspections, 2);
   const removed = await runtime.releaseSessionWorktree({
     ...target,
     commandId: "explicit-retry",

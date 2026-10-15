@@ -2132,7 +2132,7 @@ export class PiWebRuntime implements WebRuntimeController {
 
   private worktreeReleaseReceipts?: Map<string, { request: WebWorktreeReleaseRequest; result: Promise<WebWorktreeReleaseResult> }>;
 
-  releaseSessionWorktree(request: WebWorktreeReleaseRequest) {
+  releaseSessionWorktree(request: WebWorktreeReleaseRequest, hasExternalHolders?: () => boolean) {
     const exact = { ...request };
     if ([exact.commandId, exact.sessionId, exact.sessionPath, exact.worktreePath].some((value) => typeof value !== "string" || !value || /[\u0000-\u001f\u007f]/u.test(value)) ||
         exact.commandId.length > 128 || exact.sessionId.length > 128 || exact.sessionPath.length > 4096 || exact.worktreePath.length > 4096 ||
@@ -2151,6 +2151,7 @@ export class PiWebRuntime implements WebRuntimeController {
       const preserve = (reason: string): WebWorktreeReleaseResult => ({ ...exact, state: "preserved", reason });
       try {
         this.assertActive();
+        if (hasExternalHolders?.()) return preserve("A Host terminal or pending process still owns this worktree, or its shutdown cannot be verified.");
         const receipt = await readSessionWorktreeReceipt(exact.worktreePath, this.webSessionDirectory);
         if (receipt.ownerSession.sessionId !== exact.sessionId || receipt.ownerSession.sessionPath !== exact.sessionPath)
           return preserve("The private worktree receipt belongs to another native child.");
@@ -2182,6 +2183,7 @@ export class PiWebRuntime implements WebRuntimeController {
             return preserve("A saved native Session still references this worktree. Delete or move its references first.");
         }
         this.assertActive();
+        if (hasExternalHolders?.()) return preserve("A Host process acquired the worktree during reference inspection.");
         const cleanup = await cleanupSessionWorktree(receipt);
         return { ...exact, state: cleanup.removed ? "removed" : "uncertain" in cleanup ? "uncertain" : "preserved", ...(cleanup.reason ? { reason: cleanup.reason } : {}) };
       } catch (error) {

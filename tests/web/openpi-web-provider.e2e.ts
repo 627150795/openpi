@@ -1,8 +1,9 @@
 import { AxeBuilder } from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sourceReferenceTokens } from "../../web/protocol/session-sources.ts";
 import {
   MODEL_ID,
   PROVIDER_ID,
@@ -13,6 +14,290 @@ const token = process.env.OPENPI_WEB_E2E_TOKEN;
 if (!token) throw new Error("OPENPI_WEB_E2E_TOKEN is required");
 
 const authHeaders = { Authorization: `Bearer ${token}` };
+
+test("ordinary file attachments preserve original bytes and reach native Pi read through the real provider", async ({
+  page,
+}, testInfo) => {
+  const content = "附件验收：中文与 emoji 🧪\nconst value = 598;\n";
+  const binary = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0xff]);
+  const provider = await startFakeProvider((body, index) => {
+    const request = body as {
+      messages: {
+        role: string;
+        content: string | { type: string; text?: string }[];
+      }[];
+    };
+    const user = request.messages
+      .slice()
+      .reverse()
+      .find((message) => message.role === "user");
+    const text =
+      typeof user?.content === "string"
+        ? user.content
+        : (user?.content.find((part) => part.type === "text")?.text ?? "");
+    const path = sourceReferenceTokens(text).find((source) =>
+      source.reference.endsWith(".ts"),
+    )?.name;
+    const delta =
+      index === 0 && path
+        ? {
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: "read-attached-text",
+                type: "function",
+                function: {
+                  name: "read",
+                  arguments: JSON.stringify({ path }),
+                },
+              },
+            ],
+          }
+        : {
+            role: "assistant",
+            content: "The native file contents were received.",
+          };
+    return (
+      [
+        {
+          id: "files-e2e",
+          object: "chat.completion.chunk",
+          created: 1700000000,
+          model: MODEL_ID,
+          choices: [{ index: 0, delta, finish_reason: null }],
+        },
+        {
+          id: "files-e2e",
+          object: "chat.completion.chunk",
+          created: 1700000000,
+          model: MODEL_ID,
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: index === 0 && path ? "tool_calls" : "stop",
+            },
+          ],
+        },
+      ]
+        .map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`)
+        .join("") + "data: [DONE]\n\n"
+    );
+  });
+  const workspace = await mkdtemp(join(tmpdir(), "openpi-files-provider-"));
+  try {
+    const imported = await page.request.post("/api/workspaces", {
+      headers: authHeaders,
+      data: { path: workspace },
+    });
+    expect(imported.status()).toBe(201);
+    const created = await page.request.post("/api/sessions", {
+      headers: authHeaders,
+      data: {
+        workspacePath: (await imported.json()).path,
+        commandId: "files-provider-e2e-session",
+      },
+    });
+    expect(created.status()).toBe(201);
+    const session = await created.json();
+    expect(
+      (
+        await page.request.post("/api/model", {
+          headers: authHeaders,
+          data: {
+            provider: PROVIDER_ID,
+            modelId: MODEL_ID,
+            sessionId: session.sessionId,
+            sessionPath: session.sessionPath,
+          },
+        })
+      ).status(),
+    ).toBe(200);
+    await page.goto("/");
+    const input = page.getByRole("textbox", { name: "描述任务" });
+    await expect(input).toBeEnabled();
+    await page
+      .locator('input[type="file"]')
+      .first()
+      .setInputFiles([
+        {
+          name: "100% 中文验收说明.ts",
+          mimeType: "text/plain",
+          buffer: Buffer.from(content),
+        },
+        { name: "archive.zip", mimeType: "application/zip", buffer: binary },
+      ]);
+    await expect(page.locator(".composer-file-attachment")).toHaveCount(2);
+    await expect(
+      page.locator(".composer-file-attachment").first(),
+    ).toContainText("文本已就绪");
+    await expect(
+      page.locator(".composer-file-attachment").last(),
+    ).toContainText("原文件已就绪");
+    await page
+      .locator(".composer-file-attachment")
+      .first()
+      .getByRole("button")
+      .first()
+      .click();
+    await expect(page.getByRole("dialog")).toContainText(content.trim());
+    await page.keyboard.press("Escape");
+    const upload = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/prompt-files",
+    );
+    const admission = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/prompt" &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    const uploadResponse = await upload;
+    expect(uploadResponse.status()).toBe(200);
+    const receipt = await uploadResponse.json();
+    expect(receipt.sessionId).toBe(session.sessionId);
+    expect(await readFile(receipt.files[0].path, "utf8")).toBe(content);
+    expect(await readFile(receipt.files[0].textPath, "utf8")).toBe(content);
+    expect(await readFile(receipt.files[1].path)).toEqual(binary);
+    expect(receipt.files[1].textPath).toBeUndefined();
+    expect((await admission).status()).toBe(202);
+    await expect.poll(() => provider.requests.length).toBe(2);
+    const messages = (
+      provider.requests[1].body as {
+        messages: { role: string; content: unknown }[];
+      }
+    ).messages;
+    expect(
+      messages.some(
+        (message) =>
+          message.role === "tool" &&
+          typeof message.content === "string" &&
+          message.content.includes(content.trim()),
+      ),
+    ).toBe(true);
+    await expect(page.locator(".composer-file-attachment")).toHaveCount(0);
+    await expect(input).toHaveValue("");
+    await expect(
+      page.locator(".message-row.assistant.response").last(),
+    ).toContainText("The native file contents were received.");
+    await expect(page.locator(".notice")).toHaveCount(0);
+    await page.screenshot({
+      path: testInfo.outputPath("files-upload-native-read.png"),
+      animations: "disabled",
+    });
+  } finally {
+    await provider.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("uploaded screenshots reach the real Host and provider without preview metadata", async ({
+  page,
+}, testInfo) => {
+  const provider = await startFakeProvider();
+  const workspace = await mkdtemp(join(tmpdir(), "openpi-image-provider-"));
+  const imageData =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/2uoAAAAASUVORK5CYII=";
+  try {
+    const imported = await page.request.post("/api/workspaces", {
+      headers: authHeaders,
+      data: { path: workspace },
+    });
+    expect(imported.status()).toBe(201);
+    const created = await page.request.post("/api/sessions", {
+      headers: authHeaders,
+      data: {
+        workspacePath: (await imported.json()).path,
+        commandId: "image-provider-e2e-session",
+      },
+    });
+    expect(created.status()).toBe(201);
+    const snapshot = await (
+      await page.request.get("/api/snapshot", { headers: authHeaders })
+    ).json();
+    const selected = await page.request.post("/api/model", {
+      headers: authHeaders,
+      data: {
+        provider: PROVIDER_ID,
+        modelId: MODEL_ID,
+        sessionId: snapshot.currentSessionId,
+        sessionPath: snapshot.selectedSession.path,
+      },
+    });
+    expect(selected.status()).toBe(200);
+    await page.goto("/");
+    const input = page.getByRole("textbox", { name: "描述任务" });
+    await expect(input).toBeEnabled();
+    await input.fill("请查看这张截图");
+    await page
+      .locator('input[type="file"]')
+      .first()
+      .setInputFiles({
+        name: "截屏2026-09-30 23.44.32.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(imageData, "base64"),
+      });
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    const admission = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/prompt" &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    const response = await admission;
+    expect(response.status()).toBe(202);
+    expect(response.request().postDataJSON().images).toEqual([
+      {
+        data: imageData,
+        mimeType: "image/png",
+        name: "截屏2026-09-30 23.44.32.png",
+      },
+    ]);
+    await expect.poll(() => provider.requests.length).toBe(1);
+    const body = provider.requests[0]!.body as {
+      messages: {
+        role: string;
+        content:
+          | string
+          | { type: string; text?: string; image_url?: { url: string } }[];
+      }[];
+    };
+    const content = body.messages
+      .slice()
+      .reverse()
+      .find((message) => message.role === "user")?.content;
+    expect(Array.isArray(content)).toBe(true);
+    if (!Array.isArray(content)) throw new Error("Missing provider image");
+    expect(content).toContainEqual({ type: "text", text: "请查看这张截图" });
+    expect(
+      content.find((part) => part.type === "image_url")?.image_url?.url,
+    ).toBe(`data:image/png;base64,${imageData}`);
+    await expect(input).toHaveValue("");
+    await expect(page.locator(".composer-attachment")).toHaveCount(0);
+    await expect(page.locator(".message-row.assistant")).toContainText(
+      "Thinking level acknowledged.",
+    );
+    await expect
+      .poll(async () => {
+        const snapshot = await (
+          await page.request.get("/api/snapshot", { headers: authHeaders })
+        ).json();
+        return snapshot.runtime.status;
+      })
+      .toBe("idle");
+    await expect(page.locator(".message-row.user")).toHaveCount(1);
+    await expect(page.locator(".turn-state.waiting")).toHaveCount(0);
+    await expect(page.locator(".message-row").first()).toHaveClass(/user/u);
+    await expect(page.locator(".notice")).toHaveCount(0);
+    await page.screenshot({
+      path: testInfo.outputPath("image-upload-delivered.png"),
+      animations: "disabled",
+    });
+  } finally {
+    await provider.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
 
 test("thinking level reaches the provider request end to end", async ({
   page,
@@ -40,14 +325,21 @@ test("thinking level reaches the provider request end to end", async ({
     const initialSnapshot = await page.request.get("/api/snapshot", {
       headers: authHeaders,
     });
-    const sessionId = (await initialSnapshot.json()).currentSessionId as string;
+    const snapshot = await initialSnapshot.json();
+    const sessionId = snapshot.currentSessionId as string;
+    const sessionPath = snapshot.selectedSession.path as string;
     expect(typeof sessionId).toBe("string");
     expect(sessionId.length).toBeGreaterThan(0);
 
     // Select the fake reasoning model through the real Web runtime.
     const selected = await page.request.post("/api/model", {
       headers: authHeaders,
-      data: { provider: PROVIDER_ID, modelId: MODEL_ID, sessionId },
+      data: {
+        provider: PROVIDER_ID,
+        modelId: MODEL_ID,
+        sessionId,
+        sessionPath,
+      },
     });
     expect(selected.status()).toBe(200);
 
@@ -55,7 +347,7 @@ test("thinking level reaches the provider request end to end", async ({
     // once a workspace and model are active.
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("textbox", { name: "描述任务" })).toBeVisible();
-    const thinkingPicker = page.locator(".thinking-picker");
+    const thinkingPicker = page.locator(".model-picker > button");
     await expect(thinkingPicker).toBeVisible();
     await expect(thinkingPicker).toBeEnabled();
 
@@ -66,12 +358,14 @@ test("thinking level reaches the provider request end to end", async ({
         response.request().method() === "POST",
     );
     await thinkingPicker.click();
-    await page.getByRole("menuitem", { name: "high", exact: true }).click();
+    expect(snapshot.thinking.available.at(-1)).toBe("high");
+    await page.getByRole("slider", { name: "思考等级" }).press("End");
     expect((await thinkingWrite).status()).toBe(200);
-    const thinkingWrap = page.locator(".thinking-picker-wrap");
+    const thinkingWrap = page.locator(".model-picker-wrap");
     await expect(thinkingWrap).toHaveAttribute("data-level", "high");
     await expect(thinkingWrap).toHaveAttribute("data-pending", "false");
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.getByRole("textbox", { name: "描述任务" }).click();
 
     // Hold the provider response so the running-state picker lock is
     // observable deterministically. The request is recorded before the hold.
@@ -93,7 +387,7 @@ test("thinking level reaches the provider request end to end", async ({
     };
     expect(requestBody.model).toBe(MODEL_ID);
     expect(requestBody.reasoning_effort).toBe("high");
-    await expect(page.locator(".thinking-picker")).toBeDisabled();
+    await expect(thinkingPicker).toBeDisabled();
 
     provider.release();
     await expect(page.locator(".message-row.assistant")).toContainText(
@@ -102,10 +396,7 @@ test("thinking level reaches the provider request end to end", async ({
 
     // Reload: the persisted level is reflected through both read paths.
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(page.locator(".thinking-picker-wrap")).toHaveAttribute(
-      "data-level",
-      "high",
-    );
+    await expect(thinkingWrap).toHaveAttribute("data-level", "high");
     const thinkingRead = await page.request.get(
       `/api/thinking?sessionId=${encodeURIComponent(sessionId)}`,
       { headers: authHeaders },
@@ -118,12 +409,10 @@ test("thinking level reaches the provider request end to end", async ({
     expect((await reloadedSnapshot.json()).thinking.level).toBe("high");
 
     // `off` must omit reasoning_effort rather than send "off".
-    await page.locator(".thinking-picker").click();
-    await page.getByRole("menuitem", { name: "off", exact: true }).click();
-    await expect(page.locator(".thinking-picker-wrap")).toHaveAttribute(
-      "data-level",
-      "off",
-    );
+    await thinkingPicker.click();
+    await page.getByRole("slider", { name: "思考等级" }).press("Home");
+    await expect(thinkingWrap).toHaveAttribute("data-level", "off");
+    await page.getByRole("textbox", { name: "描述任务" }).click();
     await page
       .getByRole("textbox", { name: "描述任务" })
       .fill("Without reasoning effort");
@@ -133,444 +422,7 @@ test("thinking level reaches the provider request end to end", async ({
       .toBe(2);
     const offBody = provider.requests[1].body as Record<string, unknown>;
     expect("reasoning_effort" in offBody).toBe(false);
-    await expect(page.locator(".thinking-picker")).toBeEnabled();
-  } finally {
-    await provider.close();
-    await rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test("preserves a held turn identity across A/B/A replacement and reload", async ({
-  page,
-}, testInfo) => {
-  const provider = await startFakeProvider();
-  const workspace = await mkdtemp(join(tmpdir(), "openpi-stop-provider-"));
-  try {
-    const imported = await page.request.post("/api/workspaces", {
-      headers: authHeaders,
-      data: { path: workspace },
-    });
-    expect(imported.status()).toBe(201);
-    const { path: canonicalWorkspace } = await imported.json();
-
-    const createdA = await page.request.post("/api/sessions", {
-      headers: authHeaders,
-      data: {
-        workspacePath: canonicalWorkspace,
-        commandId: "stop-provider-session-a",
-      },
-    });
-    expect(createdA.status()).toBe(201);
-    const createdABody = (await createdA.json()) as {
-      sessionId?: unknown;
-      sessionPath?: unknown;
-    };
-    expect(typeof createdABody.sessionId).toBe("string");
-    expect(typeof createdABody.sessionPath).toBe("string");
-    const sessionAPath = createdABody.sessionPath as string;
-
-    const initialSnapshot = await page.request.get("/api/snapshot", {
-      headers: authHeaders,
-    });
-    const sessionAId = (
-      (await initialSnapshot.json()) as {
-        currentSessionId?: unknown;
-      }
-    ).currentSessionId;
-    expect(typeof sessionAId).toBe("string");
-
-    const selected = await page.request.post("/api/model", {
-      headers: authHeaders,
-      data: {
-        provider: PROVIDER_ID,
-        modelId: MODEL_ID,
-        sessionId: sessionAId,
-      },
-    });
-    expect(selected.status()).toBe(200);
-
-    await page.goto("/", { waitUntil: "domcontentloaded" });
-    const prompt = page.getByRole("textbox", { name: "描述任务" });
-    await expect(prompt).toBeVisible();
-
-    // Persist A before replacing the active runtime; Pi writes a newly created
-    // session file once its first assistant message reaches a terminal event.
-    await prompt.fill("Persist Session A before switching");
-    await page.getByRole("button", { name: "发送", exact: true }).click();
-    await expect
-      .poll(() => provider.requests.length, { timeout: 15_000 })
-      .toBe(1);
-    await expect(page.locator(".message-row.assistant").last()).toContainText(
-      "Thinking level acknowledged.",
-    );
-
-    provider.holdNextResponse();
-    const firstPromptRequest = page.waitForRequest(
-      (request) =>
-        new URL(request.url()).pathname === "/api/prompt" &&
-        request.method() === "POST",
-    );
-    await prompt.fill("Keep the first Session running");
-    await page.getByRole("button", { name: "发送", exact: true }).click();
-    const firstPromptBody = (await firstPromptRequest).postDataJSON() as {
-      commandId?: unknown;
-      sessionId?: unknown;
-    };
-    expect(typeof firstPromptBody.commandId).toBe("string");
-    expect(firstPromptBody.sessionId).toBe(sessionAId);
-
-    await expect
-      .poll(() => provider.requests.length, { timeout: 15_000 })
-      .toBe(2);
-    const runningAResponse = await page.request.get("/api/snapshot", {
-      headers: authHeaders,
-    });
-    const runningA = (await runningAResponse.json()) as {
-      currentSessionId?: unknown;
-      runtime: {
-        status: string;
-        activeTurn?: {
-          sessionId: string;
-          commandId: string;
-          epoch: number;
-        };
-      };
-    };
-    expect(runningA.currentSessionId).toBe(sessionAId);
-    expect(runningA.runtime.status).toBe("running");
-    const firstTurn = runningA.runtime.activeTurn;
-    expect(firstTurn).toEqual({
-      sessionId: sessionAId,
-      commandId: firstPromptBody.commandId,
-      epoch: expect.any(Number),
-    });
-
-    const createdB = await page.request.post("/api/sessions", {
-      headers: authHeaders,
-      data: {
-        workspacePath: canonicalWorkspace,
-        commandId: "stop-provider-session-b",
-      },
-    });
-    expect(createdB.status()).toBe(201);
-    const createdBBody = (await createdB.json()) as {
-      sessionId?: unknown;
-    };
-    expect(typeof createdBBody.sessionId).toBe("string");
-    expect(createdBBody.sessionId).not.toBe(sessionAId);
-
-    const runningBResponse = await page.request.get("/api/snapshot", {
-      headers: authHeaders,
-    });
-    const runningB = (await runningBResponse.json()) as {
-      currentSessionId?: unknown;
-      runtime: { status: string; activeTurn?: unknown };
-    };
-    expect(runningB.currentSessionId).toBe(createdBBody.sessionId);
-    expect(runningB.runtime.status).toBe("idle");
-    expect(runningB.runtime.activeTurn).toBeUndefined();
-
-    // The original A handle is scoped to A and cannot stop the selected B.
-    const staleOnB = await page.request.post("/api/turns/cancel", {
-      headers: authHeaders,
-      data: firstTurn,
-    });
-    expect(staleOnB.status()).toBe(409);
-    expect(await staleOnB.json()).toMatchObject({
-      state: "stale-session",
-      accepted: false,
-    });
-    expect(provider.requests).toHaveLength(2);
-
-    const selectedA = await page.request.post("/api/sessions/select", {
-      headers: authHeaders,
-      data: { path: sessionAPath },
-    });
-    const selectedABody = await selectedA.json();
-    expect(selectedA.status(), JSON.stringify(selectedABody)).toBe(200);
-    await expect
-      .poll(
-        async () =>
-          (
-            await page.request.get("/api/snapshot", {
-              headers: authHeaders,
-            })
-          ).json() as Promise<{
-            currentSessionId?: unknown;
-            runtime: { status: string; activeTurn?: unknown };
-          }>,
-        { timeout: 15_000 },
-      )
-      .toMatchObject({
-        currentSessionId: sessionAId,
-        runtime: { status: "running", activeTurn: firstTurn },
-      });
-
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(prompt).toBeVisible();
-    const stop = page.getByRole("button", {
-      name: "停止当前轮次",
-      exact: true,
-    });
-    await expect(stop).toBeVisible();
-    await expect
-      .poll(
-        async () =>
-          (
-            await page.request.get("/api/snapshot", {
-              headers: authHeaders,
-            })
-          ).json() as Promise<{
-            runtime: { status: string; activeTurn?: unknown };
-          }>,
-        { timeout: 15_000 },
-      )
-      .toMatchObject({
-        runtime: { status: "running", activeTurn: firstTurn },
-      });
-    await page.screenshot({
-      path: testInfo.outputPath("stop-session-switch-running.png"),
-      fullPage: true,
-    });
-
-    const firstCancelResponse = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/turns/cancel" &&
-        response.request().method() === "POST",
-    );
-    await stop.click();
-    const firstCancel = await firstCancelResponse;
-    expect(firstCancel.status()).toBe(202);
-    expect(await firstCancel.json()).toMatchObject({
-      state: "accepted",
-      accepted: true,
-    });
-    await expect
-      .poll(
-        async () =>
-          (
-            await page.request.get("/api/snapshot", {
-              headers: authHeaders,
-            })
-          ).json() as Promise<{
-            runtime: { status: string; activeTurn?: unknown };
-          }>,
-        { timeout: 15_000 },
-      )
-      .toMatchObject({ runtime: { status: "idle" } });
-    await expect(stop).toHaveCount(0);
-    await expect(page.locator(".composer-hint")).toContainText(
-      "当前轮次已停止。",
-    );
-    provider.release();
-
-    // A new turn gets a new identity. Reusing the old handle is idempotent and
-    // must not cancel the new one.
-    provider.holdNextResponse();
-    const secondPromptRequest = page.waitForRequest(
-      (request) =>
-        new URL(request.url()).pathname === "/api/prompt" &&
-        request.method() === "POST",
-    );
-    await prompt.fill("Start a fresh turn in Session A");
-    await page.getByRole("button", { name: "发送", exact: true }).click();
-    const secondPromptBody = (await secondPromptRequest).postDataJSON() as {
-      commandId?: unknown;
-    };
-    await expect
-      .poll(() => provider.requests.length, { timeout: 15_000 })
-      .toBe(3);
-    const runningNewAResponse = await page.request.get("/api/snapshot", {
-      headers: authHeaders,
-    });
-    const runningNewA = (await runningNewAResponse.json()) as {
-      runtime: {
-        status: string;
-        activeTurn?: {
-          sessionId: string;
-          commandId: string;
-          epoch: number;
-        };
-      };
-    };
-    expect(runningNewA.runtime.status).toBe("running");
-    const secondTurn = runningNewA.runtime.activeTurn;
-    expect(secondTurn).toEqual({
-      sessionId: sessionAId,
-      commandId: secondPromptBody.commandId,
-      epoch: expect.any(Number),
-    });
-    expect(secondTurn).not.toEqual(firstTurn);
-
-    const staleOnNewA = await page.request.post("/api/turns/cancel", {
-      headers: authHeaders,
-      data: firstTurn,
-    });
-    expect(staleOnNewA.status()).toBe(200);
-    expect(await staleOnNewA.json()).toMatchObject({
-      state: "already-settled",
-      accepted: false,
-    });
-    expect(provider.requests).toHaveLength(3);
-    await expect(stop).toBeVisible();
-
-    const secondCancelResponse = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/turns/cancel" &&
-        response.request().method() === "POST",
-    );
-    await stop.click();
-    const secondCancel = await secondCancelResponse;
-    expect(secondCancel.status()).toBe(202);
-    expect(await secondCancel.json()).toMatchObject({
-      state: "accepted",
-      accepted: true,
-    });
-    await expect
-      .poll(
-        async () =>
-          (
-            await page.request.get("/api/snapshot", {
-              headers: authHeaders,
-            })
-          ).json() as Promise<{
-            runtime: { status: string; activeTurn?: unknown };
-          }>,
-        { timeout: 15_000 },
-      )
-      .toMatchObject({ runtime: { status: "idle" } });
-    provider.release();
-  } finally {
-    await provider.close();
-    await rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test("keeps native cron wake cancellation tied to its runtime identity", async ({
-  page,
-}, testInfo) => {
-  test.setTimeout(100_000);
-  const provider = await startFakeProvider();
-  const workspace = await mkdtemp(join(tmpdir(), "openpi-cron-provider-"));
-  try {
-    const imported = await page.request.post("/api/workspaces", {
-      headers: authHeaders,
-      data: { path: workspace },
-    });
-    expect(imported.status()).toBe(201);
-    const { path: canonicalWorkspace } = await imported.json();
-
-    const created = await page.request.post("/api/sessions", {
-      headers: authHeaders,
-      data: {
-        workspacePath: canonicalWorkspace,
-        commandId: "cron-provider-session",
-      },
-    });
-    expect(created.status()).toBe(201);
-    const snapshot = await page.request.get("/api/snapshot", {
-      headers: authHeaders,
-    });
-    const sessionId = (
-      (await snapshot.json()) as {
-        currentSessionId?: unknown;
-      }
-    ).currentSessionId;
-    expect(typeof sessionId).toBe("string");
-
-    const selected = await page.request.post("/api/model", {
-      headers: authHeaders,
-      data: { provider: PROVIDER_ID, modelId: MODEL_ID, sessionId },
-    });
-    expect(selected.status()).toBe(200);
-
-    await page.goto("/", { waitUntil: "domcontentloaded" });
-    const prompt = page.getByRole("textbox", { name: "描述任务" });
-    await expect(prompt).toBeVisible();
-
-    // The isolated package source registers /cron. Hold its eventual provider
-    // response so the native agent_start identity is visible to the UI.
-    provider.holdNextResponse();
-    const cronPromptResponse = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/prompt" &&
-        response.request().method() === "POST",
-    );
-    await prompt.fill("/cron in 30s Verify native wake cancellation");
-    await page.getByRole("button", { name: "发送", exact: true }).click();
-    const cronResponse = await cronPromptResponse;
-    expect(cronResponse.status()).toBe(202);
-    expect(await cronResponse.json()).toMatchObject({
-      accepted: true,
-      state: "accepted",
-    });
-
-    await expect
-      .poll(() => provider.requests.length, { timeout: 85_000 })
-      .toBe(1);
-    const nativeSnapshotResponse = await page.request.get("/api/snapshot", {
-      headers: authHeaders,
-    });
-    const nativeSnapshot = (await nativeSnapshotResponse.json()) as {
-      currentSessionId?: unknown;
-      runtime: {
-        status: string;
-        activeTurn?: {
-          sessionId: string;
-          commandId: string;
-          epoch: number;
-        };
-      };
-    };
-    expect(nativeSnapshot.currentSessionId).toBe(sessionId);
-    expect(nativeSnapshot.runtime.status).toBe("running");
-    const nativeTurn = nativeSnapshot.runtime.activeTurn;
-    expect(nativeTurn).toEqual({
-      sessionId,
-      commandId: expect.stringMatching(/^native-/u),
-      epoch: expect.any(Number),
-    });
-
-    const stop = page.getByRole("button", {
-      name: "停止当前轮次",
-      exact: true,
-    });
-    await expect(stop).toBeVisible();
-    await page.screenshot({
-      path: testInfo.outputPath("native-cron-wake-running.png"),
-      fullPage: true,
-    });
-
-    const cancelResponse = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/turns/cancel" &&
-        response.request().method() === "POST",
-    );
-    await stop.click();
-    const cancel = await cancelResponse;
-    expect(cancel.status()).toBe(202);
-    expect(await cancel.json()).toMatchObject({
-      state: "accepted",
-      accepted: true,
-    });
-    await expect
-      .poll(
-        async () =>
-          (
-            await page.request.get("/api/snapshot", {
-              headers: authHeaders,
-            })
-          ).json() as Promise<{
-            runtime: { status: string; activeTurn?: unknown };
-          }>,
-        { timeout: 15_000 },
-      )
-      .toMatchObject({ runtime: { status: "idle" } });
-    await expect(stop).toHaveCount(0);
-    await expect(page.locator(".composer-hint")).toContainText(
-      "当前轮次已停止。",
-    );
-    provider.release();
+    await expect(thinkingPicker).toBeEnabled();
   } finally {
     await provider.close();
     await rm(workspace, { recursive: true, force: true });

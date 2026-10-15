@@ -409,6 +409,16 @@ function waitForReconnect(delay: number, signal: AbortSignal) {
   });
 }
 
+/** Admit native absolute shapes without resolving paths in the browser. */
+function absoluteSessionLinkPath(value: string) {
+  return (
+    /^\/(?![\\/])/u.test(value) ||
+    /^[a-z]:[\\/]/iu.test(value) ||
+    /^\\\\(?![?.]\\)[^\\/]+\\[^\\/]+\\/u.test(value) ||
+    /^\/\/[^\\/]+\/[^\\/]+\//u.test(value)
+  );
+}
+
 export function createWebStore(
   client = new WebClient(),
   dependencies: WebStoreDependencies = {},
@@ -419,7 +429,8 @@ export function createWebStore(
   const linkId = linkParams.get("sessionId");
   const hasSessionLink = linkPath !== null || linkId !== null;
   let sessionLink =
-    linkPath?.startsWith("/") &&
+    linkPath &&
+    absoluteSessionLinkPath(linkPath) &&
     linkPath.length <= 4096 &&
     linkId &&
     linkId.length <= 128 &&
@@ -1771,8 +1782,20 @@ export function createWebStore(
           pendingSessionSelection?.path === path &&
           pendingSessionSelection.epoch === sessionEpoch
         ) {
+          const pending = pendingSessionSelection;
           set({ mobileSidebarOpen: false });
-          return pendingSessionSelection.promise;
+          const selected = await pending.promise;
+          const settled = get();
+          return (
+            selected &&
+            pending.epoch === sessionEpoch &&
+            settled.selectedPath === path &&
+            settled.snapshot?.selectedSession?.path === path &&
+            (!expectedSessionId ||
+              settled.snapshot.selectedSession.id === expectedSessionId) &&
+            !settled.workspaceDraft &&
+            isControlledSession(settled.snapshot)
+          );
         }
         if (
           !current.workspaceDraft &&
@@ -1846,7 +1869,8 @@ export function createWebStore(
               get().snapshot?.selectedSession?.path === path &&
               (!expectedSessionId ||
                 get().snapshot?.selectedSession?.id === expectedSessionId) &&
-              !get().workspaceDraft
+              !get().workspaceDraft &&
+              isControlledSession(get().snapshot)
             );
           } catch (error) {
             if (epoch !== sessionEpoch) return false;

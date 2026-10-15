@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, unlinkSync } from "node:fs";
 import { readConfiguredPackages } from "./configured-packages.ts";
 import { mkdir, readdir, realpath, stat } from "node:fs/promises";
@@ -698,7 +699,7 @@ export class PiWebRuntime implements WebRuntimeController {
       const held = this.compactionQueues?.get(this.runtime);
       if (held) held.blocked = true;
       const abortOperation = this.runtime.session.abort();
-      this.turnAbortOperations.set(key, abortOperation);
+      if (!this.terminalTurnKeys.has(key)) this.turnAbortOperations.set(key, abortOperation);
       void abortOperation.catch(() => {
         if (this.turnAbortOperations.get(key) === abortOperation) {
           this.turnAbortOperations.delete(key);
@@ -2680,14 +2681,8 @@ export class PiWebRuntime implements WebRuntimeController {
     if (session !== this.runtime.session) return;
     this.observeRetry(session, event);
     this.observeCompaction(session, event);
-    // A command can return before its native triggerTurn continuation starts.
-    // Recover only that async invocation's unused origin, never the last HTTP
-    // request or an unrelated run. This also retains its controlling Web tab.
-    if (event.type === "agent_start" && !this.activePromptTrace) {
-      const origin = this.promptOrigins?.getStore();
-      if (origin && !origin.started && matchesSessionIdentity(session.sessionManager, { expectedSessionId: origin.sessionId, expectedSessionPath: origin.sessionPath })) {
-        this.activePromptTrace = origin;
-      }
+    if (event.type === "agent_start") {
+      this.activePromptTrace = this.observeRunStart(session, this.activePromptTrace);
     }
     if (this.activePromptTrace) observePromptOutcome(this.activePromptTrace, event);
     if (event.type === "agent_start" && this.activePromptTrace) {
@@ -2824,8 +2819,33 @@ export class PiWebRuntime implements WebRuntimeController {
     for (const listener of this.listeners) listener({ type, detail });
   }
 
+  private observeRunStart(session: AgentSession, trace?: PromptTrace, publish = true) {
+    const manager = session.sessionManager;
+    const belongs = (candidate?: PromptTrace) => candidate && matchesSessionIdentity(manager, {
+      expectedSessionId: candidate.sessionId, expectedSessionPath: candidate.sessionPath,
+    });
+    // A delayed command may still own an unused exact Web origin. A genuinely
+    // native run gets only a control handle, never an HTTP/controller admission.
+    const origin = this.promptOrigins?.getStore();
+    const current = belongs(trace) ? trace!
+      : origin && !origin.started && belongs(origin) ? origin
+        : {
+            commandId: `native-${randomUUID()}`,
+            sessionId: manager.getSessionId(),
+            sessionPath: manager.getSessionFile() ?? `current:${manager.getSessionId()}`,
+            startedAt: performance.now(),
+            started: false,
+            queued: false,
+            userMessageObserved: false,
+          };
+    this.startPromptTrace(current, manager, publish);
+    return current;
+  }
+
   private activeTurnFromTrace(trace?: PromptTrace, sessionManager = this.sessionManager): WebActiveTurn | undefined {
-    if (!trace?.started || trace.epoch === undefined) return undefined;
+    if (!trace?.started || trace.epoch === undefined || !matchesSessionIdentity(sessionManager, {
+      expectedSessionId: trace.sessionId, expectedSessionPath: trace.sessionPath,
+    })) return undefined;
     const prompt = trace.promptMessage && sessionManager.getBranch().find((entry) => entry.type === "message" && entry.message === trace.promptMessage && entry.message.role === "user");
     return {
       sessionId: trace.sessionId,
@@ -3001,9 +3021,15 @@ export class PiWebRuntime implements WebRuntimeController {
     const unsubscribe = session.subscribe((event) => {
       this.observeRetry(session, event);
       this.observeCompaction(session, event);
-      const traces = this.suspendedPromptTraces?.get(session);
+      const owners = this.suspendedPromptTraces ??= new WeakMap();
+      let traces = owners.get(session);
+      if (event.type === "agent_start") {
+        traces ??= { pending: [] };
+        traces.active = this.observeRunStart(session, traces.active ?? traces.pending.shift(), false);
+        owners.set(session, traces);
+      }
       if (traces) {
-        if (event.type === "agent_start" || (event.type === "message_start" && event.message.role === "user")) {
+        if (event.type === "message_start" && event.message.role === "user") {
           traces.active ??= traces.pending.shift();
           if (traces.active) this.startPromptTrace(traces.active, session.sessionManager, false);
         }
@@ -3016,7 +3042,9 @@ export class PiWebRuntime implements WebRuntimeController {
       if (event.type === "agent_settled") {
         clearTimeout(progressTimer);
         progress();
-        this.releaseRetainedRuntime(runtime);
+        // Pi starts settled-hook triggerTurn actions after public settlement.
+        // Recheck ownership after those actions can enter their preparing run.
+        queueMicrotask(() => this.releaseRetainedRuntime(runtime));
       } else if (["agent_start", "message_start", "message_end", "tool_execution_start", "tool_execution_end", "queue_update"].includes(event.type) && !progressTimer) {
         progressTimer = setTimeout(progress, 100);
         progressTimer.unref();
@@ -3041,7 +3069,7 @@ export class PiWebRuntime implements WebRuntimeController {
 
   private releaseRetainedRuntime(runtime: AgentSessionRuntime) {
     if (!this.retainedRuntimes.has(runtime)) return;
-    if (runtime.session.isStreaming || this.inFlightRuntimes.has(runtime)) return;
+    if (!runtime.session.isIdle || runtime.session.isStreaming || this.inFlightRuntimes.has(runtime)) return;
     this.retainedSubscriptions.get(runtime)?.();
     this.retainedSubscriptions.delete(runtime);
     this.retainedRuntimes.delete(runtime);

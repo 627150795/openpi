@@ -365,6 +365,7 @@ async function createForkHost(browser: Browser, locale: keyof typeof labels) {
       get providerRequests() {
         return providerRequests;
       },
+      api,
       snapshot: async () => (await api("/api/snapshot")) as WebSnapshot,
       async restart(path: string) {
         const port = Number(new URL(host.origin).port);
@@ -884,6 +885,121 @@ test("forking an active native stream freezes the saved prefix while the source 
     expect(fixture.errors).toEqual([]);
   } finally {
     release.release();
+    await fixture.close();
+  }
+});
+
+test("retained managed worktrees remain discoverable after reload and native restart, require confirmation and replay lost receipts", async ({
+  browser,
+}) => {
+  const fixture = await createForkHost(browser, "en-US");
+  const { page } = fixture;
+  try {
+    const source = fixture.sessions[0]!;
+    await openMenu(rowFor(page, "Git conversation"), "en-US");
+    await enterFork(page, "en-US");
+    const child = requireChild(await clickFork(page, "en-US", "worktree"));
+    const project = page.locator(".workspace-tree > .workspace-group").filter({
+      has: page.locator(".workspace-label strong", {
+        hasText: /^Git project$/u,
+      }),
+    });
+    const openRetained = async () => {
+      const trigger = project.getByRole("button", {
+        name: "Project options",
+        exact: true,
+      });
+      await trigger.focus();
+      await trigger.press("Enter");
+      await page
+        .getByRole("menuitem", { name: "Retained worktrees", exact: true })
+        .click();
+      const dialog = page.getByRole("dialog", {
+        name: "Retained worktrees",
+        exact: true,
+      });
+      await expect(dialog.getByText(child.cwd, { exact: true })).toBeVisible();
+      return { trigger, dialog };
+    };
+    // An extant canonical child keeps its worktree: UI never calls listing eligibility.
+    let view = await openRetained();
+    await view.dialog
+      .getByRole("button", { name: "Review removal", exact: true })
+      .click();
+    await view.dialog
+      .getByRole("button", { name: "Remove worktree", exact: true })
+      .click();
+    await expect(view.dialog.getByRole("status")).toContainText(
+      "Worktree kept:",
+    );
+    await expect(
+      view.dialog.getByText(child.cwd, { exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(view.dialog).toBeHidden();
+    await expect(view.trigger).toBeFocused();
+    // Delete only the Session through its exact native identity, retaining cwd.
+    await rowFor(page, "Git conversation").locator("button.session").click();
+    await expect
+      .poll(async () => (await fixture.snapshot()).currentSessionId)
+      .toBe(source.id);
+    await fixture.api("/api/sessions/delete", {
+      commandId: "retained-delete",
+      sessionId: child.sessionId,
+      sessionPath: child.sessionPath,
+    });
+    await page.reload();
+    view = await openRetained();
+    await view.dialog
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    await fixture.restart(source.path);
+    view = await openRetained();
+    await view.dialog
+      .getByRole("button", { name: "Review removal", exact: true })
+      .click();
+    await expect(
+      view.dialog.getByText(child.cwd, { exact: true }),
+    ).toBeVisible();
+    const requests: Record<string, unknown>[] = [];
+    let loseFirstReceipt = true;
+    await page.route("**/api/sessions/worktree-release", async (route) => {
+      requests.push(route.request().postDataJSON());
+      if (loseFirstReceipt) {
+        loseFirstReceipt = false;
+        await route.fetch();
+        await route.abort("failed");
+      } else await route.continue();
+    });
+    await view.dialog
+      .getByRole("button", { name: "Remove worktree", exact: true })
+      .click();
+    await expect(view.dialog.getByRole("status")).toContainText(
+      "Removal outcome is unknown",
+    );
+    await view.dialog
+      .getByRole("button", { name: "Retry request", exact: true })
+      .click();
+    await expect(view.dialog.getByRole("status")).toContainText(
+      "Worktree removed.",
+    );
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(requests[0]).toMatchObject({
+      sessionId: child.sessionId,
+      sessionPath: child.sessionPath,
+      worktreePath: child.cwd,
+    });
+    await view.dialog
+      .getByRole("button", { name: "Back to worktrees", exact: true })
+      .click();
+    await expect(view.dialog.getByText(child.cwd, { exact: true })).toHaveCount(
+      0,
+    );
+    await fixture.verifySourceGit();
+    expect(fixture.providerRequests).toBe(0);
+    expect(fixture.errors).toEqual([]);
+  } finally {
     await fixture.close();
   }
 });

@@ -204,6 +204,29 @@ test("cron shutdown clears jobs and stops future delivery", async () => {
   assert.equal(h.messages.length, 0);
 });
 
+test("a new session cannot inherit scheduled prompts from the previous session", async () => {
+  const h = harness();
+  await h.emit("session_start");
+  await h.run("in 30s previous-session reminder");
+  assert.equal(h.polling(), true);
+
+  // Pi uses session_start for /new and /resume while the extension instance
+  // remains loaded. The old session's in-memory scheduler must be discarded.
+  await h.emit("session_start");
+  assert.equal(h.polling(), false);
+  await h.run("list");
+  assert.equal(h.notifications.at(-1), "No scheduled prompts in this session.");
+
+  await h.run("in 30s current-session reminder");
+  h.setNow(30_000);
+  h.poll();
+  assert.deepEqual(
+    (h.messages[0]?.message as { details: { id: number; prompt: string } })
+      .details,
+    { id: 1, prompt: "current-session reminder", recurring: false },
+  );
+});
+
 test("cron does not create a job when the prompt exceeds the limit", async () => {
   const h = harness();
   await h.emit("session_start");
@@ -325,3 +348,45 @@ test("cron bounds model-visible due batches by UTF-8 bytes", async () => {
     assert.ok(Buffer.byteLength(content, "utf8") <= CRON_DELIVERY_MAX_BYTES);
   }
 });
+
+for (const [limit, prompt] of [
+  ["job count", "check the rollout"],
+  ["UTF-8 bytes", "界".repeat(CRON_PROMPT_MAX_CHARS)],
+]) {
+  test(`cron does not starve pending jobs behind recurring jobs at the ${limit} limit`, async () => {
+    const h = harness();
+    await h.emit("session_start");
+    for (let index = 0; index < CRON_DELIVERY_MAX_JOBS; index++) {
+      await h.run(`every 30s ${prompt}`);
+    }
+    await h.run("in 30s inspect the deploy once");
+
+    // Recurring jobs are due again at each poll, including after a busy gap.
+    for (const now of [30_000, 90_000, 150_000]) {
+      h.setNow(now);
+      h.poll();
+    }
+
+    const deliveredIds = h.messages.flatMap((entry) => {
+      const message = entry.message as {
+        content: string;
+        details: { jobs: Array<{ id: number }> };
+      };
+      assert.ok(message.details.jobs.length <= CRON_DELIVERY_MAX_JOBS);
+      assert.ok(
+        Buffer.byteLength(message.content, "utf8") <= CRON_DELIVERY_MAX_BYTES,
+      );
+      return message.details.jobs.map((job) => job.id);
+    });
+    assert.equal(
+      deliveredIds.filter((id) => id === CRON_DELIVERY_MAX_JOBS + 1).length,
+      1,
+    );
+    assert.equal(new Set(deliveredIds).size, CRON_DELIVERY_MAX_JOBS + 1);
+    await h.run("list");
+    assert.doesNotMatch(
+      h.notifications.at(-1) ?? "",
+      /inspect the deploy once/,
+    );
+  });
+}

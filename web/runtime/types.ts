@@ -150,6 +150,8 @@ export interface WebPromptOptions {
   planRevision?: string;
   streamingBehavior?: "followUp" | "steer";
   expectedTurnCommandId?: string;
+  /** Retry this exact terminal provider failure without resending the user input. */
+  retryEntryId?: string;
 }
 
 export interface WebPromptAdmissionReceipt {

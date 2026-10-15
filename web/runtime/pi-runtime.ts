@@ -241,7 +241,7 @@ function inspectSavedWebSession(path: string, id: string, directory: string, pur
     const header: unknown = JSON.parse(buffer.subarray(0, end).toString("utf8"));
     if (!header || typeof header !== "object" || !("type" in header) || header.type !== "session" || !("id" in header) || header.id !== id || !("cwd" in header) || typeof header.cwd !== "string" || !("timestamp" in header) || typeof header.timestamp !== "string" || basename(path) !== `${header.timestamp.replace(/[:.]/g, "-")}_${id}.jsonl`) throw unavailable();
     if (purpose === "fork" && (!("version" in header) || header.version !== CURRENT_SESSION_VERSION)) throw unavailable();
-    return { dev: opened.dev, ino: opened.ino };
+    return { dev: opened.dev, ino: opened.ino, cwd: header.cwd };
   } catch (error) {
     if (error instanceof WebRuntimeRequestError) throw error;
     throw unavailable();
@@ -2159,7 +2159,7 @@ export class PiWebRuntime implements WebRuntimeController {
           const suffix = relative(exact.worktreePath, cwd);
           return suffix === "" || !isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`);
         };
-        await Promise.all([...this.runtimeDisposals]);
+        if (this.runtimeDisposals.size > 0) return preserve("Native runtime shutdown is still pending.");
         this.assertActive();
         if (this.runtimeDisposalFailure !== undefined) return preserve("Native runtime shutdown could not be verified.");
         const owners = new Set([this.runtime, ...this.retainedRuntimes, ...this.candidateRuntimes, ...this.inFlightRuntimes.keys()]);
@@ -2171,14 +2171,14 @@ export class PiWebRuntime implements WebRuntimeController {
         const files = (await readdir(this.webSessionDirectory, { withFileTypes: true })).filter((entry) => entry.name.endsWith(".jsonl"));
         if (files.length > 5000 || files.some((entry) => !entry.isFile()))
           return preserve("The native Session reference catalog is incomplete or exceeds its inspection limit.");
-        const sessions = await SessionManager.listAll(this.webSessionDirectory);
-        if (sessions.length !== files.length) return preserve("Some native Session references could not be inspected.");
-        for (const info of sessions) {
-          inspectSavedWebSession(info.path, info.id, this.webSessionDirectory, "fork");
-          const manager = SessionManager.open(info.path, this.webSessionDirectory);
-          if (!matchesSessionIdentity(manager, { expectedSessionId: info.id, expectedSessionPath: info.path }))
-            return preserve("A native Session reference changed during inspection.");
-          if (inside(await realpath(manager.getCwd())))
+        // Only native headers own cwd. Do not load unbounded private transcripts
+        // or treat the sidebar's bounded/paginated projection as the full catalog.
+        const deadline = Date.now() + 90_000;
+        for (const file of files) {
+          if (Date.now() >= deadline) return preserve("Native Session reference inspection reached its time limit.");
+          const id = file.name.slice(file.name.lastIndexOf("_") + 1, -6);
+          const header = inspectSavedWebSession(join(this.webSessionDirectory, file.name), id, this.webSessionDirectory, "fork");
+          if (inside(await realpath(header.cwd)))
             return preserve("A saved native Session still references this worktree. Delete or move its references first.");
         }
         this.assertActive();

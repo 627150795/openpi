@@ -887,37 +887,48 @@ async function readOwnershipMarker(marker: string) {
 
 /** A browser path is only a locator. Authority is recovered from the private Git marker. */
 export async function readSessionWorktreeReceipt(worktreePath: string, sessionDirectory: string) {
-  const context = { deadline: Date.now() + OPERATION_MS };
-  if (!isAbsolute(worktreePath) || await realpath(worktreePath) !== worktreePath)
-    throw new SessionWorktreeError("identity", "The managed worktree path changed.");
-  const current = await identity(worktreePath, context);
-  if (dirname(worktreePath) !== join(current.commonDir, "pi-worktrees") ||
-      !within(join(current.commonDir, "worktrees"), current.gitDir))
-    throw new SessionWorktreeError("identity", "This is not a privately owned managed worktree.");
-  let value: unknown;
-  try { value = JSON.parse(await readOwnershipMarker(join(current.gitDir, OWNER_FILE))); }
-  catch { throw new SessionWorktreeError("identity", "The private worktree ownership marker could not be read or validated."); }
-  if (!value || typeof value !== "object") throw new SessionWorktreeError("identity", "Invalid worktree ownership marker.");
-  const receipt = value as Partial<SessionWorktreeCleanupReceipt>;
-  const strings = [receipt.path, receipt.gitDir, receipt.commonDir, receipt.sourceRoot, receipt.baseSha, receipt.token,
-    receipt.directoryIdentity, receipt.gitDirectoryIdentity, receipt.gitFileDigest, receipt.fingerprint, receipt.indexDigest];
-  const owner = receipt.ownerSession;
-  if (receipt.version !== 1 || (receipt.releaseState !== undefined && receipt.releaseState !== "uncertain") || strings.some((entry) => typeof entry !== "string" || !entry || entry.length > 4096) ||
-      receipt.path !== worktreePath || receipt.gitDir !== current.gitDir || receipt.commonDir !== current.commonDir ||
-      !isAbsolute(receipt.sourceRoot ?? "") || await realpath(receipt.sourceRoot!) !== receipt.sourceRoot ||
-      !basename(worktreePath).endsWith(`-${receipt.token}`) || !/^[a-f0-9]{40,64}$/u.test(receipt.baseSha ?? "") ||
-      [receipt.gitFileDigest, receipt.fingerprint, receipt.indexDigest].some((digest) => !/^[a-f0-9]{64}$/u.test(digest ?? "")) ||
-      !owner || typeof owner.sessionId !== "string" || !owner.sessionId || owner.sessionId.length > 128 ||
-      typeof owner.sessionPath !== "string" || owner.sessionPath.length > 4096 ||
-      dirname(owner.sessionPath) !== resolve(sessionDirectory) || /[\u0000-\u001f\u007f]/u.test(owner.sessionId + owner.sessionPath) ||
-      await directoryIdentity(worktreePath) !== receipt.directoryIdentity ||
-      await directoryIdentity(current.gitDir) !== receipt.gitDirectoryIdentity ||
-      await digestFile(join(worktreePath, ".git"), { bytes: 0 }, context) !== receipt.gitFileDigest)
-    throw new SessionWorktreeError("identity", "The native child binding or worktree ownership could not be verified.");
-  if ((await identity(receipt.sourceRoot!, context)).commonDir !== current.commonDir)
-    throw new SessionWorktreeError("identity", "The source Git repository no longer matches its ownership receipt.");
-  if (await hasReleaseClaim(current.gitDir)) receipt.releaseState = "uncertain";
-  return receipt as SessionWorktreeCleanupReceipt & { ownerSession: NonNullable<SessionWorktreeCleanupReceipt["ownerSession"]> };
+  let claimed = false;
+  try {
+    const context = { deadline: Date.now() + OPERATION_MS };
+    if (!isAbsolute(worktreePath) || await realpath(worktreePath) !== worktreePath)
+      throw new SessionWorktreeError("identity", "The managed worktree path changed.");
+    const current = await identity(worktreePath, context);
+    if (dirname(worktreePath) !== join(current.commonDir, "pi-worktrees") ||
+        !within(join(current.commonDir, "worktrees"), current.gitDir))
+      throw new SessionWorktreeError("identity", "This is not a privately owned managed worktree.");
+    claimed = await hasReleaseClaim(current.gitDir);
+    let value: unknown;
+    try { value = JSON.parse(await readOwnershipMarker(join(current.gitDir, OWNER_FILE))); }
+    catch { throw new SessionWorktreeError("identity", "The private worktree ownership marker could not be read or validated."); }
+    if (!value || typeof value !== "object") throw new SessionWorktreeError("identity", "Invalid worktree ownership marker.");
+    const receipt = value as Partial<SessionWorktreeCleanupReceipt>;
+    const strings = [receipt.path, receipt.gitDir, receipt.commonDir, receipt.sourceRoot, receipt.baseSha, receipt.token,
+      receipt.directoryIdentity, receipt.gitDirectoryIdentity, receipt.gitFileDigest, receipt.fingerprint, receipt.indexDigest];
+    const owner = receipt.ownerSession;
+    if (receipt.version !== 1 || (receipt.releaseState !== undefined && receipt.releaseState !== "uncertain") || strings.some((entry) => typeof entry !== "string" || !entry || entry.length > 4096) ||
+        receipt.path !== worktreePath || receipt.gitDir !== current.gitDir || receipt.commonDir !== current.commonDir ||
+        !isAbsolute(receipt.sourceRoot ?? "") || await realpath(receipt.sourceRoot!) !== receipt.sourceRoot ||
+        !basename(worktreePath).endsWith(`-${receipt.token}`) || !/^[a-f0-9]{40,64}$/u.test(receipt.baseSha ?? "") ||
+        [receipt.gitFileDigest, receipt.fingerprint, receipt.indexDigest].some((digest) => !/^[a-f0-9]{64}$/u.test(digest ?? "")) ||
+        !owner || typeof owner.sessionId !== "string" || !owner.sessionId || owner.sessionId.length > 128 ||
+        typeof owner.sessionPath !== "string" || owner.sessionPath.length > 4096 ||
+        dirname(owner.sessionPath) !== resolve(sessionDirectory) || /[\u0000-\u001f\u007f]/u.test(owner.sessionId + owner.sessionPath) ||
+        await directoryIdentity(worktreePath) !== receipt.directoryIdentity ||
+        await directoryIdentity(current.gitDir) !== receipt.gitDirectoryIdentity ||
+        await digestFile(join(worktreePath, ".git"), { bytes: 0 }, context) !== receipt.gitFileDigest)
+      throw new SessionWorktreeError("identity", "The native child binding or worktree ownership could not be verified.");
+    if ((await identity(receipt.sourceRoot!, context)).commonDir !== current.commonDir)
+      throw new SessionWorktreeError("identity", "The source Git repository no longer matches its ownership receipt.");
+    if (claimed || await hasReleaseClaim(current.gitDir)) receipt.releaseState = "uncertain";
+    return receipt as SessionWorktreeCleanupReceipt & { ownerSession: NonNullable<SessionWorktreeCleanupReceipt["ownerSession"]> };
+  } catch {
+    // A claim only narrows authority. Missing/corrupt private data must never
+    // recreate a child binding, nor turn prior terminal uncertainty into a
+    // definitive no-attempt result merely because the directory still exists.
+    throw new SessionWorktreeError("uncertain", claimed
+      ? "A release claim exists or cannot be inspected, but its original private authority is unavailable. No release is authorized."
+      : "The managed worktree identity, private authority or terminal release state cannot be verified. No release is authorized.", worktreePath);
+  }
 }
 
 export function sessionWorktreeReleaseTarget(receipt: SessionWorktreeCleanupReceipt & { ownerSession: NonNullable<SessionWorktreeCleanupReceipt["ownerSession"]> }): WebWorktreeReleaseTarget {

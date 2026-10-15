@@ -2004,6 +2004,31 @@ test("explicit release preserves modified checkout and rejects forged native bin
     target,
   ]);
   await rm(file);
+  const incomplete = join(runtime.sessionDirectory, "unknown.jsonl");
+  await writeFile(incomplete, "unreadable native reference");
+  assert.equal(
+    (
+      await runtime.releaseSessionWorktree({
+        ...target,
+        commandId: "unknown-reference",
+      })
+    ).state,
+    "preserved",
+  );
+  await rm(incomplete);
+  const disposal = deferred();
+  const pending = runtime as unknown as {
+    runtimeDisposals: Set<Promise<void>>;
+  };
+  pending.runtimeDisposals.add(disposal.promise);
+  const shuttingDown = await runtime.releaseSessionWorktree({
+    ...target,
+    commandId: "pending-disposal",
+  });
+  assert.equal(shuttingDown.state, "preserved");
+  assert.match(shuttingDown.reason!, /shutdown is still pending/u);
+  pending.runtimeDisposals.delete(disposal.promise);
+  disposal.resolve();
   const removed = await runtime.releaseSessionWorktree({
     ...target,
     commandId: "explicit-retry",

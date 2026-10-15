@@ -851,6 +851,8 @@ export async function bindSessionWorktree(
   if (await readOwnershipMarker(marker) !== JSON.stringify(receipt))
     throw new SessionWorktreeError("identity", "The worktree ownership receipt changed before native binding.");
   const bound = { ...receipt, ownerSession: { ...ownerSession } };
+  if (Buffer.byteLength(JSON.stringify(bound)) > 16 * 1024)
+    throw new SessionWorktreeError("limit", "The native worktree ownership binding exceeds its byte limit.");
   const temporary = `${marker}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, JSON.stringify(bound), { flag: "wx", mode: 0o600 });

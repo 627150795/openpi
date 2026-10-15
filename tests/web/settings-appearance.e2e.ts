@@ -11,9 +11,8 @@ async function installSettingsFixture(page: Page) {
   let archived = true;
   let failRestore = true;
   const queries: URLSearchParams[] = [];
-  await page.route("**/events?**", (route) =>
-    route.fulfill({ contentType: "text/event-stream", body: ": idle\n\n" }),
-  );
+  // Keep the owned Host's event stream open. A finite SSE response repeatedly
+  // reconnects and can supersede the snapshot confirming an archive restore.
   await page.route("**/api/snapshot**", async (route) => {
     const response = await route.fetch({
       url: new URL("/api/snapshot", route.request().url()).href,
@@ -98,7 +97,6 @@ async function installSettingsFixture(page: Page) {
     }
     for (const [key, field] of Object.entries({
       theme: "webTheme",
-      appearance: "webAppearance",
       chatWidth: "webChatWidth",
       chatFontSize: "webChatFontSize",
       expandThinking: "webExpandThinking",
@@ -106,6 +104,10 @@ async function installSettingsFixture(page: Page) {
       if (patch[key] !== undefined)
         Object.assign(config.ui, { [field]: patch[key] });
     }
+    if (patch.appearance !== undefined)
+      Object.assign(config.ui, {
+        webAppearance: { ...config.ui.webAppearance, ...patch.appearance },
+      });
     await route.fulfill({
       json: { saved: true, setup: projectWebSetupConfig(config) },
     });
@@ -415,6 +417,8 @@ test("archived chats query project/sort before paging and restore without activa
   });
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   await expect(
-    page.locator(".session-sidebar").getByText("Active chat", { exact: true }),
+    page
+      .getByRole("region", { name: "OpenPI", exact: true })
+      .getByText("Active chat", { exact: true }),
   ).toBeVisible();
 });

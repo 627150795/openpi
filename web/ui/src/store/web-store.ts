@@ -11,11 +11,17 @@ import {
   type WebPromptImage,
   type WebSessionProjection,
   type WebSettingsPreferencesPatch,
+  type WebSidebarPinTarget,
   type WebSnapshot,
   type WebThinkingState,
 } from "../../../protocol/types.ts";
-import type { WebSessionForkRequest } from "../../../runtime/types.ts";
+import type {
+  WebWorktreeReleaseTarget,
+  WebWorktreeReleaseResult,
+  WebSessionForkRequest,
+} from "../../../runtime/types.ts";
 import { i18n } from "../i18n.ts";
+import { sessionTitle } from "../lib/format.ts";
 import { isControlledSession } from "../lib/session-control.ts";
 import { WebApiError, WebClient } from "../protocol/client.ts";
 import { consumeEventStream } from "../protocol/event-stream.ts";
@@ -45,7 +51,13 @@ const refreshEventTypes = new Set([
   "session_archived",
   "session_unarchived",
   "session_pins_changed",
+  "sidebar_pins_changed",
+  "workspace_order_changed",
+  "session_order_changed",
+  "session_read_state_changed",
   "session_created",
+  "session_forked",
+  "session_deleted",
   "prompt_accepted",
   "runtime_changed",
   "questions_changed",
@@ -193,6 +205,13 @@ export interface CommandDiscoveryState {
   error: string | null;
 }
 
+export interface ArchiveNotice {
+  key: string;
+  path: string;
+  sessionId?: string;
+  title: string;
+}
+
 export interface WebStoreState {
   planSelectionPending: boolean;
   activeTurn: WebSnapshot["runtime"]["activeTurn"] | null;
@@ -210,6 +229,8 @@ export interface WebStoreState {
     | (WebHistoryAnchor & { revision: number; session: WebSessionProjection })
     | null;
   sessionForkPending: boolean;
+  sessionForkCancellation: "requesting" | "requested" | "too-late" | null;
+  sessionForkEnvironment?: "local" | "worktree";
   cursor: number | null;
   selectedPath: string | null;
   selectedWorkspace: string | null;
@@ -224,6 +245,7 @@ export interface WebStoreState {
   searchOpen: boolean;
   connection: "connected" | "connecting" | "reconnecting" | "unavailable";
   notice: string | { kind: "success"; message: string } | null;
+  archiveNotices: ArchiveNotice[];
   liveMessages: LiveEntry[];
   liveRunning: boolean;
   livePhase: "idle" | "preparing" | "running";
@@ -249,8 +271,29 @@ export interface WebStoreActions {
     signal?: AbortSignal,
   ) => Promise<boolean>;
   forkMessage: (
-    anchor: WebHistoryAnchor,
+    anchor:
+      | WebHistoryAnchor
+      | {
+          scope: "conversation";
+          sessionPath: string;
+          sessionId: string;
+          environment?: "local" | "worktree";
+        },
     rerun?: WebSessionForkRequest["rerun"],
+  ) => Promise<boolean>;
+  forkConversation: (
+    path: string,
+    id: string,
+    environment?: "local" | "worktree",
+  ) => Promise<boolean>;
+  cancelSessionFork: () => Promise<void>;
+  releaseSessionWorktree: (
+    target: WebWorktreeReleaseTarget,
+  ) => Promise<WebWorktreeReleaseResult>;
+  deleteSession: (
+    path: string,
+    id: string,
+    commandId: string,
   ) => Promise<boolean>;
   editMessage: (anchor: WebHistoryAnchor, content: string) => Promise<boolean>;
   regenerateMessage: (anchor: WebHistoryAnchor) => Promise<boolean>;
@@ -276,14 +319,35 @@ export interface WebStoreActions {
   removeWorkspace: (path: string) => Promise<boolean>;
   createSession: (workspacePath: string) => Promise<SessionTarget | null>;
   prepareSession: () => Promise<SessionTarget | null>;
-  selectSession: (path: string) => Promise<void>;
+  selectSession: (
+    path: string,
+    expectedSessionId?: string,
+  ) => Promise<boolean | void>;
   renameSession: (path: string, name: string) => Promise<void>;
   archiveSession: (path: string) => Promise<void>;
+  dismissArchiveNotice: (key: string) => void;
   setSessionPin: (
     path: string,
     id: string,
     pinned: boolean,
     before?: { path: string; id: string } | null,
+  ) => Promise<void>;
+  setSidebarPin: (
+    target: WebSidebarPinTarget,
+    pinned: boolean,
+    before?: WebSidebarPinTarget | null,
+  ) => Promise<void>;
+  setWorkspaceOrder: (path: string, before?: string | null) => Promise<void>;
+  setSessionOrder: (
+    path: string,
+    id: string,
+    before?: { path: string; id: string } | null,
+  ) => Promise<void>;
+  setSessionRead: (
+    path: string,
+    id: string,
+    read: boolean,
+    expectedRevision: string,
   ) => Promise<void>;
   unarchiveSession: (path: string) => Promise<boolean>;
   selectModel: (value: string) => Promise<boolean>;
@@ -345,14 +409,50 @@ function waitForReconnect(delay: number, signal: AbortSignal) {
   });
 }
 
+/** Admit native absolute shapes without resolving paths in the browser. */
+function absoluteSessionLinkPath(value: string) {
+  return (
+    /^\/(?![\\/])/u.test(value) ||
+    /^[a-z]:[\\/]/iu.test(value) ||
+    /^\\\\(?![?.]\\)[^\\/]+\\[^\\/]+\\/u.test(value) ||
+    /^\/\/[^\\/]+\/[^\\/]+\//u.test(value)
+  );
+}
+
 export function createWebStore(
   client = new WebClient(),
   dependencies: WebStoreDependencies = {},
 ) {
   const consumeEvents = dependencies.consumeEvents ?? consumeEventStream;
+  const linkParams = new URLSearchParams(window.location.search);
+  const linkPath = linkParams.get("sessionPath");
+  const linkId = linkParams.get("sessionId");
+  const hasSessionLink = linkPath !== null || linkId !== null;
+  let sessionLink =
+    linkPath &&
+    absoluteSessionLinkPath(linkPath) &&
+    linkPath.length <= 4096 &&
+    linkId &&
+    linkId.length <= 128 &&
+    !/[\u0000-\u001f\u007f]/u.test(linkPath + linkId) &&
+    linkParams.getAll("sessionPath").length === 1 &&
+    linkParams.getAll("sessionId").length === 1
+      ? { path: linkPath, id: linkId }
+      : null;
   let sessionEpoch = 0;
   let navigationSequence = 0;
   let forkRequest: WebSessionForkRequest | null = null;
+  let deletingSession = false;
+  // Keep uncertain request identities across dialog closure/navigation. This is
+  // correlation only; native marker checks and receipts own every effect.
+  const worktreeReleases = new Map<
+    string,
+    {
+      commandId: string;
+      state: "preserved" | "uncertain";
+      pending?: Promise<WebWorktreeReleaseResult>;
+    }
+  >();
   let snapshotGeneration = 0;
   let snapshotFailureNotice: string | null = null;
   let promptAdmissionSequence = 0;
@@ -376,7 +476,7 @@ export function createWebStore(
   let pendingSessionSelection: {
     path: string;
     epoch: number;
-    promise: Promise<void>;
+    promise: Promise<boolean>;
   } | null = null;
   let refreshTimer: number | null = null;
   let refreshInFlight = false;
@@ -1229,12 +1329,26 @@ export function createWebStore(
         const requestedPath = get().selectedPath;
         try {
           const anchor = get().historyAnchor;
-          const snapshot =
-            anchor && anchor.sessionPath === requestedPath
+          const linked =
+            sessionLink?.path === requestedPath ? sessionLink : null;
+          const snapshot = linked
+            ? await client.snapshot(requestedPath, undefined, linked.id)
+            : anchor && anchor.sessionPath === requestedPath
               ? await client.snapshot(requestedPath, anchor)
               : await client.snapshot(requestedPath);
           if (epoch !== sessionEpoch || generation !== snapshotGeneration)
             return false;
+          if (
+            linked &&
+            (snapshot.selectedSession?.id !== linked.id ||
+              snapshot.selectedSession.path !== linked.path)
+          )
+            throw new WebApiError(
+              i18n.t("sessionLinkUnavailable"),
+              409,
+              "SESSION_CONFLICT",
+            );
+          if (linked) sessionLink = null;
           const hasCurrent = typeof snapshot.currentSessionId === "string";
           const currentSession = hasCurrent
             ? snapshot.sessions.find((session) =>
@@ -1315,6 +1429,29 @@ export function createWebStore(
               snapshot.selectedSession?.id ||
             get().snapshot?.selectedSession?.path !==
               snapshot.selectedSession?.path;
+          let collapsed = get().collapsed;
+          if (
+            selectionChanged &&
+            !get().workspaceDraft &&
+            snapshot.selectedSession
+          ) {
+            const summary = snapshot.sessions.find(
+              (session) =>
+                session.id === snapshot.selectedSession!.id &&
+                session.path === snapshot.selectedSession!.path,
+            );
+            const project =
+              summary?.workspacePath ?? snapshot.selectedSession.cwd;
+            if (
+              !summary?.archived &&
+              !summary?.ungrouped &&
+              collapsed.has(project)
+            ) {
+              collapsed = new Set(collapsed);
+              collapsed.delete(project);
+              persist(collapsedWorkspacesStorageKey, [...collapsed]);
+            }
+          }
           const previous = get().snapshot;
           const modelSearchChanged =
             shouldReset ||
@@ -1374,6 +1511,7 @@ export function createWebStore(
                   : get().liveRunning,
             selectedPath: snapshot.selectedSession?.path ?? null,
             selectedWorkspace,
+            collapsed,
             snapshot,
             ...(modelSearchChanged ? resetModelSearch() : {}),
           });
@@ -1382,6 +1520,21 @@ export function createWebStore(
         } catch (error) {
           if (epoch !== sessionEpoch || generation !== snapshotGeneration)
             return false;
+          if (
+            sessionLink?.path === requestedPath &&
+            error instanceof WebApiError &&
+            [400, 404, 409].includes(error.status)
+          ) {
+            sessionLink = null;
+            set({ selectedPath: null, workspaceDraft: true });
+            const refreshed = await actions.refreshSnapshot({
+              ...options,
+              epoch,
+            });
+            if (epoch === sessionEpoch)
+              set({ notice: i18n.t("sessionLinkUnavailable") });
+            return refreshed;
+          }
           set({ connection: "unavailable" });
           showError(error);
           const notice = get().notice;
@@ -1594,26 +1747,39 @@ export function createWebStore(
         await creation;
         return epoch === sessionEpoch ? created : null;
       },
-      async selectSession(path) {
-        if (!path) return;
+      async selectSession(path, expectedSessionId) {
+        if (!path) return false;
         const current = get();
         if (
           pendingSessionSelection?.path === path &&
           pendingSessionSelection.epoch === sessionEpoch
         ) {
+          const pending = pendingSessionSelection;
           set({ mobileSidebarOpen: false });
-          await pendingSessionSelection.promise;
-          return;
+          const selected = await pending.promise;
+          const settled = get();
+          return (
+            selected &&
+            pending.epoch === sessionEpoch &&
+            settled.selectedPath === path &&
+            settled.snapshot?.selectedSession?.path === path &&
+            (!expectedSessionId ||
+              settled.snapshot.selectedSession.id === expectedSessionId) &&
+            !settled.workspaceDraft &&
+            isControlledSession(settled.snapshot)
+          );
         }
         if (
           !current.workspaceDraft &&
           !current.sessionSwitching &&
           current.selectedPath === path &&
           current.snapshot?.selectedSession?.path === path &&
+          (!expectedSessionId ||
+            current.snapshot.selectedSession.id === expectedSessionId) &&
           isControlledSession(current.snapshot)
         ) {
           set({ mobileSidebarOpen: false });
-          return;
+          return true;
         }
         creationRetry = null;
         const sameView =
@@ -1652,28 +1818,50 @@ export function createWebStore(
           sessionSwitching: true,
         });
         const selection = sessionSelectionTail.then(async () => {
-          if (epoch !== sessionEpoch) return;
+          if (epoch !== sessionEpoch) return false;
           sessionActivation = { epoch, expectedPath: path, kind: "select" };
           try {
-            await client.selectSession(path);
-            if (epoch !== sessionEpoch) return;
-            if (!(await actions.refreshSnapshot({ epoch })) && !sameView) {
+            const receipt = await (expectedSessionId
+              ? client.selectSession(path, expectedSessionId)
+              : client.selectSession(path));
+            if (epoch !== sessionEpoch) return false;
+            if (receipt.cancelled) {
+              if (!sameView) set({ selectedPath: null });
+              await actions.refreshSnapshot({ epoch });
+              return false;
+            }
+            const refreshed = await actions.refreshSnapshot({ epoch });
+            if (epoch !== sessionEpoch) return false;
+            if (!refreshed && !sameView) {
               set({ selectedPath: null });
             }
+            return (
+              refreshed &&
+              get().selectedPath === path &&
+              get().snapshot?.selectedSession?.path === path &&
+              (!expectedSessionId ||
+                get().snapshot?.selectedSession?.id === expectedSessionId) &&
+              !get().workspaceDraft &&
+              isControlledSession(get().snapshot)
+            );
           } catch (error) {
-            if (epoch !== sessionEpoch) return;
+            if (epoch !== sessionEpoch) return false;
             if (!sameView) set({ selectedPath: null });
             showError(error);
             await actions.refreshSnapshot({ epoch });
+            return false;
           } finally {
             if (sessionActivation?.epoch === epoch) sessionActivation = null;
             if (epoch === sessionEpoch) set({ sessionSwitching: false });
           }
         });
-        sessionSelectionTail = selection.catch(() => undefined);
+        sessionSelectionTail = selection.then(
+          () => undefined,
+          () => undefined,
+        );
         pendingSessionSelection = { path, epoch, promise: selection };
         try {
-          await selection;
+          return await selection;
         } finally {
           if (pendingSessionSelection?.promise === selection)
             pendingSessionSelection = null;
@@ -1683,7 +1871,8 @@ export function createWebStore(
         const request = ++navigationSequence;
         try {
           if (signal?.aborted) return false;
-          await actions.selectSession(anchor.sessionPath);
+          if ((await actions.selectSession(anchor.sessionPath)) === false)
+            return false;
           const epoch = sessionEpoch;
           const selected = get().snapshot?.selectedSession;
           if (
@@ -1736,7 +1925,59 @@ export function createWebStore(
         if (get().restoredPromptDraft?.commandId === commandId)
           set({ restoredPromptDraft: null });
       },
+      async cancelSessionFork() {
+        const request = forkRequest;
+        if (
+          !request ||
+          request.scope !== "conversation" ||
+          !get().sessionForkPending ||
+          get().sessionForkCancellation
+        )
+          return;
+        const epoch = sessionEpoch;
+        set({ sessionForkCancellation: "requesting" });
+        try {
+          const result = await client.cancelSessionFork({
+            commandId: request.commandId,
+            sessionId: request.sessionId,
+            sessionPath: request.sessionPath,
+          });
+          if (forkRequest === request && get().sessionForkPending) {
+            set({
+              sessionForkCancellation:
+                result.state === "not-found" ? null : result.state,
+            });
+            if (result.state === "not-found")
+              set({ notice: i18n.t("sidebarForkCancelUnconfirmed") });
+          }
+          // A cancellation request is not a terminal receipt. The original
+          // fork response still owns whether a child was actually created.
+        } catch (error) {
+          if (epoch === sessionEpoch && get().sessionForkPending) {
+            set({ sessionForkCancellation: null });
+            showError(error);
+          }
+        }
+      },
+      async forkConversation(path, id, environment = "local") {
+        if (
+          get().sessionForkPending ||
+          get().sessionSwitching ||
+          deletingSession
+        )
+          return false;
+        if (!(await actions.selectSession(path, id))) return false;
+        return actions.forkMessage({
+          scope: "conversation",
+          sessionPath: path,
+          sessionId: id,
+          environment,
+        });
+      },
       async forkMessage(anchor, rerun) {
+        const conversation =
+          "scope" in anchor && anchor.scope === "conversation";
+        if (conversation && rerun) return false;
         if (
           rerun?.mode === "edit" &&
           (!rerun.content.trim() ||
@@ -1745,16 +1986,17 @@ export function createWebStore(
           return false;
         const initial = get();
         const selected = initial.snapshot?.selectedSession;
-        if (initial.sessionForkPending) return false;
+        if (initial.sessionForkPending || deletingSession) return false;
         if (
           !selected ||
           initial.workspaceDraft ||
           initial.sessionSwitching ||
           initial.promptAdmissionPending ||
           initial.promptAdmissionRecovery ||
-          initial.liveRunning ||
-          initial.activeTurn ||
-          initial.snapshot?.runtime.status !== "idle" ||
+          (!conversation &&
+            (initial.liveRunning ||
+              initial.activeTurn ||
+              initial.snapshot?.runtime.status !== "idle")) ||
           initial.modelSelectionPending ||
           !isControlledSession(initial.snapshot) ||
           selected.id !== anchor.sessionId ||
@@ -1765,15 +2007,29 @@ export function createWebStore(
           set({ notice: i18n.t("forkSessionUnavailable") });
           return false;
         }
-        const request =
+        const entryId = "entryId" in anchor ? anchor.entryId : undefined;
+        const request: WebSessionForkRequest =
           forkRequest?.sessionId === anchor.sessionId &&
           forkRequest.sessionPath === anchor.sessionPath &&
-          forkRequest.entryId === anchor.entryId &&
+          forkRequest.entryId === entryId &&
+          (forkRequest.scope === "conversation") === conversation &&
+          (!conversation ||
+            (forkRequest.scope === "conversation" &&
+              (forkRequest.environment ?? "local") ===
+                (anchor.environment ?? "local"))) &&
           JSON.stringify(forkRequest.rerun) === JSON.stringify(rerun)
             ? forkRequest
             : {
-                ...anchor,
-                ...(rerun ? { rerun } : {}),
+                sessionId: anchor.sessionId,
+                sessionPath: anchor.sessionPath,
+                ...(conversation
+                  ? {
+                      scope: "conversation" as const,
+                      ...(anchor.environment === "worktree"
+                        ? { environment: "worktree" as const }
+                        : {}),
+                    }
+                  : { entryId: entryId!, ...(rerun ? { rerun } : {}) }),
                 commandId:
                   globalThis.crypto?.randomUUID?.() ??
                   `web-fork-${Date.now()}-${++navigationSequence}`,
@@ -1781,7 +2037,14 @@ export function createWebStore(
         forkRequest = request;
         const epoch = sessionEpoch;
         let ownedEpoch = epoch;
-        set({ sessionForkPending: true, notice: null });
+        set({
+          sessionForkPending: true,
+          sessionForkCancellation: null,
+          sessionForkEnvironment: conversation
+            ? (anchor.environment ?? "local")
+            : undefined,
+          notice: null,
+        });
         try {
           const result = await client.forkSession(request);
           if (
@@ -1793,16 +2056,27 @@ export function createWebStore(
             result.commandId !== request.commandId ||
             result.source.sessionId !== anchor.sessionId ||
             result.source.sessionPath !== anchor.sessionPath ||
-            result.source.entryId !== anchor.entryId
+            (!conversation && result.source.entryId !== entryId) ||
+            !result.source.entryId
           )
             throw new Error(i18n.t("forkSessionUncertain"));
           if (result.state !== "forked") {
             set({
-              notice: i18n.t(
-                result.state === "cancelled"
-                  ? "forkSessionCancelled"
-                  : "forkSessionUncertain",
-              ),
+              notice: [
+                i18n.t(
+                  result.state === "cancelled"
+                    ? "forkSessionCancelled"
+                    : "forkSessionUncertain",
+                ),
+                result.reason,
+                result.preservedWorktreePath
+                  ? i18n.t("sidebarForkWorktreePreserved", {
+                      path: result.preservedWorktreePath,
+                    })
+                  : undefined,
+              ]
+                .filter(Boolean)
+                .join(" "),
             });
             if (result.state === "cancelled") forkRequest = null;
             else await actions.refreshSnapshot({ epoch });
@@ -1842,7 +2116,25 @@ export function createWebStore(
             confirmed = await actions.refreshSnapshot({ epoch: nextEpoch });
           }
           if (nextEpoch !== sessionEpoch) return false;
-          const current = get().snapshot;
+          let current = get().snapshot;
+          // A delivered fork whose response was lost can be replayed after the
+          // reader reactivates its source. Reopen the exact saved child, never
+          // issue another fork or assume the replay also changed the controller.
+          if (
+            result.replayed &&
+            confirmed &&
+            current?.selectedSession?.id === result.sessionId &&
+            current.selectedSession.path === result.sessionPath &&
+            !isControlledSession(current)
+          ) {
+            confirmed =
+              (await actions.selectSession(
+                result.sessionPath,
+                result.sessionId,
+              )) === true;
+            if (nextEpoch !== sessionEpoch) return false;
+            current = get().snapshot;
+          }
           if (
             !confirmed ||
             get().selectedPath !== result.sessionPath ||
@@ -1930,12 +2222,20 @@ export function createWebStore(
               ].includes(error.code ?? "")
             ) {
               forkRequest = null;
-              set({ notice: i18n.t("forkSessionUnavailable") });
+              set({
+                notice: conversation
+                  ? error.message
+                  : i18n.t("forkSessionUnavailable"),
+              });
             } else set({ notice: i18n.t("forkSessionUncertain") });
           }
           return false;
         } finally {
-          set({ sessionForkPending: false });
+          set({
+            sessionForkPending: false,
+            sessionForkCancellation: null,
+            sessionForkEnvironment: undefined,
+          });
           if (
             sessionEpoch === ownedEpoch &&
             ownedEpoch !== epoch &&
@@ -1962,6 +2262,126 @@ export function createWebStore(
           throw error;
         }
       },
+      async releaseSessionWorktree(target) {
+        const key = JSON.stringify([
+          target.sessionId,
+          target.sessionPath,
+          target.worktreePath,
+        ]);
+        const previous = worktreeReleases.get(key);
+        if (previous?.pending) return previous.pending;
+        if (!previous && worktreeReleases.size >= 128) {
+          // A preserved receipt is terminal and caused no removal. Its next
+          // explicit retry gets a new command anyway; uncertain IDs stay put.
+          const settled = [...worktreeReleases].find(
+            ([, item]) => item.state === "preserved" && !item.pending,
+          );
+          if (settled) worktreeReleases.delete(settled[0]);
+          else throw new Error(i18n.t("managedWorktreeRecoveryFull"));
+        }
+        const request = {
+          commandId:
+            previous?.state === "uncertain"
+              ? previous.commandId
+              : crypto.randomUUID(),
+          state: "uncertain" as "preserved" | "uncertain",
+          pending: undefined as Promise<WebWorktreeReleaseResult> | undefined,
+        };
+        worktreeReleases.set(key, request);
+        request.pending = (async () => {
+          try {
+            const result = await client.releaseSessionWorktree({
+              ...target,
+              commandId: request.commandId,
+            });
+            if (
+              result.commandId !== request.commandId ||
+              result.sessionId !== target.sessionId ||
+              result.sessionPath !== target.sessionPath ||
+              result.worktreePath !== target.worktreePath ||
+              !["removed", "preserved", "uncertain"].includes(result.state)
+            )
+              throw new Error(i18n.t("managedWorktreeUncertain"));
+            if (result.state === "removed") worktreeReleases.delete(key);
+            else request.state = result.state;
+            return result;
+          } finally {
+            request.pending = undefined;
+          }
+        })();
+        return request.pending;
+      },
+      async deleteSession(path, id, commandId) {
+        if (
+          deletingSession ||
+          get().sessionForkPending ||
+          get().sessionSwitching
+        )
+          return false;
+        deletingSession = true;
+        const epoch = sessionEpoch;
+        try {
+          const result = await client.deleteSession({
+            sessionPath: path,
+            sessionId: id,
+            commandId,
+          });
+          if (
+            result.commandId !== commandId ||
+            result.sessionId !== id ||
+            result.sessionPath !== path
+          )
+            throw new Error(i18n.t("sessionDeleteUncertain"));
+          if (result.state !== "deleted") {
+            if (epoch === sessionEpoch) {
+              await actions.refreshSnapshot({ epoch });
+              set({
+                notice: i18n.t(
+                  result.state === "cancelled"
+                    ? "sessionDeleteCancelled"
+                    : "sessionDeleteUncertain",
+                ),
+              });
+            }
+            return false;
+          }
+          if (epoch === sessionEpoch && get().selectedPath === path) {
+            ++sessionEpoch;
+            resetThinking();
+            clearCommandDiscovery();
+            promptAdmissionToken = null;
+            promptAdmission = null;
+            set({
+              ...resetLivePatch(),
+              ...resetModelSearch(),
+              selectedPath: null,
+              historyAnchor: null,
+              historyNavigation: null,
+              workspaceDraft: true,
+              createdSession: null,
+            });
+          }
+          await actions.refreshSnapshot();
+          set({
+            notice: result.worktreeReleaseTarget
+              ? {
+                  kind: "success",
+                  message: i18n.t("managedWorktreeRetainedAfterDelete", {
+                    path: result.worktreeReleaseTarget.worktreePath,
+                  }),
+                }
+              : result.metadataCleanupPending
+                ? i18n.t("sessionDeleteMetadataPending")
+                : { kind: "success", message: i18n.t("sessionDeleted") },
+          });
+          return true;
+        } catch (error) {
+          if (epoch === sessionEpoch) showError(error);
+          return false;
+        } finally {
+          deletingSession = false;
+        }
+      },
       async setSessionPin(path, id, pinned, before) {
         try {
           await client.setSessionPin(path, id, pinned, before);
@@ -1972,17 +2392,90 @@ export function createWebStore(
         }
       },
       async archiveSession(path) {
+        const session = get().snapshot?.sessions.find(
+          (item) => item.path === path,
+        );
         try {
           await client.archiveSession(path);
+          const notice: ArchiveNotice = {
+            key: crypto.randomUUID(),
+            path,
+            sessionId: session?.id,
+            title: sessionTitle(session ?? {}, i18n.t("untitledSession")),
+          };
+          set((state) => ({
+            archiveNotices: [
+              notice,
+              ...state.archiveNotices.filter((item) => item.path !== path),
+            ].slice(0, 3),
+          }));
           await actions.refreshSnapshot();
         } catch (error) {
           showError(error);
+        }
+      },
+      dismissArchiveNotice(key) {
+        set((state) => ({
+          archiveNotices: state.archiveNotices.filter(
+            (item) => item.key !== key,
+          ),
+        }));
+      },
+      async setSidebarPin(target, pinned, before) {
+        try {
+          await client.setSidebarPin(target, pinned, before);
+          await actions.refreshSnapshot();
+        } catch (error) {
+          showError(error);
+          throw error;
+        }
+      },
+      async setWorkspaceOrder(path, before) {
+        try {
+          await client.setWorkspaceOrder(path, before);
+          await actions.refreshSnapshot();
+        } catch (error) {
+          if (
+            error instanceof WebApiError &&
+            error.code === "WORKSPACE_ORDER_CHANGED"
+          )
+            await actions.refreshSnapshot();
+          showError(error);
+          throw error;
+        }
+      },
+      async setSessionOrder(path, id, before) {
+        try {
+          await client.setSessionOrder(path, id, before);
+          await actions.refreshSnapshot();
+        } catch (error) {
+          showError(error);
+          throw error;
+        }
+      },
+      async setSessionRead(path, id, read, expectedRevision) {
+        try {
+          await client.setSessionRead(path, id, read, expectedRevision);
+          await actions.refreshSnapshot();
+        } catch (error) {
+          if (
+            error instanceof WebApiError &&
+            error.code === "SESSION_READ_STATE_CHANGED"
+          )
+            await actions.refreshSnapshot();
+          else showError(error);
+          throw error;
         }
       },
       async unarchiveSession(path) {
         const epoch = sessionEpoch;
         try {
           await client.unarchiveSession(path);
+          set((state) => ({
+            archiveNotices: state.archiveNotices.filter(
+              (item) => item.path !== path,
+            ),
+          }));
           if (epoch !== sessionEpoch) return true;
           const generation = snapshotGeneration;
           let refreshed = await actions.refreshSnapshot({ epoch });
@@ -3006,10 +3499,11 @@ export function createWebStore(
       historyAnchor: null,
       historyNavigation: null,
       sessionForkPending: false,
+      sessionForkCancellation: null,
       cursor: null,
-      selectedPath: null,
+      selectedPath: sessionLink?.path ?? null,
       selectedWorkspace: null,
-      workspaceDraft: false,
+      workspaceDraft: hasSessionLink && !sessionLink,
       draftModel: null,
       createdSession: null,
       modelSelectionPending: false,
@@ -3027,7 +3521,11 @@ export function createWebStore(
       query: "",
       searchOpen: false,
       connection: "connecting",
-      notice: null,
+      archiveNotices: [],
+      notice:
+        hasSessionLink && !sessionLink
+          ? i18n.t("sessionLinkUnavailable")
+          : null,
       liveMessages: [],
       liveRunning: false,
       livePhase: "idle",

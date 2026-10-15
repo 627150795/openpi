@@ -524,6 +524,8 @@ for (const theme of ["light", "dark"] as const) {
       });
       await expect(evidence).toHaveCount(1);
       await expect(evidence).toBeVisible();
+      // Inspect the earlier answer while later tool arguments stream. Upward
+      // reading intent pauses the transcript's normal following of the bottom.
       const conversation = page.getByRole("log", { name: "Conversation" });
       const previousScroll = await conversation.evaluate(
         (element) => element.scrollTop,

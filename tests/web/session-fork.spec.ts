@@ -333,7 +333,7 @@ it.each([
 
     const otherPath = "/project/other.jsonl";
     const selectionReceipt = deferred<{ cancelled: boolean }>();
-    let selecting = Promise.resolve();
+    let selecting = Promise.resolve<void | boolean>(undefined);
     if (target === "workspace") {
       actions.setWorkspace("/other");
     } else {

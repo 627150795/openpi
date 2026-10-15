@@ -66,8 +66,8 @@ repository gates after the final parent has been integrated.
 ### Local final-parent preparation — 2026-10-15
 
 The local #825 preparation integrates final #823 candidate
-`8b66eb93b673de87894ef79668458c7011543c4d`, whose tree is
-`b3749cab7736ee4ecac921193149985e11c5fab6`. The published tracker state above
+`eae28f3190f94d9ff17127e8fc704429ac89116d`, whose tree is
+`7f4225dda7af405b9949d86496e692ab8db06469`. The published tracker state above
 and this local candidate identity are separate facts; integration is not a merge
 or a claim that the parent's queued full validation has completed.
 

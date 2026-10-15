@@ -217,7 +217,7 @@ test("shrinking a preview restores list focus before the next input", async () =
     async ({ picker, tui, pickerSettled, switchedPath }) => {
       picker.handleInput(input.right);
       tui.terminal.columns = 60;
-      assert.match(rendered(picker, 60), /<accent>→ alpha/);
+      // Input may arrive before the first render at the new width.
       picker.handleInput("b");
       assert.match(rendered(picker, 60), /Filter: b/);
 

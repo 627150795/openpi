@@ -10,7 +10,7 @@
 
 ## Current landing status — 2026-10-15
 
-GitHub PR state was read back at `2026-10-15T06:58:03.335733+00:00`; the remote `main` was
+GitHub PR state was read back at `2026-10-15T08:01:49.125073+00:00`; the remote `main` was
 `f98d6a4737461ba8d8ee100f113b5a7c3a0001a0`. This is a dated tracker snapshot, not a new
 source, CI, runtime, browser or Benchmark verification receipt.
 
@@ -62,6 +62,34 @@ Do not cite checks from the original split, a predecessor or an earlier local
 preparation as checks of the final #825 head. Review the preserved historical
 claims at their named boundaries and validate the final documentation links and
 repository gates after the final parent has been integrated.
+
+### Local final-parent preparation — 2026-10-15
+
+The local #825 preparation integrates final #823 candidate
+`875c3eb245c04b8c906d276248f947bc18cd0aa5`, whose tree is
+`447709bdf193aaa28c22d369708373633285078f`. The published tracker state above
+and this local candidate identity are separate facts; integration is not a merge
+or a claim that the parent's queued full validation has completed.
+
+The resulting topic contains 17 documentation files: the contribution guide and
+indexes plus 14 historical research records. Every research record retains the
+original #825 bytes, including the three restored inherited records and the
+trajectory amendment. Source and generated assets come from the final parent;
+current AGENTS and Feishu guidance are preserved.
+
+The proposed #369 checker at
+`aed4643ec243c11577c88d4c3863fd1917c4e372` explicitly admits the 13 historical
+records newly restored by #825 alongside #272's one record. The trajectory file
+already belongs to its frozen legacy baseline. This is path-based historical
+admission, not a byte-hash gate, automatic governance migration, new validation
+status or adoption of a research recommendation. A separate compatibility check
+can evaluate these records with that exact checker without importing its code
+into this documentation topic.
+
+Targeted documentation/compatibility checks and final repository validation
+remain separately recorded. Full #825 check/test and independent final review
+must use the sealed integrated head after the parent's own validation and the
+explicit validation-slot handoff; no earlier receipt substitutes for them.
 
 ## Initial review boundaries — 2026-10-14
 

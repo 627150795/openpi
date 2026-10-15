@@ -15,7 +15,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import {
@@ -2332,3 +2333,110 @@ test("release authority unknowns never downgrade a resource terminal across clai
     await writeFile(gitFile, originalGitFile);
   }
 });
+
+for (const clock of [
+  { name: "forward-wall", wall: 120_000, elapsed: 0, expires: false },
+  { name: "backward-wall", wall: -120_000, elapsed: 0, expires: false },
+  {
+    name: "backward-wall-with-budget-left",
+    wall: -120_000,
+    elapsed: 85_000,
+    expires: false,
+  },
+  {
+    name: "backward-wall-with-expired-budget",
+    wall: -120_000,
+    elapsed: 120_000,
+    expires: true,
+  },
+]) {
+  test(`native release header scan uses monotonic budget: ${clock.name}`, {
+    timeout: 30_000,
+  }, async (t) => {
+    const { root, runtime, request } = await fixture(t);
+    await gitFixture(root);
+    const fork = await runtime.forkSession({
+      ...conversation(request),
+      environment: "worktree",
+    });
+    const target = {
+      sessionId: fork.sessionId!,
+      sessionPath: fork.sessionPath!,
+      worktreePath: fork.worktree!.path,
+    };
+    await runtime.deleteSession({ ...target, commandId: "delete-clock-owner" });
+    await runtime.newSession(root, { commandId: "leave-clock-resource" });
+    runtime.sessionManager.appendMessage({
+      role: "user",
+      content: "second persisted native header",
+      timestamp: 3,
+    });
+    const catalogDirectory = await realpath(runtime.sessionDirectory);
+    assert.ok(
+      (await readdir(catalogDirectory)).filter((file) =>
+        file.endsWith(".jsonl"),
+      ).length >= 2,
+    );
+    const originalDateNow = Date.now;
+    const originalPerformanceNow = performance.now.bind(performance);
+    const descriptor = Object.getOwnPropertyDescriptor(performance, "now");
+    const originalLstat = fs.lstatSync;
+    let shifted = false;
+    fs.lstatSync = ((...args: Parameters<typeof originalLstat>) => {
+      const result = originalLstat(...args);
+      if (
+        !shifted &&
+        String(args[0]).endsWith(".jsonl") &&
+        [runtime.sessionDirectory, catalogDirectory].includes(
+          dirname(String(args[0])),
+        )
+      ) {
+        shifted = true;
+        Date.now = () => originalDateNow() + clock.wall;
+        Object.defineProperty(performance, "now", {
+          configurable: true,
+          value: () => originalPerformanceNow() + clock.elapsed,
+        });
+      }
+      return result;
+    }) as typeof originalLstat;
+    syncBuiltinESMExports();
+    try {
+      const result = await runtime.releaseSessionWorktree({
+        ...target,
+        commandId: "clock-release",
+      });
+      assert.equal(
+        shifted,
+        true,
+        "clock changes after the first real native header inspection begins",
+      );
+      assert.equal(result.state, clock.expires ? "preserved" : "removed");
+      if (clock.expires)
+        assert.match(
+          result.reason!,
+          /reference inspection reached its time limit/u,
+        );
+    } finally {
+      fs.lstatSync = originalLstat;
+      Date.now = originalDateNow;
+      if (descriptor) Object.defineProperty(performance, "now", descriptor);
+      else Reflect.deleteProperty(performance, "now");
+      syncBuiltinESMExports();
+    }
+    if (clock.expires) {
+      assert.ok(
+        await readFile(join(target.worktreePath, "tracked.txt"), "utf8"),
+      );
+      assert.equal(
+        (
+          await runtime.releaseSessionWorktree({
+            ...target,
+            commandId: "explicit-after-deadline",
+          })
+        ).state,
+        "removed",
+      );
+    }
+  });
+}

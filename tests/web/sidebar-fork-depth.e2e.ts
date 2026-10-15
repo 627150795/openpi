@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -1033,7 +1034,7 @@ test("retained managed worktrees remain discoverable after reload and native res
   }
 });
 
-test("native uncertain worktree outcomes survive new browser commands and restart without offering removal retry", async ({
+test("native uncertain worktree outcomes survive new commands, restart and unreadable receipt without offering removal retry", async ({
   browser,
 }) => {
   const fixture = await createForkHost(browser, "en-US");
@@ -1067,7 +1068,7 @@ test("native uncertain worktree outcomes survive new browser commands and restar
       commands.push(route.request().postDataJSON().commandId);
       await route.continue();
     });
-    const verify = async () => {
+    const verify = async (beforeRelease?: () => Promise<void>) => {
       const project = page
         .locator(".workspace-tree > .workspace-group")
         .filter({
@@ -1092,11 +1093,12 @@ test("native uncertain worktree outcomes survive new browser commands and restar
       await dialog
         .getByRole("button", { name: "Review removal", exact: true })
         .click();
+      await beforeRelease?.();
       await dialog
         .getByRole("button", { name: "Remove worktree", exact: true })
         .click();
       await expect(dialog.getByRole("status")).toContainText(
-        "Automatic removal cannot be repeated",
+        "Removal outcome is uncertain",
       );
       await expect(
         dialog.getByRole("button", { name: "Retry request", exact: true }),
@@ -1113,7 +1115,14 @@ test("native uncertain worktree outcomes survive new browser commands and restar
     await page.reload();
     await verify();
     await fixture.restart(source.path);
-    await verify();
+    const marker = join(receipt.gitDir, "openpi-session-worktree.json");
+    // Discovery captured a valid target, then its private receipt becomes unreadable.
+    // ENOENT is deterministic across platforms and must not downgrade the existing claim.
+    try {
+      await verify(() => rename(marker, `${marker}.unreadable-fixture`));
+    } finally {
+      await rename(`${marker}.unreadable-fixture`, marker);
+    }
     expect(commands).toHaveLength(2);
     expect(commands[1]).not.toBe(commands[0]);
     expect(await readFile(join(child.cwd, "tracked.txt"), "utf8")).toBeTruthy();

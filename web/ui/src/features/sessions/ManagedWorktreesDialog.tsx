@@ -33,6 +33,7 @@ export function ManagedWorktreesDialog({
   const [uncertain, setUncertain] = useState(false);
   const [busy, setBusy] = useState(false);
   const request = useRef(0);
+  const backButton = useRef<HTMLButtonElement>(null);
   const releasing = useRef(false);
   const mounted = useRef(true);
   const load = useCallback(
@@ -106,6 +107,9 @@ export function ManagedWorktreesDialog({
       if (mounted.current) setBusy(false);
     }
   };
+  useEffect(() => {
+    if (target && !busy) backButton.current?.focus();
+  }, [target, busy]);
   const close = () => {
     if (!releasing.current) onClose();
   };
@@ -150,6 +154,7 @@ export function ManagedWorktreesDialog({
               <button
                 type="button"
                 data-autofocus
+                ref={backButton}
                 disabled={busy}
                 onClick={() => {
                   setTarget(null);

@@ -37,23 +37,19 @@ const target = {
 };
 function mount() {
   const client = {
-    workspaceWorktrees: vi
-      .fn()
-      .mockResolvedValue({
-        worktrees: [target],
-        truncated: false,
-        unavailable: 0,
-      }),
+    workspaceWorktrees: vi.fn().mockResolvedValue({
+      worktrees: [target],
+      truncated: false,
+      unavailable: 0,
+    }),
   };
   const actions = {
-    releaseSessionWorktree: vi
-      .fn()
-      .mockResolvedValue({
-        ...target,
-        commandId: "release",
-        state: "preserved",
-        reason: "another-native-session-references-worktree",
-      }),
+    releaseSessionWorktree: vi.fn().mockResolvedValue({
+      ...target,
+      commandId: "release",
+      state: "preserved",
+      reason: "another-native-session-references-worktree",
+    }),
   };
   const onClose = vi.fn();
   const view = render(
@@ -79,6 +75,9 @@ async function review() {
   );
   expect(screen.getByText(target.worktreePath)).toBeTruthy();
   expect(screen.getByText(i18n.t("managedWorktreeConfirm"))).toBeTruthy();
+  expect(document.activeElement).toBe(
+    screen.getByRole("button", { name: i18n.t("managedWorktreesBack") }),
+  );
 }
 it("requires exact-path confirmation and displays native shared/active preservation reason", async () => {
   const h = mount();
@@ -89,6 +88,9 @@ it("requires exact-path confirmation and displays native shared/active preservat
   );
   await screen.findByText(/another-native-session-references-worktree/);
   expect(h.actions.releaseSessionWorktree).toHaveBeenCalledWith(target);
+  expect(document.activeElement).toBe(
+    screen.getByRole("button", { name: i18n.t("managedWorktreesBack") }),
+  );
   expect(screen.getByText(target.worktreePath)).toBeTruthy();
   expect(screen.queryByText(i18n.t("managedWorktreeRemoved"))).toBeNull();
 });

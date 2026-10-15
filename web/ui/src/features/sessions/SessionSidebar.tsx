@@ -151,6 +151,7 @@ function ActionMenu({
 
 export function SessionSidebar(props: SessionSidebarProps) {
   const { t } = useTranslation();
+  const worktreeFocus = useRef<(() => void) | null>(null);
   const [worktreeWorkspace, setWorktreeWorkspace] = useState<string | null>(
     null,
   );
@@ -1498,8 +1499,19 @@ export function SessionSidebar(props: SessionSidebarProps) {
               label: t("managedWorktrees"),
               icon: <Folder />,
               isDisabled: props.connected === false,
-              onClick: () =>
-                queueMicrotask(() => setWorktreeWorkspace(group.path)),
+              onClick: () => {
+                const row = Array.from(
+                  sidebar.current?.querySelectorAll<HTMLElement>(
+                    ".workspace-group",
+                  ) ?? [],
+                ).find((item) => item.dataset.workspaceKey === group.path);
+                worktreeFocus.current = captureSidebarFocus(
+                  row?.querySelector<HTMLElement>(
+                    ".workspace-row-actions .menu-action-button",
+                  ) ?? null,
+                );
+                queueMicrotask(() => setWorktreeWorkspace(group.path));
+              },
             },
           ]
         : []),
@@ -1534,6 +1546,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
             : "")
         }
         key={group.path}
+        data-workspace-key={group.path}
         aria-label={group.name}
         onDragOver={(event) => {
           if (
@@ -2484,7 +2497,10 @@ export function SessionSidebar(props: SessionSidebarProps) {
           client={client}
           actions={props.actions}
           connected={props.connected !== false}
-          onClose={() => setWorktreeWorkspace(null)}
+          onClose={() => {
+            setWorktreeWorkspace(null);
+            worktreeFocus.current?.();
+          }}
         />
       )}
       <Dialog

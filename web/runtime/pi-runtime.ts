@@ -2151,11 +2151,11 @@ export class PiWebRuntime implements WebRuntimeController {
       const preserve = (reason: string): WebWorktreeReleaseResult => ({ ...exact, state: "preserved", reason });
       try {
         this.assertActive();
-        if (hasExternalHolders?.()) return preserve("A Host terminal or pending process still owns this worktree, or its shutdown cannot be verified.");
         const receipt = await readSessionWorktreeReceipt(exact.worktreePath, this.webSessionDirectory);
         if (receipt.ownerSession.sessionId !== exact.sessionId || receipt.ownerSession.sessionPath !== exact.sessionPath)
           return preserve("The private worktree receipt belongs to another native child.");
         if (receipt.releaseState === "uncertain") return { ...exact, state: "uncertain", reason: "A prior release attempt is uncertain. Automatic removal cannot be repeated." };
+        if (hasExternalHolders?.()) return preserve("A Host terminal or pending process still owns this worktree, or its shutdown cannot be verified.");
         if (existsSync(exact.sessionPath)) return preserve("The original native child Session still exists. Delete the Session before releasing its worktree.");
         const inside = (cwd: string) => {
           const suffix = relative(exact.worktreePath, cwd);

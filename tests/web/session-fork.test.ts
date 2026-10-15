@@ -2144,6 +2144,24 @@ test("private resource uncertainty survives changed commands and native Host res
     ).replayed,
     true,
   );
+  let holderInspected = false;
+  assert.equal(
+    (
+      await runtime.releaseSessionWorktree(
+        { ...target, commandId: "uncertain-with-holder" },
+        () => {
+          holderInspected = true;
+          return true;
+        },
+      )
+    ).state,
+    "uncertain",
+  );
+  assert.equal(
+    holderInspected,
+    false,
+    "terminal resource state precedes new holder observations",
+  );
   await runtime.dispose();
   const restarted = await PiWebRuntime.create(root);
   try {

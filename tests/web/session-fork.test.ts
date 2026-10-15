@@ -33,6 +33,7 @@ import {
 } from "../../web/protocol/session-fork.ts";
 import { formatSourceReference } from "../../web/protocol/session-sources.ts";
 import { PiWebRuntime } from "../../web/runtime/pi-runtime.ts";
+import { readSessionWorktreeReceipt } from "../../web/runtime/session-worktree.ts";
 import {
   WebRuntimeRequestError,
   type WebSessionForkResult,
@@ -2094,4 +2095,87 @@ test("private native binding persistence failure is uncertain and preserves both
   const listing = await runtime.listRetainedWorktrees(root);
   assert.equal(listing.worktrees.length, 0);
   assert.equal(listing.unavailable, 1);
+});
+
+test("private resource uncertainty survives changed commands and native Host restart", {
+  timeout: 30_000,
+}, async (t) => {
+  const { root, runtime, request } = await fixture(t);
+  await gitFixture(root);
+  const fork = await runtime.forkSession({
+    ...conversation(request),
+    environment: "worktree",
+  });
+  const target = {
+    sessionId: fork.sessionId!,
+    sessionPath: fork.sessionPath!,
+    worktreePath: fork.worktree!.path,
+  };
+  await runtime.deleteSession({
+    ...target,
+    commandId: "delete-terminal-owner",
+  });
+  await runtime.newSession(root, { commandId: "leave-terminal-resource" });
+  const receipt = await readSessionWorktreeReceipt(
+    target.worktreePath,
+    runtime.sessionDirectory,
+  );
+  // A Host can stop after claiming this exact original private resource and
+  // before atomically replacing its marker. A new Host must honor that claim.
+  await writeFile(
+    join(receipt.gitDir, "openpi-session-worktree.json.release-lock"),
+    JSON.stringify(receipt),
+    { flag: "wx", mode: 0o600 },
+  );
+  for (const commandId of ["uncertain-original", "uncertain-new-command"]) {
+    const result = await runtime.releaseSessionWorktree({
+      ...target,
+      commandId,
+    });
+    assert.equal(result.state, "uncertain");
+    assert.match(result.reason!, /prior release attempt/u);
+  }
+  assert.equal(
+    (
+      await runtime.releaseSessionWorktree({
+        ...target,
+        commandId: "uncertain-original",
+      })
+    ).replayed,
+    true,
+  );
+  let holderInspected = false;
+  assert.equal(
+    (
+      await runtime.releaseSessionWorktree(
+        { ...target, commandId: "uncertain-with-holder" },
+        () => {
+          holderInspected = true;
+          return true;
+        },
+      )
+    ).state,
+    "uncertain",
+  );
+  assert.equal(
+    holderInspected,
+    false,
+    "terminal resource state precedes new holder observations",
+  );
+  await runtime.dispose();
+  const restarted = await PiWebRuntime.create(root);
+  try {
+    assert.deepEqual((await restarted.listRetainedWorktrees(root)).worktrees, [
+      target,
+    ]);
+    for (const commandId of ["uncertain-original", "restart-new-command"])
+      assert.equal(
+        (await restarted.releaseSessionWorktree({ ...target, commandId }))
+          .state,
+        "uncertain",
+      );
+    assert.ok(await readFile(join(target.worktreePath, "tracked.txt"), "utf8"));
+  } finally {
+    await restarted.dispose();
+  }
 });

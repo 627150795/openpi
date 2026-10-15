@@ -520,7 +520,16 @@ is preserved with its path and reason. A failed removal after Git was invoked is
 `uncertain`, rather than a claim that the checkout remains intact. Command
 receipts replay the exact same-process result and reject identity reuse; after
 restart, a missing checkout is uncertain rather than evidence of successful
-release. Discovery does not promise eligibility, and every release rechecks it.
+release. A destructive attempt first exclusively claims this resource in its
+private Git directory and writes a terminal `uncertain` barrier into the original
+receipt. A different command or Host restart cannot repeat removal after that
+barrier, including when only the claim survived an interrupted marker update.
+Failure to persist or inspect the barrier prevents Git removal. The resource has
+no automatic unlock or retry-after-uncertain path. An exclusive claim rejected
+before creation is `preserved` only if inspection confirms no claim, no marker
+change and no destructive Git invocation. A definitive pre-removal
+`preserved` outcome still permits a new explicit command after its cause is fixed.
+Discovery does not promise eligibility, and every release rechecks it.
 
 The #822 sidebar owns the explicit confirmation, retained-worktree list and
 response-loss interaction. The #821 runtime/Host candidate itself adds no model

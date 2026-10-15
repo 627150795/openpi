@@ -14,6 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { performance } from "node:perf_hooks";
 import {
   delimiter,
   basename,
@@ -65,6 +66,7 @@ export interface SessionWorktreeCleanupReceipt {
   releaseState?: "uncertain";
 }
 
+// deadline is a monotonic performance.now() instant, never a wall timestamp.
 type Context = { deadline: number; signal?: AbortSignal };
 type Inspection =
   | {
@@ -80,11 +82,13 @@ type Inspection =
 function check(context: Context) {
   if (context.signal?.aborted)
     throw new SessionWorktreeError("cancelled", "Worktree fork was cancelled.");
-  if (Date.now() >= context.deadline)
+  const remaining = context.deadline - performance.now();
+  if (remaining <= 0)
     throw new SessionWorktreeError(
       "limit",
       "Worktree snapshot exceeded its 90 second deadline.",
     );
+  return Math.ceil(remaining);
 }
 
 async function git(
@@ -93,7 +97,7 @@ async function git(
   context: Context,
   environment: NodeJS.ProcessEnv = {},
 ) {
-  check(context);
+  const remaining = check(context);
   try {
     const result = await execFileAsync(
       "git",
@@ -101,7 +105,7 @@ async function git(
       {
         cwd,
         encoding: "utf8",
-        timeout: Math.min(10_000, context.deadline - Date.now()),
+        timeout: Math.min(10_000, remaining),
         maxBuffer: PATCH_BYTES,
         env: {
           ...process.env,
@@ -227,7 +231,7 @@ function validateIndex(entries: string) {
 
 export async function inspectSessionWorktree(cwd: string): Promise<Inspection> {
   try {
-    return await inspect(cwd, { deadline: Date.now() + OPERATION_MS });
+    return await inspect(cwd, { deadline: performance.now() + OPERATION_MS });
   } catch (error) {
     return {
       available: false,
@@ -659,7 +663,7 @@ export async function createSessionWorktree(
   commandId: string,
   signal?: AbortSignal,
 ) {
-  const context: Context = { deadline: Date.now() + OPERATION_MS, signal };
+  const context: Context = { deadline: performance.now() + OPERATION_MS, signal };
   const source = await inspect(cwd, context);
   const scratch = await mkdtemp(join(tmpdir(), "openpi-session-worktree-"));
   let receipt: SessionWorktreeCleanupReceipt | undefined;
@@ -889,7 +893,7 @@ async function readOwnershipMarker(marker: string) {
 export async function readSessionWorktreeReceipt(worktreePath: string, sessionDirectory: string) {
   let claimed = false;
   try {
-    const context = { deadline: Date.now() + OPERATION_MS };
+    const context = { deadline: performance.now() + OPERATION_MS };
     if (!isAbsolute(worktreePath) || await realpath(worktreePath) !== worktreePath)
       throw new SessionWorktreeError("identity", "The managed worktree path changed.");
     const current = await identity(worktreePath, context);
@@ -937,7 +941,7 @@ export function sessionWorktreeReleaseTarget(receipt: SessionWorktreeCleanupRece
 
 /** Bounded discovery from one known Git workspace, not a global resource registry or sweep. */
 export async function listSessionWorktrees(cwd: string, sessionDirectory: string, cursor?: string) {
-  const context = { deadline: Date.now() + OPERATION_MS };
+  const context = { deadline: performance.now() + OPERATION_MS };
   const commonDir = await realpath(resolve(cwd, (await git(cwd, ["rev-parse", "--git-common-dir"], context)).trim()));
   const parent = join(commonDir, "pi-worktrees");
   const entries = await readdir(parent).catch((error: NodeJS.ErrnoException) => {
@@ -969,7 +973,7 @@ export async function listSessionWorktrees(cwd: string, sessionDirectory: string
 export async function cleanupSessionWorktree(
   receipt: SessionWorktreeCleanupReceipt,
 ) {
-  const context = { deadline: Date.now() + OPERATION_MS };
+  const context = { deadline: performance.now() + OPERATION_MS };
   let releaseAttempted = false;
   const preserved = (reason: string) => ({
     removed: false,

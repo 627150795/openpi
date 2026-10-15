@@ -2175,9 +2175,9 @@ export class PiWebRuntime implements WebRuntimeController {
           return preserve("The native Session reference catalog is incomplete or exceeds its inspection limit.");
         // Only native headers own cwd. Do not load unbounded private transcripts
         // or treat the sidebar's bounded/paginated projection as the full catalog.
-        const deadline = Date.now() + 90_000;
+        const deadline = performance.now() + 90_000;
         for (const file of files) {
-          if (Date.now() >= deadline) return preserve("Native Session reference inspection reached its time limit.");
+          if (performance.now() >= deadline) return preserve("Native Session reference inspection reached its time limit.");
           const id = file.name.slice(file.name.lastIndexOf("_") + 1, -6);
           const header = inspectSavedWebSession(join(this.webSessionDirectory, file.name), id, this.webSessionDirectory, "fork");
           if (inside(await realpath(header.cwd)))

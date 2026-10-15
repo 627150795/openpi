@@ -5,6 +5,7 @@ import childProcess, {
 } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
+import { performance } from "node:perf_hooks";
 import * as path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { type TestContext, test } from "node:test";
@@ -15,15 +16,19 @@ import { promisify } from "node:util";
 const originalExecFile = childProcess.execFile;
 const execFileAsync = promisify(originalExecFile);
 let gitWrapper: string | undefined;
+let afterGitCall: (() => void) | undefined;
 childProcess.execFile = Object.assign(originalExecFile.bind(childProcess), {
-  [promisify.custom]: (
+  [promisify.custom]: async (
     file: string,
     args: string[],
     options: ExecFileOptions,
-  ) =>
-    file === "git" && gitWrapper
+  ) => {
+    const result = await (file === "git" && gitWrapper
       ? execFileAsync(process.execPath, [gitWrapper, ...args], options)
-      : execFileAsync(file, args, options),
+      : execFileAsync(file, args, options));
+    if (file === "git") afterGitCall?.();
+    return result;
+  },
 });
 syncBuiltinESMExports();
 const {
@@ -931,4 +936,101 @@ test("failure after exclusive claim creation leaves a durable uncertain barrier 
   );
   assert.equal(fs.existsSync(removeLog), false);
   assert.equal(fs.existsSync(child.worktree.path), true);
+});
+
+test("wall-clock jumps do not change real Git worktree operation budgets", async (t) => {
+  const { repo, root } = fixture(t);
+  const sessions = path.join(root, "sessions");
+  fs.mkdirSync(sessions);
+  const originalNow = Date.now;
+  for (const shift of [120_000, -120_000]) {
+    const withShift = async <T>(operation: () => Promise<T>) => {
+      let shifted = false;
+      afterGitCall = () => {
+        if (!shifted) {
+          shifted = true;
+          Date.now = () => originalNow() + shift;
+        }
+      };
+      try {
+        return await operation();
+      } finally {
+        Date.now = originalNow;
+        afterGitCall = undefined;
+        assert.equal(
+          shifted,
+          true,
+          "clock control follows a completed real Git call",
+        );
+      }
+    };
+    assert.equal(
+      (await withShift(() => inspectSessionWorktree(repo))).available,
+      true,
+      String(shift),
+    );
+    const child = await withShift(() =>
+      createSessionWorktree(repo, `wall-shift-${shift}`),
+    );
+    await bindSessionWorktree(child.cleanupReceipt, {
+      sessionId: `child-${shift}`,
+      sessionPath: path.join(sessions, `child-${shift}.jsonl`),
+    });
+    const recovered = await withShift(() =>
+      readSessionWorktreeReceipt(child.worktree.path, sessions),
+    );
+    assert.equal(recovered.path, child.worktree.path);
+    assert.equal(
+      (await withShift(() => listSessionWorktrees(repo, sessions))).worktrees
+        .length,
+      1,
+    );
+    assert.equal(
+      (await withShift(() => cleanupSessionWorktree(recovered))).removed,
+      true,
+    );
+  }
+});
+
+test("real Git inspection honors monotonic remaining budget while wall time moves backward", async (t) => {
+  const { repo } = fixture(t);
+  const originalDateNow = Date.now;
+  const originalPerformanceNow = performance.now.bind(performance);
+  const descriptor = Object.getOwnPropertyDescriptor(performance, "now");
+  for (const elapsed of [85_000, 120_000]) {
+    let calls = 0;
+    afterGitCall = () => {
+      if (++calls === 1) {
+        Date.now = () => originalDateNow() - 120_000;
+        Object.defineProperty(performance, "now", {
+          configurable: true,
+          value: () => originalPerformanceNow() + elapsed,
+        });
+      }
+    };
+    try {
+      const result = await inspectSessionWorktree(repo);
+      if (elapsed < 90_000)
+        assert.equal(
+          result.available,
+          true,
+          "remaining fractional milliseconds still produce a bounded valid native timeout",
+        );
+      else {
+        assert.equal(
+          result.available,
+          false,
+          "monotonic budget expires despite backward wall time",
+        );
+        if (!result.available)
+          assert.match(result.reason, /90 second deadline/u);
+        assert.equal(calls, 1);
+      }
+    } finally {
+      afterGitCall = undefined;
+      Date.now = originalDateNow;
+      if (descriptor) Object.defineProperty(performance, "now", descriptor);
+      else Reflect.deleteProperty(performance, "now");
+    }
+  }
 });

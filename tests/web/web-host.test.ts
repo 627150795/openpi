@@ -6754,40 +6754,47 @@ test("provider key writes require authentication and sanitize provider failures"
   }
 });
 
-test("stop bounds an authenticated incomplete HTTP request", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "openpi-web-stop-http-"));
-  const { host, launched, headers } = await startTestHost(testRuntime(cwd));
-  const socket = createConnection({
-    host: launched.hostname,
-    port: Number(launched.port),
-  });
-  socket.on("error", () => undefined);
-  try {
-    await once(socket, "connect");
-    socket.write(
-      `POST /api/workspaces HTTP/1.1\r\nHost: ${launched.host}\r\nAuthorization: ${headers.Authorization}\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{"path":"`,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 20));
+for (const wallShift of [0, 120_000, -120_000]) {
+  test(`stop bounds an authenticated incomplete HTTP request with wall shift ${wallShift}`, async (t) => {
+    const cwd = await mkdtemp(join(tmpdir(), "openpi-web-stop-http-"));
+    const { host, launched, headers } = await startTestHost(testRuntime(cwd));
+    const socket = createConnection({
+      host: launched.hostname,
+      port: Number(launched.port),
+    });
+    socket.on("error", () => undefined);
+    try {
+      await once(socket, "connect");
+      socket.write(
+        `POST /api/workspaces HTTP/1.1\r\nHost: ${launched.host}\r\nAuthorization: ${headers.Authorization}\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{"path":"`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const startedAt = Date.now();
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      host.stop(),
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error("host stop did not finish")),
-          2_000,
-        );
-      }),
-    ]);
-    clearTimeout(timeout);
-    assert.ok(Date.now() - startedAt < 1_500);
-  } finally {
-    socket.destroy();
-    await host.stop();
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
+      const nativeDateNow = Date.now;
+      const startedAt = performance.now();
+      const stopping = host.stop();
+      t.mock.method(Date, "now", () => nativeDateNow() + wallShift);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        stopping,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error("host stop did not finish")),
+            2_000,
+          );
+        }),
+      ]);
+      clearTimeout(timeout);
+      const elapsed = performance.now() - startedAt;
+      assert.ok(elapsed >= 0 && elapsed < 1_500, `stop elapsed ${elapsed}ms`);
+    } finally {
+      t.mock.restoreAll();
+      socket.destroy();
+      await host.stop();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+}
 
 test("stop disposes the runtime before waiting for an in-flight prompt request", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "openpi-web-stop-prompt-"));

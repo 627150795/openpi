@@ -265,6 +265,7 @@ type PromptRuntimeHarness = {
   inFlightRuntimes: Map<FakeAgentRuntime, number>;
   promptOperations: Set<Promise<void>>;
   runtimeOperations: Set<Promise<void>>;
+  historyForkReceipts: Map<string, never>;
   candidateRuntimes: Set<FakeAgentRuntime>;
   runtimeDisposals: Set<Promise<void>>;
   runtimeDisposalFailure?: unknown;
@@ -322,6 +323,7 @@ type LifecycleHarness = {
   runtimeDisposals: Set<Promise<void>>;
   promptOperations: Set<Promise<void>>;
   runtimeOperations: Set<Promise<void>>;
+  historyForkReceipts: Map<string, never>;
   candidateRuntimes: Set<LifecycleRuntime>;
   pendingPromptTraces: Trace[];
   activePromptTrace?: Trace;
@@ -395,6 +397,7 @@ function lifecycleHarness(runtime: LifecycleRuntime) {
   harness.runtimeDisposals = new Set();
   harness.promptOperations = new Set();
   harness.runtimeOperations = new Set();
+  harness.historyForkReceipts = new Map<string, never>();
   harness.candidateRuntimes = new Set();
   harness.pendingPromptTraces = [];
   harness.turnAbortOperations = new Map();
@@ -432,6 +435,7 @@ function promptHarness(session: ReturnType<typeof promptSession>) {
   harness.inFlightRuntimes = new Map();
   harness.promptOperations = new Set();
   harness.runtimeOperations = new Set();
+  harness.historyForkReceipts = new Map<string, never>();
   harness.candidateRuntimes = new Set();
   harness.runtimeDisposals = new Set();
   harness.runtimeDisposalPromises = new WeakMap();

@@ -33,6 +33,7 @@ import { readSessionFork } from "../../web/protocol/session-fork.ts";
 import type { WebSnapshot } from "../../web/protocol/types.ts";
 import { PiWebRuntime } from "../../web/runtime/pi-runtime.ts";
 import type { WebSessionForkResult } from "../../web/runtime/types.ts";
+import { readSessionWorktreeReceipt } from "../../web/runtime/session-worktree.ts";
 
 const execute = promisify(execFile);
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -1027,6 +1028,96 @@ test("retained managed worktrees remain discoverable after reload and native res
     await fixture.verifySourceGit();
     expect(fixture.providerRequests).toBe(0);
     expect(fixture.errors).toEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("native uncertain worktree outcomes survive new browser commands and restart without offering removal retry", async ({
+  browser,
+}) => {
+  const fixture = await createForkHost(browser, "en-US");
+  const { page } = fixture;
+  try {
+    const source = fixture.sessions[0]!;
+    await openMenu(rowFor(page, "Git conversation"), "en-US");
+    await enterFork(page, "en-US");
+    const child = requireChild(await clickFork(page, "en-US", "worktree"));
+    await rowFor(page, "Git conversation").locator("button.session").click();
+    await expect
+      .poll(async () => (await fixture.snapshot()).currentSessionId)
+      .toBe(source.id);
+    await fixture.api("/api/sessions/delete", {
+      commandId: "delete-uncertain-owner",
+      sessionId: child.sessionId,
+      sessionPath: child.sessionPath,
+    });
+    const receipt = await readSessionWorktreeReceipt(
+      child.cwd,
+      dirname(child.sessionPath),
+    );
+    // Simulate the persisted crash window after an exact native resource claim.
+    await writeFile(
+      join(receipt.gitDir, "openpi-session-worktree.json.release-lock"),
+      JSON.stringify(receipt),
+      { flag: "wx", mode: 0o600 },
+    );
+    const commands: string[] = [];
+    await page.route("**/api/sessions/worktree-release", async (route) => {
+      commands.push(route.request().postDataJSON().commandId);
+      await route.continue();
+    });
+    const verify = async () => {
+      const project = page
+        .locator(".workspace-tree > .workspace-group")
+        .filter({
+          has: page.locator(".workspace-label strong", {
+            hasText: /^Git project$/u,
+          }),
+        });
+      const trigger = project.getByRole("button", {
+        name: "Workspace options",
+        exact: true,
+      });
+      await trigger.focus();
+      await trigger.press("Enter");
+      await page
+        .getByRole("menuitem", { name: "Retained worktrees", exact: true })
+        .click();
+      const dialog = page.getByRole("dialog", {
+        name: "Retained worktrees",
+        exact: true,
+      });
+      await expect(dialog.getByText(child.cwd, { exact: true })).toBeVisible();
+      await dialog
+        .getByRole("button", { name: "Review removal", exact: true })
+        .click();
+      await dialog
+        .getByRole("button", { name: "Remove worktree", exact: true })
+        .click();
+      await expect(dialog.getByRole("status")).toContainText(
+        "Automatic removal cannot be repeated",
+      );
+      await expect(
+        dialog.getByRole("button", { name: "Retry request", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        dialog.getByRole("button", { name: "Remove worktree", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        dialog.getByRole("button", { name: "Back to worktrees", exact: true }),
+      ).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(trigger).toBeFocused();
+    };
+    await page.reload();
+    await verify();
+    await fixture.restart(source.path);
+    await verify();
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).not.toBe(commands[0]);
+    expect(await readFile(join(child.cwd, "tracked.txt"), "utf8")).toBeTruthy();
+    expect(fixture.providerRequests).toBe(0);
   } finally {
     await fixture.close();
   }

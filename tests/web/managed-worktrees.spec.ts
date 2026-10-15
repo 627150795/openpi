@@ -252,3 +252,35 @@ it("requires an explicit fresh listing when a continuation cursor becomes stale"
     ),
   );
 });
+
+it("keeps a native uncertain terminal visible without offering another removal attempt", async () => {
+  const h = mount();
+  h.actions.releaseSessionWorktree.mockResolvedValueOnce({
+    ...target,
+    commandId: "release",
+    state: "uncertain",
+    reason:
+      "A prior release attempt is uncertain. Automatic removal cannot be repeated.",
+  });
+  await review();
+  fireEvent.click(
+    screen.getByRole("button", { name: i18n.t("managedWorktreeRemove") }),
+  );
+  await screen.findByText(/A prior release attempt is uncertain/);
+  expect(screen.getByText(target.worktreePath)).toBeTruthy();
+  expect(
+    screen.getByText(i18n.t("managedWorktreeUncertainTerminal"), {
+      exact: false,
+    }),
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("button", { name: i18n.t("managedWorktreesRetry") }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: i18n.t("managedWorktreeRemove") }),
+  ).toBeNull();
+  expect(h.actions.releaseSessionWorktree).toHaveBeenCalledTimes(1);
+  expect(document.activeElement).toBe(
+    screen.getByRole("button", { name: i18n.t("managedWorktreesBack") }),
+  );
+});

@@ -817,9 +817,23 @@ async function showSessionPicker(
           );
           container.addChild(new Spacer(1));
         } else {
+          // Frame, title, two filter rows and hints occupy six rows. Native
+          // SelectList adds a scroll indicator when its item window is clipped.
+          const listHeight = Math.max(
+            1,
+            Math.max(12, tui.terminal?.rows ?? 24) - 6,
+          );
+          const requestedVisible = Math.min(
+            maxVisible,
+            Math.max(filteredEntries.length, 1),
+          );
+          const scrollRows =
+            filteredEntries.length > Math.min(requestedVisible, listHeight)
+              ? 1
+              : 0;
           const effectiveVisible = Math.max(
             1,
-            Math.min(maxVisible, Math.max(filteredEntries.length, 1)),
+            Math.min(requestedVisible, listHeight - scrollRows),
           );
           ensureStatsWindowLoad(effectiveVisible);
           const items = buildItems(filteredEntries, width);
@@ -903,9 +917,13 @@ async function showSessionPicker(
           leftLines.push("");
           leftLines.push(theme.fg("muted", "  Loading sessions..."));
         } else {
-          const effectiveVisible = Math.min(
-            listHeight,
-            Math.max(filteredEntries.length, 1),
+          const scrollRows = filteredEntries.length > listHeight ? 1 : 0;
+          const effectiveVisible = Math.max(
+            1,
+            Math.min(
+              listHeight - scrollRows,
+              Math.max(filteredEntries.length, 1),
+            ),
           );
           ensureStatsWindowLoad(effectiveVisible);
           const items = buildItems(filteredEntries, layout.listWidth);

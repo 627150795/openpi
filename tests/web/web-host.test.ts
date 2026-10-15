@@ -6773,3 +6773,86 @@ test("stop disposes the runtime before waiting for an in-flight prompt request",
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("managed worktree endpoints bind discovery to a known workspace and forward only exact release identity", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "openpi-worktree-host-"));
+  const runtime = testRuntime(cwd);
+  const calls: unknown[] = [];
+  const target = {
+    sessionId: "deleted-native-child",
+    sessionPath: join(runtime.sessionDirectory, "deleted.jsonl"),
+    worktreePath: join(cwd, ".git", "pi-worktrees", "retained"),
+  };
+  runtime.listRetainedWorktrees = async (path, cursor) => {
+    calls.push({ path, cursor });
+    return {
+      worktrees: [target],
+      truncated: true,
+      unavailable: 1,
+      nextCursor: "opaque-next",
+    };
+  };
+  runtime.releaseSessionWorktree = async (request) => {
+    calls.push(request);
+    return {
+      ...request,
+      state: "preserved",
+      reason: "A saved Session still references this checkout.",
+    };
+  };
+  const { host, launched, headers } = await startTestHost(runtime);
+  const route = `${launched.origin}/api/workspaces/worktrees?path=${encodeURIComponent(cwd)}`;
+  const release = { ...target, commandId: "explicit-release" };
+  const post = (body: unknown, authenticated = true) =>
+    fetch(`${launched.origin}/api/sessions/worktree-release`, {
+      method: "POST",
+      headers: {
+        ...(authenticated ? headers : {}),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  try {
+    assert.equal((await fetch(route)).status, 401);
+    const listing = await fetch(`${route}&cursor=opaque`, { headers });
+    assert.equal(listing.status, 200);
+    assert.deepEqual(await listing.json(), {
+      worktrees: [target],
+      truncated: true,
+      unavailable: 1,
+      nextCursor: "opaque-next",
+    });
+    assert.deepEqual(calls.shift(), { path: cwd, cursor: "opaque" });
+    assert.notEqual(
+      (
+        await fetch(
+          `${launched.origin}/api/workspaces/worktrees?path=${encodeURIComponent(join(cwd, "unknown"))}`,
+          { headers },
+        )
+      ).status,
+      200,
+    );
+    assert.equal(calls.length, 0);
+    assert.equal((await post(release, false)).status, 401);
+    for (const body of [
+      { ...release, token: "browser-authority" },
+      { ...release, worktreePath: "relative" },
+      { ...release, sessionId: "bad\nidentity" },
+    ])
+      assert.equal((await post(body)).status, 400);
+    assert.equal(calls.length, 0);
+    const response = await post(release);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ...release,
+      state: "preserved",
+      reason: "A saved Session still references this checkout.",
+    });
+    assert.deepEqual(calls, [release]);
+    delete runtime.releaseSessionWorktree;
+    assert.equal((await post(release)).status, 501);
+  } finally {
+    await host.stop();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

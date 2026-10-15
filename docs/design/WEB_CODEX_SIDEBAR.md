@@ -480,3 +480,44 @@ Simplification: removed the proposed startup baseline scan and its persisted
 flag; removing the publication gate instead reproduces the legacy blue-dot
 regression. The implementation uses existing Pi timing and presentation
 receipts, with no new settings, model-facing tool or independent activity store.
+
+## 2026-10-15: explicit release of retained fork worktrees
+
+- Status: implementation candidate for PR #821 / Issue #798; independent final
+  review and the sidebar UI acceptance remain separate gates.
+- Source boundary: PR #821 `079ace4d`, integrated with main `f98d6a47`.
+- This amendment extends the earlier retention policy; it does not change the
+  historical snapshot or cancellation receipts above.
+
+Session deletion still retains its worktree. A separate explicit release request
+uses the original private Git ownership receipt, bound to the newly persisted
+native child before activation. If binding persistence fails, the fork reports
+`uncertain` and preserves the child and checkout. Public fork provenance and a
+browser-supplied path alone never grant cleanup authority.
+
+The Host provides workspace-scoped discovery from those private receipts at
+`GET /api/workspaces/worktrees?path=…&cursor=…`. Pages scan at most 128 managed
+entries; a continuation cursor also advances through unavailable entries. The
+projection contains only native child id/path and worktree path, with explicit
+partial/unavailable counts. It survives deletion of the child Session and Host
+restart without a second Session registry or a global garbage collector.
+
+`POST /api/sessions/worktree-release` takes the exact command id, original native
+child id/path and worktree path. It is separate from Session deletion. Release
+refuses an existing original Session, any saved Session sharing the checkout,
+active/retained/candidate/in-flight native cwd holders, incomplete reference
+inspection and unverified shutdown. In particular, deleting an active Session
+can create an idle native replacement in the same cwd; that replacement still
+prevents release until the operator genuinely leaves the checkout.
+
+Only an unchanged checkout with matching private marker, directory/Git identity,
+HEAD, index and full contents can be removed. Modified, shared or unknown state
+is preserved with its path and reason. A failed removal after Git was invoked is
+`uncertain`, rather than a claim that the checkout remains intact. Command
+receipts replay the exact same-process result and reject identity reuse; after
+restart, a missing checkout is uncertain rather than evidence of successful
+release. Discovery does not promise eligibility, and every release rechecks it.
+
+The #822 sidebar owns the explicit confirmation, retained-worktree list and
+response-loss interaction. The #821 runtime/Host candidate itself adds no model
+tool, setup preference, automatic cleanup or dependency installation.

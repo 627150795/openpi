@@ -515,8 +515,13 @@ inspection seam is unknown and preserves the checkout, and closing processes
 continue consuming the existing terminal capacity until exit.
 
 Only an unchanged checkout with matching private marker, directory/Git identity,
-HEAD, index and full contents can be removed. Modified, shared or unknown state
-is preserved with its path and reason. A failed removal after Git was invoked is
+HEAD, index and full contents can be removed. Confirmed modifications and shared
+references produce a `preserved` refusal with their path and reason. Unavailable
+canonical Git identity or missing, unreadable, corrupt or unbound original
+private receipts produce typed `uncertain` refusal, even if the checkout still
+exists. Claim inspection precedes marker parsing; a claim never recreates a
+missing native child binding or grants deletion authority. Fully verified
+terminal state precedes new holder observations. A failed removal after Git was invoked is
 `uncertain`, rather than a claim that the checkout remains intact. Command
 receipts replay the exact same-process result and reject identity reuse; after
 restart, a missing checkout is uncertain rather than evidence of successful

@@ -2188,7 +2188,7 @@ export class PiWebRuntime implements WebRuntimeController {
         const cleanup = await cleanupSessionWorktree(receipt);
         return { ...exact, state: cleanup.removed ? "removed" : "uncertain" in cleanup ? "uncertain" : "preserved", ...(cleanup.reason ? { reason: cleanup.reason } : {}) };
       } catch (error) {
-        return { ...exact, state: existsSync(exact.worktreePath) ? "preserved" : "uncertain", reason: errorText(error) };
+        return { ...exact, state: error instanceof SessionWorktreeError && error.code === "uncertain" || !existsSync(exact.worktreePath) ? "uncertain" : "preserved", reason: errorText(error) };
       }
     }, true);
     this.sessionMutationPending = true;

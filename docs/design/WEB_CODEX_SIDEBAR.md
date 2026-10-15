@@ -508,7 +508,11 @@ refuses an existing original Session, any saved Session sharing the checkout,
 active/retained/candidate/in-flight native cwd holders, incomplete reference
 inspection and unverified shutdown. In particular, deleting an active Session
 can create an idle native replacement in the same cwd; that replacement still
-prevents release until the operator genuinely leaves the checkout.
+prevents release until the operator genuinely leaves the checkout. Host PTY
+creation and release share the existing mutation queue; pending creation and
+closed terminals remain holders until native exit is observed. A missing holder
+inspection seam is unknown and preserves the checkout, and closing processes
+continue consuming the existing terminal capacity until exit.
 
 Only an unchanged checkout with matching private marker, directory/Git identity,
 HEAD, index and full contents can be removed. Modified, shared or unknown state

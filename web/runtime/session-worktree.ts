@@ -885,7 +885,9 @@ export async function readSessionWorktreeReceipt(worktreePath: string, sessionDi
   if (dirname(worktreePath) !== join(current.commonDir, "pi-worktrees") ||
       !within(join(current.commonDir, "worktrees"), current.gitDir))
     throw new SessionWorktreeError("identity", "This is not a privately owned managed worktree.");
-  const value: unknown = JSON.parse(await readOwnershipMarker(join(current.gitDir, OWNER_FILE)));
+  let value: unknown;
+  try { value = JSON.parse(await readOwnershipMarker(join(current.gitDir, OWNER_FILE))); }
+  catch { throw new SessionWorktreeError("identity", "The private worktree ownership marker could not be read or validated."); }
   if (!value || typeof value !== "object") throw new SessionWorktreeError("identity", "Invalid worktree ownership marker.");
   const receipt = value as Partial<SessionWorktreeCleanupReceipt>;
   const strings = [receipt.path, receipt.gitDir, receipt.commonDir, receipt.sourceRoot, receipt.baseSha, receipt.token,

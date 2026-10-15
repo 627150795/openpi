@@ -61,6 +61,8 @@ export interface SessionWorktreeCleanupReceipt {
   indexDigest: string;
   /** Native child identity, recorded privately before successful activation. */
   ownerSession?: { sessionId: string; sessionPath: string };
+  /** Terminal resource barrier: a destructive attempt may already have happened. */
+  releaseState?: "uncertain";
 }
 
 type Context = { deadline: number; signal?: AbortSignal };
@@ -848,6 +850,8 @@ export async function bindSessionWorktree(
   ownerSession: { sessionId: string; sessionPath: string },
 ) {
   const marker = join(receipt.gitDir, OWNER_FILE);
+  if (receipt.releaseState || await hasReleaseClaim(receipt.gitDir))
+    throw new SessionWorktreeError("identity", "A terminal worktree release receipt cannot be rebound.");
   if (await readOwnershipMarker(marker) !== JSON.stringify(receipt))
     throw new SessionWorktreeError("identity", "The worktree ownership receipt changed before native binding.");
   const bound = { ...receipt, ownerSession: { ...ownerSession } };
@@ -861,6 +865,11 @@ export async function bindSessionWorktree(
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+async function hasReleaseClaim(gitDir: string) {
+  try { await lstat(join(gitDir, `${OWNER_FILE}.release-lock`)); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
 }
 
 async function readOwnershipMarker(marker: string) {
@@ -878,36 +887,48 @@ async function readOwnershipMarker(marker: string) {
 
 /** A browser path is only a locator. Authority is recovered from the private Git marker. */
 export async function readSessionWorktreeReceipt(worktreePath: string, sessionDirectory: string) {
-  const context = { deadline: Date.now() + OPERATION_MS };
-  if (!isAbsolute(worktreePath) || await realpath(worktreePath) !== worktreePath)
-    throw new SessionWorktreeError("identity", "The managed worktree path changed.");
-  const current = await identity(worktreePath, context);
-  if (dirname(worktreePath) !== join(current.commonDir, "pi-worktrees") ||
-      !within(join(current.commonDir, "worktrees"), current.gitDir))
-    throw new SessionWorktreeError("identity", "This is not a privately owned managed worktree.");
-  let value: unknown;
-  try { value = JSON.parse(await readOwnershipMarker(join(current.gitDir, OWNER_FILE))); }
-  catch { throw new SessionWorktreeError("identity", "The private worktree ownership marker could not be read or validated."); }
-  if (!value || typeof value !== "object") throw new SessionWorktreeError("identity", "Invalid worktree ownership marker.");
-  const receipt = value as Partial<SessionWorktreeCleanupReceipt>;
-  const strings = [receipt.path, receipt.gitDir, receipt.commonDir, receipt.sourceRoot, receipt.baseSha, receipt.token,
-    receipt.directoryIdentity, receipt.gitDirectoryIdentity, receipt.gitFileDigest, receipt.fingerprint, receipt.indexDigest];
-  const owner = receipt.ownerSession;
-  if (receipt.version !== 1 || strings.some((entry) => typeof entry !== "string" || !entry || entry.length > 4096) ||
-      receipt.path !== worktreePath || receipt.gitDir !== current.gitDir || receipt.commonDir !== current.commonDir ||
-      !isAbsolute(receipt.sourceRoot ?? "") || await realpath(receipt.sourceRoot!) !== receipt.sourceRoot ||
-      !basename(worktreePath).endsWith(`-${receipt.token}`) || !/^[a-f0-9]{40,64}$/u.test(receipt.baseSha ?? "") ||
-      [receipt.gitFileDigest, receipt.fingerprint, receipt.indexDigest].some((digest) => !/^[a-f0-9]{64}$/u.test(digest ?? "")) ||
-      !owner || typeof owner.sessionId !== "string" || !owner.sessionId || owner.sessionId.length > 128 ||
-      typeof owner.sessionPath !== "string" || owner.sessionPath.length > 4096 ||
-      dirname(owner.sessionPath) !== resolve(sessionDirectory) || /[\u0000-\u001f\u007f]/u.test(owner.sessionId + owner.sessionPath) ||
-      await directoryIdentity(worktreePath) !== receipt.directoryIdentity ||
-      await directoryIdentity(current.gitDir) !== receipt.gitDirectoryIdentity ||
-      await digestFile(join(worktreePath, ".git"), { bytes: 0 }, context) !== receipt.gitFileDigest)
-    throw new SessionWorktreeError("identity", "The native child binding or worktree ownership could not be verified.");
-  if ((await identity(receipt.sourceRoot!, context)).commonDir !== current.commonDir)
-    throw new SessionWorktreeError("identity", "The source Git repository no longer matches its ownership receipt.");
-  return receipt as SessionWorktreeCleanupReceipt & { ownerSession: NonNullable<SessionWorktreeCleanupReceipt["ownerSession"]> };
+  let claimed = false;
+  try {
+    const context = { deadline: Date.now() + OPERATION_MS };
+    if (!isAbsolute(worktreePath) || await realpath(worktreePath) !== worktreePath)
+      throw new SessionWorktreeError("identity", "The managed worktree path changed.");
+    const current = await identity(worktreePath, context);
+    if (dirname(worktreePath) !== join(current.commonDir, "pi-worktrees") ||
+        !within(join(current.commonDir, "worktrees"), current.gitDir))
+      throw new SessionWorktreeError("identity", "This is not a privately owned managed worktree.");
+    claimed = await hasReleaseClaim(current.gitDir);
+    let value: unknown;
+    try { value = JSON.parse(await readOwnershipMarker(join(current.gitDir, OWNER_FILE))); }
+    catch { throw new SessionWorktreeError("identity", "The private worktree ownership marker could not be read or validated."); }
+    if (!value || typeof value !== "object") throw new SessionWorktreeError("identity", "Invalid worktree ownership marker.");
+    const receipt = value as Partial<SessionWorktreeCleanupReceipt>;
+    const strings = [receipt.path, receipt.gitDir, receipt.commonDir, receipt.sourceRoot, receipt.baseSha, receipt.token,
+      receipt.directoryIdentity, receipt.gitDirectoryIdentity, receipt.gitFileDigest, receipt.fingerprint, receipt.indexDigest];
+    const owner = receipt.ownerSession;
+    if (receipt.version !== 1 || (receipt.releaseState !== undefined && receipt.releaseState !== "uncertain") || strings.some((entry) => typeof entry !== "string" || !entry || entry.length > 4096) ||
+        receipt.path !== worktreePath || receipt.gitDir !== current.gitDir || receipt.commonDir !== current.commonDir ||
+        !isAbsolute(receipt.sourceRoot ?? "") || await realpath(receipt.sourceRoot!) !== receipt.sourceRoot ||
+        !basename(worktreePath).endsWith(`-${receipt.token}`) || !/^[a-f0-9]{40,64}$/u.test(receipt.baseSha ?? "") ||
+        [receipt.gitFileDigest, receipt.fingerprint, receipt.indexDigest].some((digest) => !/^[a-f0-9]{64}$/u.test(digest ?? "")) ||
+        !owner || typeof owner.sessionId !== "string" || !owner.sessionId || owner.sessionId.length > 128 ||
+        typeof owner.sessionPath !== "string" || owner.sessionPath.length > 4096 ||
+        dirname(owner.sessionPath) !== resolve(sessionDirectory) || /[\u0000-\u001f\u007f]/u.test(owner.sessionId + owner.sessionPath) ||
+        await directoryIdentity(worktreePath) !== receipt.directoryIdentity ||
+        await directoryIdentity(current.gitDir) !== receipt.gitDirectoryIdentity ||
+        await digestFile(join(worktreePath, ".git"), { bytes: 0 }, context) !== receipt.gitFileDigest)
+      throw new SessionWorktreeError("identity", "The native child binding or worktree ownership could not be verified.");
+    if ((await identity(receipt.sourceRoot!, context)).commonDir !== current.commonDir)
+      throw new SessionWorktreeError("identity", "The source Git repository no longer matches its ownership receipt.");
+    if (claimed || await hasReleaseClaim(current.gitDir)) receipt.releaseState = "uncertain";
+    return receipt as SessionWorktreeCleanupReceipt & { ownerSession: NonNullable<SessionWorktreeCleanupReceipt["ownerSession"]> };
+  } catch {
+    // A claim only narrows authority. Missing/corrupt private data must never
+    // recreate a child binding, nor turn prior terminal uncertainty into a
+    // definitive no-attempt result merely because the directory still exists.
+    throw new SessionWorktreeError("uncertain", claimed
+      ? "A release claim exists or cannot be inspected, but its original private authority is unavailable. No release is authorized."
+      : "The managed worktree identity, private authority or terminal release state cannot be verified. No release is authorized.", worktreePath);
+  }
 }
 
 export function sessionWorktreeReleaseTarget(receipt: SessionWorktreeCleanupReceipt & { ownerSession: NonNullable<SessionWorktreeCleanupReceipt["ownerSession"]> }): WebWorktreeReleaseTarget {
@@ -949,13 +970,15 @@ export async function cleanupSessionWorktree(
   receipt: SessionWorktreeCleanupReceipt,
 ) {
   const context = { deadline: Date.now() + OPERATION_MS };
-  let removalStarted = false;
+  let releaseAttempted = false;
   const preserved = (reason: string) => ({
     removed: false,
     path: receipt.path,
     reason,
   });
   try {
+    if (receipt.releaseState === "uncertain" || await hasReleaseClaim(receipt.gitDir))
+      return { ...preserved("A prior release attempt is uncertain. Automatic removal cannot be repeated."), uncertain: true as const };
     if (
       receipt.version !== 1 ||
       !within(join(receipt.commonDir, "pi-worktrees"), receipt.path) ||
@@ -1008,7 +1031,46 @@ export async function cleanupSessionWorktree(
       );
     // Only this exact, owned, unchanged checkout can contain our dirty copied
     // baseline. Normal worktree removal refuses it; never force arbitrary ones.
-    removalStarted = true;
+    // The existing resource receipt owns this terminal barrier, across commands
+    // and Host restarts. wx is an exclusive claim across processes; a leftover
+    // claim is never unlocked automatically. No destructive Git call may precede
+    // its durable write, including when updating the original marker fails.
+    const original = JSON.stringify(receipt);
+    releaseAttempted = true;
+    const claim = await open(join(receipt.gitDir, `${OWNER_FILE}.release-lock`), "wx", 0o600).catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST" && !await hasReleaseClaim(receipt.gitDir) &&
+          await readOwnershipMarker(join(receipt.gitDir, OWNER_FILE)) === original) {
+        releaseAttempted = false;
+        return undefined;
+      }
+      throw error;
+    });
+    if (!claim) return preserved("An exclusive release claim could not be created. No Git removal was started.");
+    try {
+      if (await readOwnershipMarker(join(receipt.gitDir, OWNER_FILE)) !== original)
+        throw new SessionWorktreeError("identity", "The worktree receipt changed before the release claim.");
+      await claim.writeFile(original);
+      await claim.sync();
+      const terminal = { ...receipt, releaseState: "uncertain" as const };
+      const terminalJson = JSON.stringify(terminal);
+      if (Buffer.byteLength(terminalJson) > 16 * 1024)
+        throw new SessionWorktreeError("limit", "The terminal release receipt exceeds its byte limit.");
+      const marker = join(receipt.gitDir, OWNER_FILE);
+      const temporary = `${marker}.${randomUUID()}.tmp`;
+      try {
+        const pending = await open(temporary, "wx", 0o600);
+        try { await pending.writeFile(terminalJson); await pending.sync(); }
+        finally { await pending.close(); }
+        await rename(temporary, marker);
+        if (process.platform !== "win32") {
+          const directory = await open(receipt.gitDir, constants.O_RDONLY | constants.O_DIRECTORY);
+          try { await directory.sync(); } finally { await directory.close(); }
+        }
+        if (await readOwnershipMarker(marker) !== terminalJson)
+          throw new SessionWorktreeError("identity", "The worktree release barrier could not be verified.");
+        receipt.releaseState = "uncertain";
+      } finally { await rm(temporary, { force: true }); }
+    } finally { await claim.close(); }
     await git(
       receipt.sourceRoot,
       ["worktree", "remove", "--force", receipt.path],
@@ -1017,6 +1079,6 @@ export async function cleanupSessionWorktree(
     return { removed: true, path: receipt.path, reason: undefined };
   } catch (error) {
     return { ...preserved(error instanceof Error ? error.message : "Cleanup could not be verified."),
-      ...(removalStarted ? { uncertain: true as const } : {}) };
+      ...(releaseAttempted ? { uncertain: true as const } : {}) };
   }
 }

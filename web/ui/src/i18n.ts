@@ -1758,6 +1758,8 @@ const resources = {
         "Remove this managed worktree? The server rechecks ownership, active conversations and local changes before removal.",
       managedWorktreeRemoved: "Worktree removed.",
       managedWorktreePreserved: "Worktree kept:",
+      managedWorktreeUncertainTerminal:
+        "Removal outcome is uncertain. Automatic removal cannot be repeated. Inspect the retained path before taking further action.",
       managedWorktreeUncertain:
         "Removal outcome is unknown. Retry to check the original request.",
       managedWorktreeRemoving: "Checking and removing…",
@@ -3621,6 +3623,8 @@ const resources = {
         "移除此工作树？服务端会重新核对归属、使用中的会话及本地改动后再操作。",
       managedWorktreeRemoved: "工作树已移除。",
       managedWorktreePreserved: "工作树已保留：",
+      managedWorktreeUncertainTerminal:
+        "移除结果无法确认，不能自动重复移除。请先检查保留路径，再决定后续操作。",
       managedWorktreeUncertain: "尚不能确认移除结果。重试会核对原请求。",
       managedWorktreeRemoving: "正在核对并移除…",
       managedWorktreeRemove: "移除工作树",

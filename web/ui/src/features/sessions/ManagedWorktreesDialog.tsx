@@ -151,7 +151,9 @@ export function ManagedWorktreesDialog({
                     ? "managedWorktreeRemoved"
                     : result?.state === "preserved"
                       ? "managedWorktreePreserved"
-                      : "managedWorktreeUncertain",
+                      : result?.state === "uncertain"
+                        ? "managedWorktreeUncertainTerminal"
+                        : "managedWorktreeUncertain",
                 )}
                 {result?.reason && <> {result.reason}</>}
               </p>
@@ -170,7 +172,7 @@ export function ManagedWorktreesDialog({
               >
                 {t("managedWorktreesBack")}
               </button>
-              {result?.state !== "removed" && (
+              {result?.state !== "removed" && result?.state !== "uncertain" && (
                 <button
                   type="button"
                   className="danger"

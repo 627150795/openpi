@@ -515,12 +515,26 @@ inspection seam is unknown and preserves the checkout, and closing processes
 continue consuming the existing terminal capacity until exit.
 
 Only an unchanged checkout with matching private marker, directory/Git identity,
-HEAD, index and full contents can be removed. Modified, shared or unknown state
-is preserved with its path and reason. A failed removal after Git was invoked is
+HEAD, index and full contents can be removed. Confirmed modifications and shared
+references produce a `preserved` refusal with their path and reason. Unavailable
+canonical Git identity or missing, unreadable, corrupt or unbound original
+private receipts produce typed `uncertain` refusal, even if the checkout still
+exists. Claim inspection precedes marker parsing; a claim never recreates a
+missing native child binding or grants deletion authority. Fully verified
+terminal state precedes new holder observations. A failed removal after Git was invoked is
 `uncertain`, rather than a claim that the checkout remains intact. Command
 receipts replay the exact same-process result and reject identity reuse; after
 restart, a missing checkout is uncertain rather than evidence of successful
-release. Discovery does not promise eligibility, and every release rechecks it.
+release. A destructive attempt first exclusively claims this resource in its
+private Git directory and writes a terminal `uncertain` barrier into the original
+receipt. A different command or Host restart cannot repeat removal after that
+barrier, including when only the claim survived an interrupted marker update.
+Failure to persist or inspect the barrier prevents Git removal. The resource has
+no automatic unlock or retry-after-uncertain path. An exclusive claim rejected
+before creation is `preserved` only if inspection confirms no claim, no marker
+change and no destructive Git invocation. A definitive pre-removal
+`preserved` outcome still permits a new explicit command after its cause is fixed.
+Discovery does not promise eligibility, and every release rechecks it.
 
 The #822 sidebar owns the explicit confirmation, retained-worktree list and
 response-loss interaction. The #821 runtime/Host candidate itself adds no model

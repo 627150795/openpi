@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>专注手上的问题，让独立任务并行，让长期进程后台运行。</strong><br />
-  OpenPI 为 <a href="https://pi.dev">Pi</a> 增加终端与本地 Web 工作台、独立上下文的子代理、Workflow 和后台任务管理。<br />
+  <strong>专注手上的问题，让独立任务并行。</strong><br />
+  OpenPI 为 <a href="https://pi.dev">Pi</a> 增加终端与本地 Web 工作台、独立上下文的子代理和 Workflow。<br />
   沿用你的模型、工具与 Skills；普通编码保持轻量，需要时再展开高级能力。
 </p>
 
@@ -41,7 +41,7 @@ pi install npm:@tt-a1i/openpi
 | --- | --- | --- |
 | 在多个项目之间切换，想看清对话和工具执行 | 本地 Web 按工作区管理会话，检查已保存的 Prompt、工具参数与结果 | `/web` → 会话与轨迹视图 |
 | 改一个功能，需要同时理解代码和检查测试 | 将独立问题交给不同子代理，各自使用独立 Context，主 Agent 汇总发现 | `/subagents` |
-| Dev server、构建或长测试还在运行 | 后台终端保留进程状态和日志，你可以继续讨论下一步 | `/ps` |
+| Dev server、构建或长测试还在运行 | Pi 的 Bash 可用 `nohup … &` 后台运行长期进程，不阻塞对话 | 终端 Bash 输出 |
 | 一批任务有依赖，需要分阶段收集结果 | Workflow 组织并行与顺序执行，保留结构化结果和可检查的运行记录 | `/workflows` |
 
 例如，你可以直接说：
@@ -75,20 +75,18 @@ pi install npm:@tt-a1i/openpi
 结果回来后汇总风险，主会话不要原地等待。
 ```
 
-这条请求会启用后台终端与子代理能力。通过 `/ps` 查看进程和日志，通过 `/subagents` 查看子任务和结果；需要多阶段编排时再明确使用 Workflow。
+这条请求会使用子代理能力，dev server 则由 Pi 的 Bash 后台运行。通过 `/subagents` 查看子任务和结果；需要多阶段编排时再明确使用 Workflow。
 
 更喜欢浏览器？在 Pi 中输入 `/web`，打开终端显示的本机地址，选择模型和工作区后开始对话。Web 使用独立会话，不会接管终端里正在进行的对话。入口与独立 CLI 用法见 [Web 工作台](#独立-web-工作台)。
 
 > 本 README 描述当前 `main`。npm 发布版本可能尚未包含最近的 Web 改进；体验最新源码前，请按[开发运行时说明](#开发运行时区分-npm-与当前源码)确认安装来源。
 
 <details>
-<summary>能力如何按需开启，以及原生 Skill 的使用方式</summary>
+<summary>OpenPI 的固定工具集，以及原生 Skill 的使用方式</summary>
 
 > [!TIP]
-> Capability discovery 默认 `explicit`：输入中出现独立名称 `subagent` / `subagents` / `子代理` 或 `workflow` / `workflows` / `工作流`，就会显示名称高亮，提交后加载对应工具组并提供说明路径。英文忽略大小写；多行、讨论、否定和条件句中的名称同样参与发现，`subagent.ts`、`workflow_status` 等文件名或标识符片段不会触发。模型根据完整请求判断是否实际使用，名称发现不会自动启动子代理或 Workflow，也不改变工具权限。采用范围见 [Decision 0004](docs/decisions/0004-capability-name-discovery.md)。
-> 例如 `subagent, workflow` → 同时加载两组；「子代理是什么」→ 加载子代理说明与工具，供模型解释；「不要用 Workflow」→ 仍发现 Workflow，模型应遵守用户的否定要求。其他能力保持现有明确请求入口：「在后台运行 dev server」→ 后台终端；「用 fd/rg 搜索」或「用 git diff 比较分支」→ 搜索与只读 Git 工具。
-> `/plan` 是一个运行时安全例外：进入或恢复 Plan Mode 时会为当前 Session 自动加载 `search` 组，让只读调研直接使用结构化 Git 工具。
-> 在交互输入框中，中英文能力名称使用 Claude Code 风格的薰衣草紫显示；浅色终端使用更深的紫色。变色仅表示提交后会加载对应能力。Suggestion 幽灵文字在用户接受进输入框之前不着色、不参与发现；光标和原始输入仍由 Pi 编辑器管理。
+> OpenPI 为每个 Session 提供一套固定的常驻模型工具：`subagent_spawn`/`subagent_wait`/`subagent_cancel`/`subagent_send`/`subagent_check` 与 `workflow`/`workflow_stop`/`workflow_status`。该列表在 Session 开始时确定一次，之后不因 Prompt 关键词或运行时状态变化而改变——常驻工具面是缓存稳定的，也是模型可预期的。
+> 只有明确的用户边界会临时增减工具：进入 `/plan` 加入 `git_show`/`git_diff`/`git_log`、`plan_ready`、`ask_user`/`human_handoff`，退出时移除；`/openpi-setup` 进行期间提供 `configure_my_pi_setup` 与 `ask_user`/`human_handoff`；浏览器控制经 Setup 授权后启用 `openpi_browser`。缺少对应状态的工具调用在执行层返回明确错误，而不是隐藏工具。
 
 
 Skill 使用 Pi 原生机制：模型根据名称、描述和路径按需用 `read` 读取；用户明确调用时，在输入开头使用 `/skill:code-review 审查这个 PR`（前提是 Pi 已加载该 Skill）。候选补全、正文展开和运行中追加输入均由 Pi 处理。OpenPI 不提供专门的 `$skill` 语法或独立的 Skill 加载通道。
@@ -104,7 +102,7 @@ Skill 正文通过原生用户消息或工具结果进入正常 Session 历史�
 </details>
 
 > [!IMPORTANT]
-> 默认安装是安静的：不改主题、不绑定 Provider 或模型、不开启下一步预测，也不执行 post-edit 命令。Capability discovery 默认 `explicit`；只有用户通过 `/openpi-setup` 选择 `adaptive` 后，模型才会常驻看到一个小型发现网关并可自主加载额外能力。
+> 默认安装是安静的：不改主题、不绑定 Provider 或模型、不开启下一步预测，也不执行 post-edit 命令。常驻工具集是一份固定的、经过度量的预算；浏览器控制等特权能力仍需通过 `/openpi-setup` 显式开启。
 
 ```text
 /openpi-setup
@@ -114,22 +112,20 @@ Skill 正文通过原生用户消息或工具结果进入正常 Session 历史�
 
 ## 默认轻，按需强
 
-**普通编码沿用 Pi，高级能力按需加入。**
+**普通编码沿用 Pi，高级能力来自一套固定的常驻工具集。**
 
-普通编码任务继续走 Pi 原生路径：`read`、`bash`、`edit`、`write`，完整历史、Session compaction、工具输出边界、显式 Bash timeout 与 Provider loop。OpenPI 不额外投影历史，不改写测试超时，也不向模型塞恢复提示；只保留独立的工作区删除保护。
+普通编码任务继续走 Pi 原生路径：`read`、`bash`、`edit`、`write`，完整历史、Session compaction、工具输出边界、显式 Bash timeout 与 Provider loop。OpenPI 不额外投影历史，不改写测试超时，也不向模型塞恢复提示；与 Pi 一样不添加删除保护，Bash 沿用 Pi 自身行为。
 
-任务一旦需要长期进程、并行调研、隔离实现、多阶段协作或跨回合推进，高级能力仍然完整存在。用户直接提出需求，OpenPI 就在当轮加载对应能力；没用到的能力不会常驻模型工具面。
+并行调研、隔离实现、多阶段协作和跨回合推进的能力从一开始就完整可见：Subagent 与 Workflow 工具自 Session 首轮起常驻，模型在当轮即可使用，不需要记住工具名，也不会因运行时状态而消失。长期进程直接使用 Pi 的 Bash（例如 `nohup … &`）。模型可见的工具列表只在明确的用户边界处变化：`/plan`、`/openpi-setup`、浏览器授权。
 
 OpenPI 在 Pi 的生命周期、Session、Provider、模型与 Trust 边界内扩展能力。
 
 | 使用场景                     | 模型看到什么                                      | OpenPI 的行为                                     |
 | ---------------------------- | ------------------------------------------------- | ------------------------------------------------- |
-| 普通编码任务                 | Pi 原生 `read` / `bash` / `edit` / `write`        | 默认不常驻任何 OpenPI 模型工具                    |
-| 用户明确要求委派或高级能力   | 仅与意图匹配的能力组                              | 在当轮开始前直接加载，不要求用户记住工具名        |
-| 用户主动开启 `adaptive`      | 一个小型 `openpi_load_tools` 网关                 | 主模型判断确有收益时，可自主加载一个能力组        |
-| 后台任务或子 Agent 已经运行  | 对应的状态、等待、继续与停止工具                  | 管理面随真实资源出现，资源结束后按生命周期收敛    |
-
-没有运行高级任务时，不需要为它们保留常驻工具面。
+| 普通编码任务                 | Pi 原生 `read` / `bash` / `edit` / `write`，外加固定的 OpenPI 常驻工具集 | 常驻工具在 Session 开始时就绪，会话内不增删        |
+| 进入 /plan                   | 只读 Git、`plan_ready` 与 `ask_user`/`human_handoff` 临时加入 | 退出 Plan Mode 时恢复原始列表                     |
+| `/openpi-setup` 进行中       | `configure_my_pi_setup` 与 `ask_user`/`human_handoff` 临时加入 | Episode 结束后恢复原始列表                        |
+| 后台任务或子 Agent 已经运行  | 不变——状态与管理工具始终可见                    | 管理面不随资源生命周期增删                        |
 
 ---
 
@@ -139,12 +135,12 @@ Pi 的价值在于小：Agent loop、工具、Session 与扩展 API 已经足够
 
 | 开发现场                                | OpenPI 的处理方式                                                            | 保留的边界                         |
 | --------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------- |
-| Dev server、watcher、长测试占住主 Agent | 后台 Terminal 管理进程树、日志、超时与完成通知                               | 无 stdin；Session 结束时有界清理   |
+| Dev server、watcher、长测试占住主 Agent | Pi 的 Bash 直接后台运行长期进程（如 `nohup … &`）                          | 进程属于本机环境，Session 不托管   |
 | 调研、实现、审查互相污染 Context        | 每个 Subagent 使用独立的进程内 Pi SDK Session                                | Child 不能递归编排或拿回父级工具   |
 | 多阶段 fan-out 靠 Prompt 约定           | Workflow 提供 pipeline、schema、handoff、验收与持久产物                      | Sandbox 不暴露文件、网络或进程 API |
 | 重跑昂贵，却不能信任旧结果              | 只 Replay 在可观测边界内证明为只读且指纹未变的调用                           | 不确定就真实执行，不猜             |
-| 长任务跨回合后失去方向                  | Tasks、Goal、Plan Mode 与 Context Pivot 分别管理工作项、目标、批准和阶段切换 | 它们记录与控制，不伪造执行事实     |
-| 后台能力看不见、停不住                  | Footer、Dashboard、Artifacts 与完成通知统一展示状态                          | 每类运行都有检查、取消与唯一终态   |
+| 长任务跨回合后失去方向                  | Plan Mode 管理只读调研与实施批准                                            | 它记录与控制，不伪造执行事实       |
+| 并行运行看不见、停不住                  | Footer、Dashboard、Artifacts 与完成通知统一展示状态                          | 每类运行都有检查、取消与唯一终态   |
 
 **核心原则：增强 Pi 的深度，不扩大隐式权限。** OpenPI 沿用用户已有的 Provider、模型、Skills、Trust 与 Session；Suggestion 只有用户开启后才运行，Subagent / Workflow 只在明确的任务动作后运行——主 Agent 调用对应工具，或用户在交互 TUI 中执行 `/btw`——不会因安装或启动自行消费模型。
 
@@ -156,20 +152,20 @@ OpenPI 把成熟 Coding Agent 的工作习惯做成 Pi-native 能力，但不复
 
 | 工作面       | 已包含的能力                                                                                              |
 | ------------ | --------------------------------------------------------------------------------------------------------- |
-| 执行         | Background Terminal、Pi-native Subagent、Dynamic Workflow、隔离 Worktree                                  |
+| 执行         | Pi-native Subagent、Dynamic Workflow、隔离 Worktree                                  |
 | 编排         | `pipeline` / `parallel`、结构化输出、Result Handoff、Operator、Safe Replay、派生 Graph |
-| 连续性       | Tasks、Goal、Plan Mode、Context Pivot、Session Browser、Session-scoped Cron                               |
+| 连续性       | Plan Mode、Session Browser、Session-scoped Cron                                     |
 | 自定义 Agent | `explorer` / `implementer` / `reviewer` / `advisor`，支持全局与项目角色文件、独立模型与 effort            |
 | 本地 Web     | 工作区与会话管理、模型预选、运行诊断、工具证据与持久化轨迹检查；与终端 Session 独立 |
 | 终端工作台   | 自定义 Footer 与任务栏、运行状态、紧凑 Tool Result、图片粘贴占位符、Next-action Suggestion、Git / PR 信号 |
-| 快捷工作流   | `/btw` 旁路提问（TUI）、`/lg` 浏览 Diff（TUI）、`/pr` 查 PR、`/copy-all`、`fd`、`rg`、只读 Git 工具       |
+| 快捷工作流   | `/btw` 旁路提问（TUI）、`/lg` 浏览 Diff（TUI）、`/pr` 查 PR、`/copy-all`、`/plan` 内只读 Git 工具       |
 | 人类决策     | `ask_user` 草稿与最终复核、parent-only `human_handoff`、Plan Ready 实施门禁                               |
 | 统一配置     | `/openpi-setup` 管理 OpenPI 自有模型、并发、Footer、输出密度与 Post-edit 偏好                             |
 | 模型授权     | `/login google-antigravity`；实验性的 `/login cursor`（支持 Pi 工具，不执行 Cursor 原生工具）                   |
 
 Code Mode 的终端视图由 OpenPI 通过 Pi 原生工具渲染接口提供：默认收起脚本、长参数、结果正文及完整输出路径，仅展示运行状态，并按原顺序逐条展示全部已记录的子调用摘要，不折叠调用数量；Bash 命令预览最多显示 80 个终端列，超出部分用省略号隐藏，窄终端会进一步截断；子调用沿用普通工具的线框图标，执行中只用灰色表示，不重复显示运行标记；失败与取消保留明显提示。`Ctrl+O` 展开脚本、子调用参数、原始输出与完整输出路径。该呈现增强需要 Pi 提供 `registerToolRenderer`（已核对 Pi 1.0.2）；旧版本保留原生显示。它不改变 Code Mode 执行、权限、模型可见结果或默认启用设置。
 
-CLI 和 Web 普通父会话默认启用 Pi 原生 `codemode`，与 `read`、`bash`、`edit`、`write` 并存，由模型决定是否组合调用。`/openpi-setup 关闭 Code Mode 默认启用` 通过 `code_mode_enabled=false` 保存 `codeMode.enabled`；默认值为 `true`，无参数状态会显示该默认策略。已有 Pi `defaultTools` 选择和 CLI/SDK 工具限制优先，不自动改写原生设置或发起模型请求；显式选择 `+codemode` 的原生配置也不受此包默认开关覆盖。子会话沿用已有的受限工具继承，不额外获得父级能力。Web 使用独立 agent 目录，其配置与 CLI 分开保存。
+CLI 和 Web 普通父会话默认关闭 Pi 原生 `codemode`；通过 `/openpi-setup 开启 Code Mode` 保存 `code_mode_enabled=true` 后，它与 `read`、`bash`、`edit`、`write` 并存，由模型决定是否组合调用。默认值为 `false`，无参数状态会显示该默认策略。已有 Pi `defaultTools` 选择和 CLI/SDK 工具限制优先，不自动改写原生设置或发起模型请求；显式选择 `+codemode` 的原生配置也不受此包默认开关覆盖。子会话沿用已有的受限工具继承，不额外获得父级能力。Web 使用独立 agent 目录，其配置与 CLI 分开保存。
 
 OpenPI 采用 [MIT License](LICENSE)；第三方来源与保留声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
@@ -184,43 +180,22 @@ OpenPI 采用 [MIT License](LICENSE)；第三方来源与保留声明见 [THIRD_
   </picture>
 </p>
 
-主 Pi Session 始终拥有用户交互、配置和生命周期。Terminal、Subagent 与 Workflow 是三条执行路径；Tasks、Goal、Session 和 Context Pivot 保持连续性；Footer、Dashboard、Artifacts 与清理逻辑负责观察和控制。
+主 Pi Session 始终拥有用户交互、配置和生命周期。Subagent 与 Workflow 是两条执行路径；Session 保持连续性；Footer、Dashboard、Artifacts 与清理逻辑负责观察和控制。
 
 ### 一项任务应该去哪里？
 
 ```text
-长期进程                         → Background Terminal
+长期进程                         → Pi 的 Bash（如 `nohup … &`）
 一项自包含、可继续对话的委派     → Subagent
 多阶段、依赖、fan-out 与综合      → Workflow
-跨回合工作项                     → Tasks
-持续自主目标                     → Goal
-同一 Session 的阶段切换          → Context Pivot
 真正跨顶层 Session               → 独立 pi-intercom package（按需安装）
 ```
 
 ---
 
-## 三条执行路径
+## 两条执行路径
 
-### Background Terminal：长期进程不阻塞 Agent
-
-```text
-bg_start({
-  command: "npm run dev",
-  title: "web dev server"
-})
-```
-
-- stdout / stderr 独立捕获，完整日志有私有、有界的临时落盘；
-- `/ps` 查看状态，`bg_kill` 终止整个进程树；
-- 进程退出后自动通知，不需要轮询；
-- build、test、migration 可设置 `timeout_seconds`；
-- server 和 watcher 不设超时，可用 `bg_watch` 等待 `Ready in|Traceback|ERROR`；
-- 最多同时运行 8 个后台终端，Reload 或 Session Shutdown 时统一清理。
-
-后台进程没有 stdin。需要交互输入的命令应由用户直接运行，而不是放进后台。
-
-前台执行沿用 Pi 的 Bash 合同：`timeout` 可选且没有统一默认值，是否设置以及设置多长由模型或用户按命令语义决定。OpenPI 不再通过正则改写测试命令 timeout；确实需要有界执行时应显式传入 timeout，长期运行的 build、test、migration 或 server 可使用 Background Terminal 的生命周期能力。
+执行沿用 Pi 的 Bash 合同：`timeout` 可选且没有统一默认值，是否设置以及设置多长由模型或用户按命令语义决定。OpenPI 不再通过正则改写测试命令 timeout；确实需要有界执行时应显式传入 timeout。长期运行的 build、test、migration 或 server 由 Bash 直接后台运行，例如 `nohup npm run dev &`。
 
 ### Pi-native Subagent：隔离 Context，不另起系统
 
@@ -236,7 +211,7 @@ subagent_spawn({
 
 - 默认继承父会话的 Provider 与模型；用户可明确指定 Thinking Level，否则模型根据角色建议、任务难度与目标模型实际支持的档位选择；
 - 继承父会话当前启用且允许委派的工具、Skills 和项目说明；目标目录的项目扩展按其自身 Trust 决策加载；
-- 最多 4 个模型发起的 Direct Subagent 并发运行，结束后自动回传；BTW 仍有独立的 2 个本地槽位。可选的 Session child execution limit 会让 Workflow、Direct 与 BTW 在各自本地限制之外共享一个活动执行上限；它不计 dormant child、父 Session、Terminal、Provider 请求或费用；
+- 最多 4 个模型发起的 Direct Subagent 并发运行，结束后自动回传；BTW 仍有独立的 2 个本地槽位。可选的 Session child execution limit 会让 Workflow、Direct 与 BTW 在各自本地限制之外共享一个活动执行上限；它不计 dormant child、父 Session、Provider 请求或费用；
 - 可 `check`、`wait`、`cancel`，也可用 `subagent_send` 继续同一子会话；
 - 输入框下方显示实时摘要，空输入时按 `↓` 聚焦，`Enter` 或 `→` 打开管理界面。
 
@@ -314,7 +289,7 @@ return agent("Synthesize the verified findings", {
 | `pipeline()` | 每个 item 完成上阶段后立即进入下一阶段；多阶段 fan-out 的默认选择          |
 | `parallel()` | 并发 barrier；只在下一阶段确实需要全部结果时使用                           |
 
-Workflow 默认并发 8 个 Agent，单次最多 128 次调用；可配置到 64 和 1024。可选的 Session child execution limit 是另一层跨入口的活动 child 槽位：未配置时完全保持原有独立并发行为，配置后 Workflow / Direct / BTW 都先满足各自本地限制，再按 FIFO 竞争同一个顶层 Pi Session 的上限。它不会把 Workflow 默认 8 变成 Session 默认值，也不治理 Terminal、429、费用、token 或内存。前台运行可实时查看，后台运行完成后自动回传；`/workflows` 展示阶段、Agent、Transcript、Graph、用量与产物。普通子代理和 Workflow 都使用 Pi 原生传输超时与重试，不再用额外的 45 秒无可见输出计时器打断思考、排队或重试。显式取消和 Session 清理仍有界，原生 Provider 错误保留在 Child outcome 中。并发上限不代表账号的服务端速率额度；429 仍按 Pi 原生重试策略处理。
+Workflow 默认并发 8 个 Agent，单次最多 128 次调用；可配置到 64 和 1024。可选的 Session child execution limit 是另一层跨入口的活动 child 槽位：未配置时完全保持原有独立并发行为，配置后 Workflow / Direct / BTW 都先满足各自本地限制，再按 FIFO 竞争同一个顶层 Pi Session 的上限。它不会把 Workflow 默认 8 变成 Session 默认值，也不治理 429、费用、token 或内存。前台运行可实时查看，后台运行完成后自动回传；`/workflows` 展示阶段、Agent、Transcript、Graph、用量与产物。普通子代理和 Workflow 都使用 Pi 原生传输超时与重试，不再用额外的 45 秒无可见输出计时器打断思考、排队或重试。显式取消和 Session 清理仍有界，原生 Provider 错误保留在 Child outcome 中。并发上限不代表账号的服务端速率额度；429 仍按 Pi 原生重试策略处理。
 
 ---
 
@@ -390,14 +365,11 @@ Workflow 在清理隔离 checkout 前原子保存有界 Handoff Manifest：track
 
 | 能力          | 使用方式                                | 它负责什么                                                          |
 | ------------- | --------------------------------------- | ------------------------------------------------------------------- |
-| Tasks         | `tasks_add` / `tasks_update` / `/tasks` | 逐项同步当前批次工作意图并刷新完整快照；不推断完成、不执行工作      |
-| Goal          | `/goal <目标>`                          | 驱动一个持续到终态的自主目标；完成前要求证据审计                    |
-| Plan Mode     | `/plan [目标]`                          | 自动加载结构化搜索/Git 做只读调研；`plan_ready` 后才准备实施 Prompt |
-| Context Pivot | `/context-pivot <下一阶段>`             | Context 超过约 30K Tokens 且任务换阶段时，用自包含 Brief 替换旧噪音 |
+| Plan Mode     | `/plan [目标]`                          | 只读调研加入只读 Git、`plan_ready` 与 `ask_user`；Plan Ready 后才准备实施 Prompt |
 | Sessions      | `/sessions`                             | 搜索、预览并通过 Pi 安全生命周期切换 Session                        |
 | Human Input   | `ask_user` / `human_handoff`            | 收集经复核的决策，或等待只有用户能完成的外部操作                    |
 
-Tasks 是咨询性记录，Goal 是持续目标，Subagent 与 Workflow 才执行工作。文件、Git、测试、Artifacts 和用户确认始终是事实来源。
+Subagent 与 Workflow 执行工作。文件、Git、测试、Artifacts 和用户确认始终是事实来源。
 
 Next-action Suggestion 是可选的：完整主 Agent Run 结束后，在空编辑器显示一条暗色 inline 建议；`Right` 只填入、不提交，其他输入取消。它默认关闭，不写入 Session，也不进入模型 Context。
 
@@ -420,9 +392,7 @@ Footer 使用一套 Codicon 线性图标：`` 模型、`` context、`` 
 - 折叠内容用 Pi 的 `app.tools.expand` 快捷键临时展开（默认 `Ctrl+O`），展开后直接恢复 Pi 原生参数、输出、错误、diff、耗时与 full-output 证据；进入 Direct Subagent 或 Workflow child 详情页时会继承父会话的当前展开状态，详情页内切换只影响该页，不改变父会话；
 - Git 状态本地刷新；只有显式运行 `/pr` 才查询 GitHub PR。
 
-`fd` 与 `rg` 是结构化模型工具，不拼接 Shell。它们默认遵守 `.gitignore`，支持 Glob、类型、Smart Case、固定字符串与上下文。`git_show`、`git_diff`、`git_log` 以结构化参数提供只读提交、差异和历史检查，并禁用仓库配置的 external diff/textconv。两类工具的输出均限制为 50 KiB / 2000 行，完整截断内容最多私有保存 10 MiB，并在 Session Shutdown 时清理。
-
-macOS/Linux arm64 与 x64 缺少二进制时，OpenPI 会从官方 Release 下载固定版本、校验 SHA-256 后原子安装。其他平台需自行提供 `fd` 与 `rg`。
+`git_show`、`git_diff`、`git_log` 以结构化参数提供只读提交、差异和历史检查，并禁用仓库配置的 external diff/textconv；它们在 `/plan` 期间可见。输出均限制为 50 KiB / 2000 行，完整截断内容最多私有保存 10 MiB，并在 Session Shutdown 时清理。文件与内容搜索使用 Pi 原生 `grep`/`find` 工具或 `rg`/`fd` 等 Shell 命令。
 
 ---
 
@@ -439,9 +409,9 @@ macOS/Linux arm64 与 x64 缺少二进制时，OpenPI 会从官方 Release 下�
 | Replay           | 只有可证明只读、指纹完整且无不安全重叠的调用才缓存                        |
 | Worktree 清理    | 未知即保留；Git、Handoff 或超时状态不确定时绝不删除                       |
 | 终端输出         | 控制字符、方向格式符与超长内容在 ingress / render 边界清洗、限长          |
-| Shutdown         | Terminal、Subagent、Workflow 都有有界取消、清理与唯一终态                 |
+| Shutdown         | Subagent、Workflow 都有有界取消、清理与唯一终态                 |
 | 用户配置         | 共享校验与存储；自然语言使用受限工具，Web 显示控件直接保存                 |
-| 模型消费         | Suggestion 默认关闭；adaptive 仅在显式开启后允许模型自主加载能力           |
+| 模型消费         | Suggestion 默认关闭；Subagent / Workflow 的额外模型调用只在主模型于用户发起的轮次中调用工具时发生 |
 
 独立的 [pi-intercom](https://github.com/nicobailon/pi-intercom) package 只适合顶层 Pi Session。它使用进程级身份，而 OpenPI Child 是同一进程内的并发 Session；Child Resource Loader 会从 npm、Git 和 local package source 中精确移除 pi-intercom 扩展与 Skill，避免身份串线，同时保留普通同名项目资源。Replay 也不会复用其调用。
 
@@ -480,9 +450,9 @@ Web 模型配置先填写提供商连接，再选择“获取可用模型”。�
 
 Web 侧栏宽度默认 340px（配置兼容范围 220–520px），工具面板宽度默认 520px（360–720px）。拖动或键盘调整后保存到同一份配置，刷新后恢复；小窗口按当前视口临时限制显示宽度，不覆盖已保存值。也可用 `/openpi-setup` 修改 `ui.webSidebarWidth` 和 `ui.webAuxiliaryWidth`。
 
-Web 常规设置提供 Subagent、Bash 和 Write/Edit 的完整／紧凑显示控件，直接保存已有 `ui.subagentResultDisplay`、`ui.bashToolDisplay`、`ui.fileMutationDisplay`，用于相应工具详情的默认展开。有可靠耗时记录的回合，执行时展开整个过程，完成后“用时”默认收起中间说明、思考和工具，最终回答继续显示在下方；可点击“用时”查看完整过程，不折叠用户问题或最终回答。连续的思考、工具和活动按原生顺序组成同一组，遇到说明文字或其他消息就分开；单行活动直接显示，不再套一层分组。活动组运行时展开，结束后收起为图标、操作摘要与计数；思考保留在实际发生的位置，使用独立的一行文字预览，展开后使用 Markdown 排版。工具活动使用统一的线框图标与语义摘要，read/write/edit 保留彩色标记；文件名可打开原位预览，命令可展开 Shell 输出并复制。Pi 终端页脚开关和样式保存已有 `ui.customFooter` / `ui.footerStyle`，仅影响 Pi 终端页脚。能力发现、工作流上限、下一步建议及编辑后命令的控件通过 `/openpi-setup` 修改，以实际写入回执为准。
+Web 常规设置提供 Subagent、Bash 和 Write/Edit 的完整／紧凑显示控件，直接保存已有 `ui.subagentResultDisplay`、`ui.bashToolDisplay`、`ui.fileMutationDisplay`，用于相应工具详情的默认展开。有可靠耗时记录的回合，执行时展开整个过程，完成后“用时”默认收起中间说明、思考和工具，最终回答继续显示在下方；可点击“用时”查看完整过程，不折叠用户问题或最终回答。连续的思考、工具和活动按原生顺序组成同一组，遇到说明文字或其他消息就分开；单行活动直接显示，不再套一层分组。活动组运行时展开，结束后收起为图标、操作摘要与计数；思考保留在实际发生的位置，使用独立的一行文字预览，展开后使用 Markdown 排版。工具活动使用统一的线框图标与语义摘要，read/write/edit 保留彩色标记；文件名可打开原位预览，命令可展开 Shell 输出并复制。Pi 终端页脚开关和样式保存已有 `ui.customFooter` / `ui.footerStyle`，仅影响 Pi 终端页脚。工作流上限、下一步建议及编辑后命令的控件通过 `/openpi-setup` 修改，以实际写入回执为准。
 
-<!-- config-contract: codeMode.enabled webSearch.enabled webSearch.modelSupport response.verbosity response.reasoningSummary capabilities.discovery suggestions.enabled suggestions.model workflows.concurrency workflows.maxAgentCalls childExecutions childExecutions.maxActive browser.control browser.embedded browser.defaultBrowser browser.externalBrowsers ui.webTheme ui.webAppearance ui.webChatWidth ui.webSidebarWidth ui.webAuxiliaryWidth ui.webChatFontSize ui.webExpandThinking ui.webHiddenThinkingLevels ui.webPinnedSort ui.webSidebarGrouping ui.webChatsSort ui.webProjectsInRecents ui.showHeader ui.customFooter ui.footerStyle ui.footerLines ui.subagentResultDisplay ui.bashToolDisplay ui.fileMutationDisplay postEdit.command subagents.roleModels -->
+<!-- config-contract: codeMode.enabled webSearch.enabled webSearch.modelSupport response.verbosity response.reasoningSummary suggestions.enabled suggestions.model workflows.concurrency workflows.maxAgentCalls childExecutions childExecutions.maxActive browser.control browser.embedded browser.defaultBrowser browser.externalBrowsers ui.webTheme ui.webAppearance ui.webChatWidth ui.webSidebarWidth ui.webAuxiliaryWidth ui.webChatFontSize ui.webExpandThinking ui.webHiddenThinkingLevels ui.webPinnedSort ui.webSidebarGrouping ui.webChatsSort ui.webProjectsInRecents ui.showHeader ui.customFooter ui.footerStyle ui.footerLines ui.subagentResultDisplay ui.bashToolDisplay ui.fileMutationDisplay postEdit.command subagents.roleModels -->
 
 浏览器模型控制默认关闭。Web「设置 → 浏览器」提供安装引导和连接检查；总开关、逐个浏览器授权及默认浏览器选择会提交 `/openpi-setup` 请求，由当前模型在设置流程中通过配置工具保存。也可直接用 `/openpi-setup` 设置 `browser_control`、`browser_embedded`、`browser_default`、`browser_external`。默认值依次为 `false`、`true`、`embedded`、`[]`：总开关关闭时所有模型浏览器操作都被拒绝，普通 iframe 浏览不受影响。请求受理不代表配置已保存；控件以实际持久化状态为准。
 
@@ -525,7 +495,6 @@ Footer 布局以 `footerLines` 作为唯一持久化格式。旧版 `footerItems
 
 | 配置                         | 默认值                                         |
 | ---------------------------- | ---------------------------------------------- |
-| Capability discovery         | `explicit`；`adaptive` 必须显式开启            |
 | Next-action Suggestion       | 关闭；启用时显式选择 Registry 模型与 reasoning |
 | Workflow 并发 / 总调用       | 8 / 128；硬上限 64 / 1024                      |
 | Session child execution slots | 关闭；显式设为 1-64 后由 Workflow / Direct / BTW 共享 |
@@ -666,7 +635,7 @@ Web 可以添加或编辑自定义模型、保存服务商 API Key。模型写�
 
 设置中的模型树直接选择编辑对象，同一会话的未保存模型草稿会保留。窄屏设置使用带文字的分类选择器；聊天宽度和字号支持直接恢复默认值。自然语言配置请求在对话中显示原始操作及后续结果，运行期间暂停再次提交 setup，成功与否以原生配置结果为准。
 
-输入 `/` 可查看原生发现的命令及不可用原因。`/openpi-setup` 使用原生配置回合；无参数的 `/ps`、`/lg`、`/subagents`、`/btw` 打开对应 Web 面板，不发送模型请求。这些面板快捷命令不接收参数或图片，带参时保留输入并提示。`/usage` 使用原生命令，在聊天中显示查询结果。运行中的回合显示“已处理”时间，结束后显示“用时”；时间从 Pi 实际开始执行计算，并随原生 Session 保存。没有可靠耗时记录的旧回合不推算补值。
+输入 `/` 可查看原生发现的命令及不可用原因。`/openpi-setup` 使用原生配置回合；无参数的 `/lg`、`/subagents`、`/btw` 打开对应 Web 面板，不发送模型请求。这些面板快捷命令不接收参数或图片，带参时保留输入并提示。`/usage` 使用原生命令，在聊天中显示查询结果。运行中的回合显示“已处理”时间，结束后显示“用时”；时间从 Pi 实际开始执行计算，并随原生 Session 保存。没有可靠耗时记录的旧回合不推算补值。
 
 输入框支持直接粘贴受支持的图片和混合文字，读取期间保留发送等待状态。「文件」直接浏览工作区：右侧文件树、左侧原位预览，不为每个文件另开窗口。目录和文件名搜索可点击「加载更多」，长文本可按同一内容版本「继续读取」；展开位置、搜索词和阅读位置在面板内保留。文件树重新打开、窗口重新获得焦点或点击刷新时更新；文本有新版本时先提示，手动刷新后替换内容。
 
@@ -697,11 +666,8 @@ Pi 当前只原生分派 `install`、`remove`、`update`、`list`、`config` 和
 | -------------------------- | ---------------------------------------------- |
 | `/openpi-setup [自然语言]` | 查看或修改 OpenPI 自有配置                     |
 | `/web`                     | 前台运行独立 Web 工作台；`Ctrl+C` 后返回 Pi    |
-| `/ps`                      | 查看、跟踪与终止后台终端                       |
 | `/subagents` / `/btw`      | 管理 Subagent / 在旁路 Context 中提问；仅 TUI  |
 | `/workflows`               | 查看阶段、Agent、Graph 与产物；可停止运行      |
-| `/tasks` / `/goal ...`     | 查看工作项 / 管理持续目标                      |
-| `/context-pivot <阶段>`    | 在同一 Session 中压缩旧阶段并继续              |
 | `/sessions`                | 搜索、预览与切换 Session                       |
 | `/plan [目标]`             | 只读调研；Plan Ready 后显式选择实施方式        |
 | `/cron ...`                | 为当前 Session 安排一次或周期性 Prompt         |
@@ -729,26 +695,19 @@ TUI 查询中按 Esc/Ctrl+C 取消等待；结果使用可滚动浮层，方向�
 <details>
 <summary><strong>模型工具速查</strong></summary>
 
-Capability discovery 默认是 `explicit`：普通父 Session 不常驻任何 OpenPI 模型工具，首轮保持 Pi 原生 `read`、`bash`、`edit`、`write`。用户明确要求结构化搜索、Subagent、Workflow、后台进程或 Session Goal/Tasks 时，OpenPI 在 `before_agent_start` 直接加载对应能力组；明确询问 OpenPI capabilities/tools/features 时显示 `openpi_load_tools`。可通过 `/openpi-setup` 显式选择 `adaptive`：此时只让小型 `openpi_load_tools` 网关常驻，模型可在判断任务确实受益时自主加载一个能力组。该选择也授权模型启动该组内的昂贵工作，因此不作为默认值。句首「子代理了解下项目」这类带执行动作的表达会加载 Delegate；「子代理是什么」这类讨论、否定表达和条件句（例如 “If you delegate…”）不会被当成显式委派意图。能力组在当前 Session 内单调保持，避免反复增删工具破坏缓存。Delegate 一经加载便一次性开放完整、稳定的 Subagent 工具族；资源不存在时由工具执行层明确返回空状态或 fail-closed，而不再按实例生命周期改变模型接口。其他组内管理工具仍只在资源成功创建或状态确实存在后出现。Mode / Setup / Context 工具独立跟随实时状态显示和隐藏。Background、Subagent 与 Workflow 的 Skill 文件仍随包发布，但只在对应能力触发后提示读取，不常驻普通系统 Prompt。
+OpenPI 提供一套固定的常驻模型工具，在 Session 开始时确定一次：Subagent（`subagent_spawn` 等 5 个）与 Workflow（`workflow`/`workflow_stop`/`workflow_status`），共 8 个。会话内工具列表不因模型动作或运行时状态改变；缺少对应状态的调用在执行层返回明确结果或 fail-closed。只有用户显式边界会改变工具：`/plan` 加入只读 Git、`plan_ready` 与 `ask_user`/`human_handoff`；`/openpi-setup` episode 加入 `configure_my_pi_setup` 与 `ask_user`/`human_handoff`；浏览器授权后启用 `openpi_browser`。Subagent 与 Workflow 的 Skill 文件仍随包发布，模型按需用 `read` 读取，不常驻普通系统 Prompt。
 
-只读诊断可通过现有网关 `openpi_load_tools({groups:["runtime"]})` 按需加载 `runtime_snapshot({})`；不会因提示关键词自动加载，也不会常驻普通工具面。它仅对父 Session 开放，区分有效配置、Session 当前选择、磁盘 Git 状态和已注册扩展；无法证明的 loaded revision、版本或上游路由明确为 unknown/unavailable。模型标识、路径、账号、endpoint 与资源标题不输出；保留默认模型匹配结果、thinking、实时 Trust、允许公开的工具名与资源状态。整个工具结果上限 16 KiB，跨 owner 最多 32 项，非原子采样、不可用和省略量均显式标记；不启动资源、不消费模型、不写配置。详见 [运行时快照边界](docs/architecture/RUNTIME_SNAPSHOT.md)。
-
-普通产品采用 Pi-native execution：保留 Pi 原生完整历史、工具输出上限、Session compaction、显式 Bash timeout 与 provider loop，不额外做固定事务投影、成功 Bash 二次裁剪、测试 timeout 改写、重复失败硬拦或恢复/轨迹提示。OpenPI 只保留一层工作区清理护栏：源码中可识别的 `rm` 只有在整条命令是直接、可静态验证的 literal `rm`，且目标都是工作区内相对路径时，才会进入 provenance 与确认流程；可识别的复合、嵌套或动态 target `rm` 会 fail closed，并提示改用独立的 literal `rm` 重试。单条 standalone 普通命令中可静态识别的 bare、single-quoted 或 double-quoted 参数、Bash comment，以及独占输入的单个非展开 heredoc 中的 `rm` 文本不受影响；复合命令、已知 command forwarder 和带后续命令的 heredoc 会保守阻止 source-visible `rm`，可拆成独立命令重试。Guard 会从实际文件状态识别本轮通过原生写入、文字重定向或 literal `mkdir -p` 创建的 scratch，避免误拦其清理；它不是任意程序文件系统行为的 sandbox，也不承诺识别运行时生成的命令名或其他程序内部的文件系统行为。
+普通产品采用 Pi-native execution：保留 Pi 原生完整历史、工具输出上限、Session compaction、显式 Bash timeout 与 provider loop，不额外做固定事务投影、成功 Bash 二次裁剪、测试 timeout 改写、重复失败硬拦或恢复/轨迹提示。与 Pi 相同，OpenPI 不提供删除保护：Bash 中的 `rm` 完全沿用 Pi 自身行为，不做 provenance 检查或确认拦截。
 
 | 工具                                                                                                     | 用途                           | 可见时机                         |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------ | -------------------------------- |
-| `openpi_load_tools`                                                                                      | 列出或加载可选工具组           | 明确询问；或启用 `adaptive`      |
-| `runtime_snapshot`                                                                                       | 有界、脱敏的父 Session 只读快照 | 网关显式加载 runtime 后          |
-| `bg_start`, `bg_status`, `bg_list`, `bg_watch`, `bg_kill`                                                | 后台进程生命周期               | 明确意图或 adaptive；启动后展开  |
-| `subagent_spawn`, `subagent_check`, `subagent_list`, `subagent_wait`, `subagent_send`, `subagent_cancel` | 独立子 Agent                   | 明确意图或 adaptive；整组稳定加载 |
-| `workflow`, `workflow_status`, `workflow_stop`                                                           | 动态多阶段编排与运行管理       | 明确意图或 adaptive；能力组一次稳定展开 |
-| `tasks_add`, `tasks_update`, `tasks_list`                                                                | Session 工作项                 | 明确意图或 adaptive；存在后展开  |
-| `get_goal`, `create_goal`, `update_goal`                                                                 | Session Goal                   | 明确意图或 adaptive；存在后展开  |
-| `context_pivot`                                                                                          | Context 阶段切换               | Context 达到阈值时               |
+| `subagent_spawn`, `subagent_check`, `subagent_wait`, `subagent_send`, `subagent_cancel`                  | 独立子 Agent                   | Session 常驻                     |
+| `workflow`, `workflow_status`, `workflow_stop`                                                           | 动态多阶段编排与运行管理       | Session 常驻                     |
 | `ask_user`, `human_handoff`                                                                              | 经复核的用户决策与用户专属操作 | Plan 或 Setup 进行中             |
-| `plan_ready`                                                                                             | 显式完成计划，不自动开始实施   | Plan 调研阶段                    |
-| `fd`, `rg`, `git_show`, `git_diff`, `git_log`                                                            | 文件、内容与只读 Git 检查      | 明确意图或 adaptive 加载 search  |
+| `plan_ready`                                                                                             | 显式完成计划，不自动开始实施   | Plan Mode 进行中                 |
+| `git_show`, `git_diff`, `git_log`                                                                        | 只读 Git 检查                  | Plan Mode 进行中                 |
 | `configure_my_pi_setup`                                                                                  | 受限配置写入                   | `/openpi-setup` 进行中           |
+| `openpi_browser`                                                                                         | 授权浏览器控制                 | Setup 授权后                     |
 
 </details>
 
@@ -763,7 +722,7 @@ Capability discovery 默认是 `explicit`：普通父 Session 不常驻任何 Op
 <details>
 <summary><strong>安装后会自动调用额外模型吗？</strong></summary>
 
-默认不会。Suggestion 默认关闭；Capability discovery 默认 `explicit`。如果用户显式开启 `adaptive`，网关本身不发模型请求，但主模型可以自主加载 Subagent 或 Workflow 并启动额外模型调用；并发和 Workflow 总调用上限仍然生效。
+默认不会。Suggestion 默认关闭。常驻工具集只是模型可调用的接口；Subagent 或 Workflow 的额外模型调用只在主模型于用户发起的轮次中主动调用工具时发生，并发和 Workflow 总调用上限仍然生效。
 
 </details>
 
@@ -801,7 +760,7 @@ Plan Mode 不猜“任意 Shell 是否只读”，只放行由已知安全零件
 <details>
 <summary><strong>后台服务会不会变成孤儿进程？</strong></summary>
 
-正常的 `/new`、`/resume`、`/fork`、`/reload` 与退出都会触发 Session Shutdown。扩展会终止后台进程树并清理临时日志；也可随时用 `bg_kill` 或 `/ps` 管理。
+OpenPI 不再托管后台进程。需要长期运行的服务由 Pi 的 Bash 直接启动（例如 `nohup npm run dev &`），其生命周期归属本机环境，用普通进程命令管理，不随 Session 结束被托管清理。
 
 </details>
 
@@ -820,17 +779,11 @@ Plan Mode 不猜“任意 Shell 是否只读”，只放行由已知安全零件
 extensions/
 ├── ai-providers/          # Antigravity 与实验性 Cursor OAuth 模型 Provider
 ├── setup/                 # /openpi-setup 与受限配置工具
-├── capabilities/          # 最小能力发现入口与 Session 工具面加载
-├── background-terminals/  # 长进程、日志、/ps
 ├── subagents/             # Pi-native Backend、角色、/subagents
 ├── workflows/             # DSL、Ledger、Graph、Replay、Artifacts
-├── tasks/ + goal/         # 工作项与持续目标
-├── context-pivot/         # 定向 Compaction
 ├── plan-mode/ + cron/     # 批准门禁与 Session 定时 Prompt
 ├── ask-user/              # Reviewed input 与 Human Handoff
-├── workspace-cleanup-guard/ # pre-existing 文件删除保护
-├── file-search/           # fd / rg 与安全二进制获取
-├── git-read/              # 只读 git show / diff / log
+├── git-read/              # /plan 内只读 git show / diff / log
 ├── sessions/              # Session 搜索与切换
 ├── suggestions/           # Ephemeral next-action suggestion
 ├── ui-customization/      # Header、Footer、Terminal title
@@ -840,7 +793,7 @@ extensions/
 bin/openpi.js              # 独立 Web CLI 入口
 web/                       # Web Host、Pi Runtime Adapter、协议与浏览器 UI
 site/                      # 项目网站；合入 main 后由 Pages workflow 发布
-skills/                    # Background terminal、Subagent 与 Workflow 指南
+skills/                    # Subagent 与 Workflow 指南
 themes/                    # github-dark-default
 ```
 

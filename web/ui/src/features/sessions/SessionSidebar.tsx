@@ -150,7 +150,8 @@ function ActionMenu({
 }
 
 export function SessionSidebar(props: SessionSidebarProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const [previewedSession, setPreviewedSession] = useState<string | null>(null);
   const worktreeFocus = useRef<(() => void) | null>(null);
   const [worktreeWorkspace, setWorktreeWorkspace] = useState<string | null>(
     null,
@@ -1116,6 +1117,12 @@ export function SessionSidebar(props: SessionSidebarProps) {
     inPinned = false,
     orderScope?: { key: string; sessions: SidebarSession[] },
   ) => {
+    const previewKey = JSON.stringify([
+      session.path,
+      session.id,
+      inPinned,
+      orderScope?.key,
+    ]);
     const pinIndex = sidebarPins.findIndex(
       (pin) =>
         pin.kind === "session" &&
@@ -1226,6 +1233,15 @@ export function SessionSidebar(props: SessionSidebarProps) {
         }
         aria-label={sessionTitle(session, t("untitledSession"))}
         data-session-key={JSON.stringify([session.path, session.id])}
+        data-dragging={
+          (draggingSidebar &&
+            ((draggedPin.current?.kind === "session" &&
+              draggedPin.current.path === session.path &&
+              draggedPin.current.id === session.id) ||
+              (draggedChat.current?.path === session.path &&
+                draggedChat.current.id === session.id))) ||
+          undefined
+        }
         key={session.path}
         draggable={
           !pinSaving &&
@@ -1301,75 +1317,106 @@ export function SessionSidebar(props: SessionSidebarProps) {
           endDrag();
         }}
       >
-        <button
-          className={"session " + (selected ? "active" : "")}
-          type="button"
-          aria-current={selected ? "page" : undefined}
-          aria-label={[
-            sessionTitle(session, t("untitledSession")),
-            session.path,
-            statusLabel,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-          onClick={() => {
-            if (
-              selected &&
-              session.unread &&
-              props.sessionViewVisible &&
-              props.connected !== false
+        <Tooltip
+          placement="end"
+          delay={450}
+          onOpenChange={(open: boolean) =>
+            setPreviewedSession((previous) =>
+              open ? previewKey : previous === previewKey ? null : previous,
             )
-              void saveRead(session, true);
-            void props.actions.selectSession(session.path);
-          }}
-          onDoubleClick={(event) => {
-            if (
-              selected &&
-              props.connected !== false &&
-              event.target instanceof Element &&
-              event.target.closest(".session-title")
-            )
-              openEdit({
-                kind: "session",
-                path: session.path,
-                name: sessionTitle(session, t("untitledSession")),
-              });
-          }}
+          }
+          content={
+            previewedSession === previewKey ? (
+              <span className="session-hover-preview">
+                <strong>{sessionTitle(session, t("untitledSession"))}</strong>
+                {session.name &&
+                  session.firstMessage &&
+                  session.firstMessage !== "(no messages)" &&
+                  session.firstMessage !== session.name && (
+                    <span>{session.firstMessage}</span>
+                  )}
+                <time dateTime={session.modified}>
+                  {new Date(session.modified).toLocaleString(
+                    i18n.resolvedLanguage,
+                    {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    },
+                  )}
+                </time>
+              </span>
+            ) : null
+          }
         >
-          <span className="session-copy">
-            <span
-              className="session-title"
-              title={sessionTitle(session, t("untitledSession"))}
-            >
-              {sessionTitle(session, t("untitledSession"))}
+          <button
+            className={"session " + (selected ? "active" : "")}
+            type="button"
+            aria-current={selected ? "page" : undefined}
+            aria-label={[
+              sessionTitle(session, t("untitledSession")),
+              session.path,
+              statusLabel,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+            onClick={() => {
+              if (
+                selected &&
+                session.unread &&
+                props.sessionViewVisible &&
+                props.connected !== false
+              )
+                void saveRead(session, true);
+              void props.actions.selectSession(session.path);
+            }}
+            onDoubleClick={(event) => {
+              if (
+                selected &&
+                props.connected !== false &&
+                event.target instanceof Element &&
+                event.target.closest(".session-title")
+              )
+                openEdit({
+                  kind: "session",
+                  path: session.path,
+                  name: sessionTitle(session, t("untitledSession")),
+                });
+            }}
+          >
+            <span className="session-copy">
+              <span className="session-title">
+                {sessionTitle(session, t("untitledSession"))}
+              </span>
+              {activityOpen && (
+                <span className="session-project">
+                  <Folder aria-hidden="true" />
+                  {snapshot?.workspaces.find(
+                    (project) => project.path === sessionProject(session),
+                  )?.name ?? compactPath(sessionProject(session))}
+                </span>
+              )}
             </span>
-            {activityOpen && (
-              <span className="session-project">
-                <Folder aria-hidden="true" />
-                {snapshot?.workspaces.find(
-                  (project) => project.path === sessionProject(session),
-                )?.name ?? compactPath(sessionProject(session))}
-              </span>
+            {statusLabel && (
+              <Tooltip content={statusLabel}>
+                <span className="session-status" aria-hidden="true">
+                  {state && (
+                    <StatusIcon
+                      className={"session-state session-state-" + state}
+                    />
+                  )}
+                  {queued > 0 && (
+                    <span className="session-queue">
+                      <ListOrdered />
+                      <span>{queued > 99 ? "99+" : queued}</span>
+                    </span>
+                  )}
+                </span>
+              </Tooltip>
             )}
-          </span>
-          {statusLabel && (
-            <Tooltip content={statusLabel}>
-              <span className="session-status" aria-hidden="true">
-                {state && (
-                  <StatusIcon
-                    className={"session-state session-state-" + state}
-                  />
-                )}
-                {queued > 0 && (
-                  <span className="session-queue">
-                    <ListOrdered />
-                    <span>{queued > 99 ? "99+" : queued}</span>
-                  </span>
-                )}
-              </span>
-            </Tooltip>
-          )}
-        </button>
+          </button>
+        </Tooltip>
         {!archived && (
           <Tooltip
             content={t(isPinned ? "unpinConversation" : "pinConversation")}
@@ -1867,18 +1914,19 @@ export function SessionSidebar(props: SessionSidebarProps) {
         </div>
       </div>
 
-      <button
-        className="new-session-button"
-        type="button"
-        aria-label={t("newSession")}
-        title={t("newSession")}
-        disabled={creating}
-        aria-busy={creating || undefined}
-        onClick={() => void startSession(props.selectedWorkspace)}
-      >
-        <SquarePen />
-        <span>{t("newSession")}</span>
-      </button>
+      <Tooltip content={t("newSession")} placement="end">
+        <button
+          className="new-session-button"
+          type="button"
+          aria-label={t("newSession")}
+          disabled={creating}
+          aria-busy={creating || undefined}
+          onClick={() => void startSession(props.selectedWorkspace)}
+        >
+          <SquarePen />
+          <span>{t("newSession")}</span>
+        </button>
+      </Tooltip>
 
       <TranscriptSearchDialog
         open={transcriptSearchOpen}
@@ -2169,16 +2217,17 @@ export function SessionSidebar(props: SessionSidebarProps) {
             )}
             {archived && (
               <div className="sidebar-archive-actions">
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={t("refreshArchives")}
-                  title={t("refreshArchives")}
-                  disabled={archiveLoading}
-                  onClick={() => void loadArchives()}
-                >
-                  <RefreshCw aria-hidden="true" />
-                </button>
+                <Tooltip content={t("refreshArchives")} placement="end">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={t("refreshArchives")}
+                    disabled={archiveLoading}
+                    onClick={() => void loadArchives()}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                  </button>
+                </Tooltip>
                 {archiveLoading && (
                   <span role="status">{t("loadingArchives")}</span>
                 )}
@@ -2401,32 +2450,34 @@ export function SessionSidebar(props: SessionSidebarProps) {
         )}
       </div>
       <div className="sidebar-footer">
-        <button
-          className="sidebar-settings-button sidebar-archive-toggle"
-          type="button"
-          aria-label={t("archivedConversations")}
-          aria-pressed={archived}
-          title={t("archivedConversations")}
-          onClick={() => {
-            setActivityOpen(false);
-            setArchived((value) => !value);
-          }}
-        >
-          <Archive aria-hidden="true" />
-          <span>{t("archivedConversations")}</span>
-        </button>
-        <button
-          className="sidebar-settings-button"
-          type="button"
-          aria-label={t("settings")}
-          title={t("settings")}
-          data-provider-settings-trigger
-          disabled={props.settingsDisabled}
-          onClick={props.onOpenSettings}
-        >
-          <Settings aria-hidden="true" />
-          <span>{t("settings")}</span>
-        </button>
+        <Tooltip content={t("archivedConversations")} placement="above">
+          <button
+            className="sidebar-settings-button sidebar-archive-toggle"
+            type="button"
+            aria-label={t("archivedConversations")}
+            aria-pressed={archived}
+            onClick={() => {
+              setActivityOpen(false);
+              setArchived((value) => !value);
+            }}
+          >
+            <Archive aria-hidden="true" />
+            <span>{t("archivedConversations")}</span>
+          </button>
+        </Tooltip>
+        <Tooltip content={t("settings")} placement="above">
+          <button
+            className="sidebar-settings-button"
+            type="button"
+            aria-label={t("settings")}
+            data-provider-settings-trigger
+            disabled={props.settingsDisabled}
+            onClick={props.onOpenSettings}
+          >
+            <Settings aria-hidden="true" />
+            <span>{t("settings")}</span>
+          </button>
+        </Tooltip>
       </div>
 
       <Dialog

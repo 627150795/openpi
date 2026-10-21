@@ -286,6 +286,9 @@ function settingsFetcher(payload = settingsPayload()) {
         ...(patch.expandThinking !== undefined
           ? { webExpandThinking: patch.expandThinking }
           : {}),
+        ...(patch.followUpBehavior !== undefined
+          ? { webFollowUpBehavior: patch.followUpBehavior }
+          : {}),
         ...Object.fromEntries(
           [
             "subagentResultDisplay",
@@ -1162,6 +1165,30 @@ it("filters skill bulk requests by scope and search while preserving the native 
   ).toBeNull();
 });
 
+it("saves the follow-up behavior in General without starting a setup or model request", async () => {
+  const fetcher = settingsFetcher();
+  vi.stubGlobal("fetch", fetcher);
+  const onConfigureOpenPi = vi.fn(async () => true);
+  renderSettings({ onConfigureOpenPi });
+  const queue = await screen.findByRole<HTMLInputElement>("radio", {
+    name: i18n.t("followUpQueue"),
+  });
+  expect(queue.checked).toBe(true);
+  const steer = screen.getByRole<HTMLInputElement>("radio", {
+    name: i18n.t("followUpSteer"),
+  });
+  fireEvent.click(steer);
+  await waitFor(() => expect(steer.checked).toBe(true));
+  expect(
+    fetcher.mock.calls.some(
+      ([input, init]) =>
+        String(input).includes("/api/settings/preferences") &&
+        JSON.parse(String(init?.body)).followUpBehavior === "steer",
+    ),
+  ).toBe(true);
+  expect(onConfigureOpenPi).not.toHaveBeenCalled();
+});
+
 it("shows canonical General state and routes real setup/runtime actions", async () => {
   const fetcher = settingsFetcher();
   vi.stubGlobal("fetch", fetcher);
@@ -1423,7 +1450,9 @@ it("routes agent controls through canonical setup and waits for a save receipt",
   const concurrency = screen.getByRole<HTMLInputElement>("spinbutton", {
     name: i18n.t("workflowConcurrency"),
   });
+  await waitFor(() => expect(concurrency.value).toBe("6"));
   fireEvent.change(concurrency, { target: { value: "9" } });
+  expect(concurrency.value).toBe("9");
   fireEvent.change(
     screen.getByRole("combobox", { name: i18n.t("bashOperations") }),
     { target: { value: "full" } },

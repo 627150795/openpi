@@ -547,6 +547,7 @@ export function createWebStore(
   let refreshInFlight = false;
   let refreshPending = false;
   let streamController: AbortController | null = null;
+  let streamAttempt: { signal: AbortSignal; connected: boolean } | null = null;
   let modelSearchController: AbortController | null = null;
   let modelSearchGeneration = 0;
   let commandDiscoveryController: AbortController | null = null;
@@ -1250,27 +1251,41 @@ export function createWebStore(
             recoveryAttempted = false;
           }
           if (signal.aborted) return;
-          await consumeEvents({
-            client,
-            cursor: get().cursor ?? 0,
-            onConnected: () => {
-              reconnectDelay = 500;
-              set({ connection: "connected" });
-              if (refreshOnConnect) {
-                refreshOnConnect = false;
-                scheduleSnapshotRefresh(0);
-              }
-            },
-            onEvent: applyRuntimeEvent,
-            onHeartbeat: () => scheduleSnapshotRefresh(0),
-            signal,
-          });
+          const attempt = { signal, connected: false };
+          streamAttempt = attempt;
+          const current = () => streamAttempt === attempt && !signal.aborted;
+          try {
+            await consumeEvents({
+              client,
+              cursor: get().cursor ?? 0,
+              onConnected: () => {
+                if (!current()) return;
+                attempt.connected = true;
+                reconnectDelay = 500;
+                set({ connection: "connected" });
+                if (refreshOnConnect) {
+                  refreshOnConnect = false;
+                  scheduleSnapshotRefresh(0);
+                }
+              },
+              onEvent: (event) => {
+                if (current()) applyRuntimeEvent(event);
+              },
+              onHeartbeat: () => {
+                if (current()) scheduleSnapshotRefresh(0);
+              },
+              signal,
+            });
+          } finally {
+            if (streamAttempt === attempt) streamAttempt = null;
+          }
         } catch (error) {
           if (signal.aborted) return;
           set({ connection: "reconnecting" });
           const recovered =
             !recoveryAttempted &&
             (await get().actions.refreshSnapshot({ resetCursor: true }));
+          if (signal.aborted) return;
           refreshOnConnect = !recovered;
           if (!recovered) set(resetLivePatch());
           await waitForReconnect(reconnectDelay, signal);
@@ -1350,6 +1365,7 @@ export function createWebStore(
         void runEventLoop(streamController.signal);
       },
       stop() {
+        streamAttempt = null;
         streamController?.abort();
         streamController = null;
         if (refreshTimer !== null) window.clearTimeout(refreshTimer);
@@ -1523,8 +1539,8 @@ export function createWebStore(
                 }
               : {}),
             connection:
-              get().connection === "connecting"
-                ? "connecting"
+              streamAttempt?.connected && !streamAttempt.signal.aborted
+                ? "connected"
                 : get().connection,
             cursor:
               shouldReset || get().cursor === null

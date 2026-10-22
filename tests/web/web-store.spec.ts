@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { i18n } from "../../web/ui/src/i18n.ts";
 import {
   WEB_MAX_ENTRIES,
   WEB_PROMPT_MAX_TEXT_LENGTH,
@@ -13,6 +12,7 @@ import {
   type WebSnapshot,
   type WebThinkingState,
 } from "../../web/protocol/types.ts";
+import { i18n } from "../../web/ui/src/i18n.ts";
 import {
   type CommandReceipt,
   type SessionCreationResult,
@@ -2474,6 +2474,100 @@ describe("OpenPI Web store", () => {
     expect(store.getState().snapshot?.cursor).toBe(9);
     expect(store.getState().connection).toBe("reconnecting");
     store.getState().actions.stop();
+  });
+
+  it("restores connection after snapshot recovery while the same event stream remains live", async () => {
+    const client = new FakeClient();
+    client.snapshots.push(Promise.resolve(snapshot()));
+    const stream = eventStreamHarness();
+    const store = createWebStore(client, {
+      consumeEvents: stream.consumeEvents,
+    });
+    await store.getState().actions.refreshSnapshot();
+    expect(store.getState().connection).toBe("connecting");
+    store.getState().actions.start();
+    try {
+      expect(store.getState().connection).toBe("connected");
+      client.snapshots.push(
+        Promise.reject(new Error("Temporary snapshot failure")),
+      );
+      expect(await store.getState().actions.refreshSnapshot()).toBe(false);
+      expect(store.getState().connection).toBe("unavailable");
+      client.snapshots.push(Promise.resolve(snapshot()));
+      expect(await store.getState().actions.refreshSnapshot()).toBe(true);
+      expect(store.getState().connection).toBe("connected");
+      expect(stream.consumeEvents).toHaveBeenCalledOnce();
+    } finally {
+      store.getState().actions.stop();
+    }
+  });
+
+  it("does not infer a healthy event stream from successful HTTP recovery after a disconnect", async () => {
+    const client = new FakeClient();
+    client.snapshots.push(Promise.resolve(snapshot()));
+    const disconnected = deferred<void>();
+    const consumeEvents = vi.fn((options: EventStreamOptions) => {
+      options.onConnected();
+      return disconnected.promise;
+    });
+    const store = createWebStore(client, { consumeEvents });
+    await store.getState().actions.refreshSnapshot();
+    store.getState().actions.start();
+    try {
+      client.snapshots.push(Promise.resolve(snapshot()));
+      disconnected.reject(new Error("Event stream closed"));
+      await vi.waitFor(() => expect(client.snapshotPaths).toHaveLength(2));
+      expect(store.getState().connection).toBe("reconnecting");
+      client.snapshots.push(Promise.resolve(snapshot()));
+      expect(await store.getState().actions.refreshSnapshot()).toBe(true);
+      expect(store.getState().connection).toBe("reconnecting");
+      expect(consumeEvents).toHaveBeenCalledOnce();
+    } finally {
+      store.getState().actions.stop();
+    }
+  });
+
+  it("ignores old connection callbacks and cleanup after stopping and restarting the stream", async () => {
+    const client = new FakeClient();
+    client.snapshots.push(Promise.resolve(snapshot()));
+    const old = deferred<void>();
+    const callbacks: EventStreamOptions[] = [];
+    const consumeEvents = vi.fn((options: EventStreamOptions) => {
+      callbacks.push(options);
+      if (callbacks.length === 1) return old.promise;
+      return new Promise<void>((resolve) => {
+        options.signal.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+    });
+    const store = createWebStore(client, { consumeEvents });
+    await store.getState().actions.refreshSnapshot();
+    store.getState().actions.start();
+    callbacks[0]!.onConnected();
+    client.snapshots.push(
+      Promise.reject(new Error("Temporary snapshot failure")),
+    );
+    await store.getState().actions.refreshSnapshot();
+    store.getState().actions.stop();
+    store.getState().actions.start();
+    try {
+      callbacks[0]!.onConnected();
+      expect(store.getState().connection).toBe("unavailable");
+      callbacks[1]!.onConnected();
+      expect(store.getState().connection).toBe("connected");
+      old.resolve();
+      await old.promise;
+      client.snapshots.push(
+        Promise.reject(new Error("Another snapshot failure")),
+      );
+      await store.getState().actions.refreshSnapshot();
+      client.snapshots.push(Promise.resolve(snapshot()));
+      expect(await store.getState().actions.refreshSnapshot()).toBe(true);
+      expect(store.getState().connection).toBe("connected");
+    } finally {
+      store.getState().actions.stop();
+    }
   });
 
   it("preserves a business notice when the event stream reconnects", async () => {

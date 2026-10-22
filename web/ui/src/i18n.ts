@@ -343,6 +343,9 @@ const resources = {
       terminalExitCode: "Terminal exited with code {{code}}.",
       terminalDisconnected: "Terminal connection ended unexpectedly.",
       terminalError: "Terminal unavailable.",
+      terminalLoadError:
+        "The terminal interface could not load. Refresh the page to try again.",
+      reloadPage: "Refresh page",
       browser: "Browser",
       sessionFileRecords: "Session file records",
       gitReviewSource: "Changes",
@@ -2411,6 +2414,8 @@ const resources = {
       terminalExitCode: "终端已退出，状态码 {{code}}。",
       terminalDisconnected: "终端连接意外中断。",
       terminalError: "终端不可用。",
+      terminalLoadError: "终端界面加载失败，请刷新页面后重试。",
+      reloadPage: "刷新页面",
       browser: "浏览器",
       sessionFileRecords: "本会话文件记录",
       gitReviewSource: "变更范围",

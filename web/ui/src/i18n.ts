@@ -514,7 +514,7 @@ const resources = {
       filesRow: "Row",
       filesSheets: "Worksheets",
       filesTableTruncated:
-        "Showing a bounded table preview. Download the file for all rows and columns.",
+        "Showing a partial table preview. Download the original file for complete content.",
       filesOfficeLayout:
         "Document content preview; pagination and typography may differ from Office.",
       filesSlidesLayout:
@@ -2571,7 +2571,7 @@ const resources = {
       filesTable: "表格预览",
       filesRow: "行",
       filesSheets: "工作表",
-      filesTableTruncated: "当前显示部分表格；下载文件可查看全部行列。",
+      filesTableTruncated: "当前仅显示部分表格内容；下载原文件可查看完整内容。",
       filesOfficeLayout: "文档内容预览；分页和排版可能与 Office 不同。",
       filesSlidesLayout:
         "幻灯片文字与图片预览；主题、图表和动画可能与 PowerPoint 不同。",

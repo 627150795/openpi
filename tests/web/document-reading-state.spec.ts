@@ -146,6 +146,7 @@ async function openPdf() {
     name: i18n.t("filesNextPage"),
   });
   await waitFor(() => expect(next.disabled).toBe(false));
+  await screen.findByRole("img");
   return next;
 }
 
@@ -233,6 +234,7 @@ it.each(["download", "decode"])(
         name: i18n.t("filesNextPage"),
       });
       await waitFor(() => expect(next.disabled).toBe(false));
+      await screen.findByRole("img");
     } else
       await waitFor(() =>
         expect(
@@ -294,7 +296,7 @@ it("does not reuse document controls for a different path with the same native r
     name: i18n.t("filesNextPage"),
   });
   await waitFor(() => expect(next.disabled).toBe(false));
-  expectPdf(1, "100%");
+  await waitFor(() => expectPdf(1, "100%"));
 });
 
 it("restores PDF page and zoom through a real Files → Browser → Files remount while releasing resources", async () => {
@@ -327,7 +329,7 @@ it("does not carry a document position into a Session with the same id and anoth
   fireEvent.click(await openPdf());
   view.rerender(panel("files", 1, "/workspace/other.jsonl"));
   await openPdf();
-  expectPdf(1, "100%");
+  await waitFor(() => expectPdf(1, "100%"));
   view.rerender(panel("files", 2));
   await screen.findByRole("img");
   await waitFor(() => expectPdf(2, "100%"));

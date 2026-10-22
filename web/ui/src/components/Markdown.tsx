@@ -29,8 +29,10 @@ import { highlightCode } from "../lib/highlight-code.ts";
 
 const StreamingContext = createContext(false);
 
-const MermaidPreview = lazy(
-  () => import("../features/files/MermaidPreview.tsx"),
+const MermaidPreview = lazy(() =>
+  import("../features/files/MermaidPreview.tsx").catch(() => ({
+    default: MermaidLoadFallback,
+  })),
 );
 
 function labelTaskCheckboxes() {
@@ -277,6 +279,23 @@ function CodeBlock({
           <ChevronDown aria-hidden="true" />
         </button>
       )}
+    </div>
+  );
+}
+
+function MermaidLoadFallback({ source }: { source: string }) {
+  const { t } = useTranslation();
+  return (
+    <div>
+      <div className="evidence-warning" role="alert">
+        <p>{t("filesDiagramLoadError")}</p>
+        <button type="button" onClick={() => window.location.reload()}>
+          {t("reloadPage")}
+        </button>
+      </div>
+      <CodeBlock>
+        <code className="language-mermaid">{source}</code>
+      </CodeBlock>
     </div>
   );
 }

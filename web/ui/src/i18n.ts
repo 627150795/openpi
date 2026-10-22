@@ -530,6 +530,8 @@ const resources = {
       filesPreviewFailed:
         "Unable to preview this file. You can still download it.",
       filesDiagram: "Mermaid diagram",
+      filesDiagramLoadError:
+        "Unable to load diagram preview. The source is shown below. Refresh the page to try again.",
       filesExpandDiagram: "Expand diagram",
       filesFitImage: "Fit",
       filesOriginalImage: "Original size",
@@ -2582,6 +2584,7 @@ const resources = {
       filesDocumentLimit: "此文档超出预览处理范围，请下载后在本地打开。",
       filesPreviewFailed: "无法预览此文件，仍可下载后打开。",
       filesDiagram: "Mermaid 图表",
+      filesDiagramLoadError: "图表预览加载失败，已显示源码。刷新页面后可重试。",
       filesExpandDiagram: "放大图表",
       filesFitImage: "适应宽度",
       filesOriginalImage: "原始尺寸",

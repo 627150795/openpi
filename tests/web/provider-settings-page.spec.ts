@@ -1020,6 +1020,69 @@ it("commits only complete color values and rolls a failed change back to canonic
   await waitFor(() => expect(color.value).toBe("#FFFFFF"));
 });
 
+it.each(["color", "width", "fontSize"])(
+  "preserves a newer canonical %s when an earlier appearance save fails",
+  async (field) => {
+    const catalog = settingsPayload() as WebSettingsCatalog;
+    catalog.setup.ui.webChatWidth = 1200;
+    catalog.setup.ui.webChatFontSize = 18;
+    const save = Promise.withResolvers<boolean>();
+    const onUpdatePreferences = vi.fn(() => save.promise);
+    const element = (current: WebSettingsCatalog, pending: boolean) =>
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(AppearanceSettingsPanel, {
+          catalog: current,
+          theme: "system",
+          pending,
+          error: null,
+          onRefresh: vi.fn(),
+          onUpdatePreferences,
+        }),
+      );
+    const view = render(element(catalog, false));
+    fireEvent.click(
+      screen.getByRole("button", { name: i18n.t("appearanceAdvanced") }),
+    );
+    const color = screen.getByRole<HTMLInputElement>("textbox", {
+      name: i18n.t("appearanceBackground"),
+    });
+    if (field === "color")
+      fireEvent.change(color, { target: { value: "#AABBCC" } });
+    else
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: i18n.t(
+            field === "width" ? "resetChatContentWidth" : "resetChatFontSize",
+          ),
+        }),
+      );
+    expect(onUpdatePreferences).toHaveBeenCalledOnce();
+    const newer = structuredClone(catalog);
+    newer.setup.ui.webAppearance = {
+      ...newer.setup.ui.webAppearance!,
+      background: "#112233",
+    };
+    newer.setup.ui.webChatWidth = 1500;
+    newer.setup.ui.webChatFontSize = 20;
+    view.rerender(element(newer, true));
+    expect(color.value).toBe("#112233");
+    await act(async () => save.resolve(false));
+    expect(color.value).toBe("#112233");
+    expect(
+      screen
+        .getByRole("slider", { name: i18n.t("chatContentWidth") })
+        .getAttribute("aria-valuenow"),
+    ).toBe("1500");
+    expect(
+      screen
+        .getByRole("slider", { name: i18n.t("chatFontSize") })
+        .getAttribute("aria-valuenow"),
+    ).toBe("20");
+  },
+);
+
 it("reviews an exact plugin source and scope without claiming installation or reusing an old setup failure", async () => {
   vi.stubGlobal("fetch", settingsFetcher());
   const configure = vi.fn(async () => true);

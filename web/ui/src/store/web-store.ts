@@ -14,7 +14,6 @@ import {
   type WebSettingsPreferencesPatch,
   type WebSidebarPinTarget,
   type WebSnapshot,
-  type WebThinkingState,
 } from "../../../protocol/types.ts";
 import type {
   WebSessionForkRequest,
@@ -26,6 +25,7 @@ import { sessionTitle } from "../lib/format.ts";
 import { isControlledSession } from "../lib/session-control.ts";
 import { WebApiError, WebClient } from "../protocol/client.ts";
 import { consumeEventStream } from "../protocol/event-stream.ts";
+import { createThinkingCoordinator } from "./thinking-coordinator.ts";
 
 const collapsedWorkspacesStorageKey = "openpi.collapsed-workspaces";
 const sidebarCollapsedStorageKey = "openpi.sidebar-collapsed";
@@ -549,13 +549,6 @@ export function createWebStore(
   let streamController: AbortController | null = null;
   let modelSearchController: AbortController | null = null;
   let modelSearchGeneration = 0;
-  let thinkingTarget: string | null = null;
-  let thinkingSeq = 0;
-  let thinkingInFlight = false;
-  let thinkingFlushToken = 0;
-  let lastThinkingRevision = 0;
-  let acceptedThinking: WebThinkingState | null = null;
-  let acceptedThinkingEpoch = -1;
   let commandDiscoveryController: AbortController | null = null;
   let commandDiscoveryGeneration = 0;
   let planSelectionGeneration = 0;
@@ -768,152 +761,14 @@ export function createWebStore(
       }, delay);
     };
 
-    // Accepted-value bookkeeping. `acceptedThinking` holds the highest revision
-    // we have confirmed from a snapshot, a POST response, or a local event
-    // patch; anything older is refused so an out-of-order snapshot can never
-    // regress the displayed level. The gate is scoped to the Session epoch so a
-    // session switch (or host restart) cannot carry a stale value forward.
-    const clearThinkingGate = () => {
-      acceptedThinking = null;
-      lastThinkingRevision = 0;
-      acceptedThinkingEpoch = -1;
-    };
-
-    const reconcileSnapshotThinking = () => {
-      const snapshot = get().snapshot;
-      if (!snapshot) return;
-      if (acceptedThinking && acceptedThinkingEpoch !== sessionEpoch) {
-        clearThinkingGate();
-      }
-      const incoming = snapshot.thinking;
-      // An absent projection is authoritative: never resurrect a local value.
-      if (!incoming) return;
-      if (!acceptedThinking || incoming.revision >= lastThinkingRevision) {
-        acceptedThinking = incoming;
-        lastThinkingRevision = incoming.revision;
-        acceptedThinkingEpoch = sessionEpoch;
-        return;
-      }
-      if (incoming !== acceptedThinking) {
-        set({ snapshot: { ...snapshot, thinking: acceptedThinking } });
-      }
-    };
-
-    const acceptThinking = (next?: WebThinkingState) => {
-      if (acceptedThinking && acceptedThinkingEpoch !== sessionEpoch) {
-        clearThinkingGate();
-      }
-      if (next && next.revision >= lastThinkingRevision) {
-        acceptedThinking = next;
-        lastThinkingRevision = next.revision;
-        acceptedThinkingEpoch = sessionEpoch;
-      }
-      reconcileSnapshotThinking();
-    };
-
-    const resetThinking = () => {
-      thinkingTarget = null;
-      thinkingSeq++;
-      thinkingInFlight = false;
-      set({ thinkingPendingLevel: null });
-    };
-
-    const reconcileThinking = async () => {
-      const epoch = sessionEpoch;
-      const sessionId = get().snapshot?.selectedSession?.id;
-      const sessionPath = get().selectedPath;
-      if (!sessionId) return;
-      try {
-        const result = await client.thinking(
-          sessionId,
-          new AbortController().signal,
-        );
-        if (
-          epoch !== sessionEpoch ||
-          sessionPath !== get().selectedPath ||
-          sessionId !== get().snapshot?.selectedSession?.id
-        )
-          return;
-        acceptThinking(result);
-      } catch {
-        // Reconciliation is best-effort; the caller already surfaced the
-        // original failure to the operator.
-      }
-    };
-
-    const flushThinking = async () => {
-      if (thinkingInFlight) return;
-      thinkingInFlight = true;
-      const flushToken = ++thinkingFlushToken;
-      try {
-        while (thinkingTarget !== null) {
-          const target = thinkingTarget;
-          const seq = thinkingSeq;
-          const epoch = sessionEpoch;
-          const sessionId = get().snapshot?.selectedSession?.id;
-          const sessionPath = get().selectedPath;
-          if (
-            !sessionId ||
-            !sessionPath ||
-            sessionId !== get().snapshot?.currentSessionId ||
-            sessionPath !== get().snapshot?.selectedSession?.path ||
-            get().modelSelectionPending
-          ) {
-            resetThinking();
-            return;
-          }
-          if (get().snapshot?.thinking?.level === target) {
-            if (seq === thinkingSeq) {
-              thinkingTarget = null;
-              set({ thinkingPendingLevel: null });
-            }
-            continue;
-          }
-          let result: WebThinkingState;
-          try {
-            result = await client.setThinkingLevel(
-              sessionId,
-              target,
-              sessionPath,
-            );
-          } catch (error) {
-            // A superseded session owns its own flush; drop this one instead of
-            // re-looping into a duplicate POST. Same-epoch newer intent still
-            // re-reads the latest target below.
-            if (epoch !== sessionEpoch || sessionPath !== get().selectedPath)
-              return;
-            if (seq !== thinkingSeq) continue;
-            resetThinking();
-            showError(error);
-            void reconcileThinking();
-            return;
-          }
-          if (
-            epoch !== sessionEpoch ||
-            sessionPath !== get().selectedPath ||
-            sessionId !== get().snapshot?.selectedSession?.id
-          ) {
-            // The session changed underneath this request; a newer flush (if
-            // any) already owns the pending intent. Drop the superseded flush
-            // rather than re-looping and issuing a duplicate POST.
-            return;
-          }
-          if (seq !== thinkingSeq) continue;
-          if (result.level !== target) {
-            resetThinking();
-            showError(new Error(i18n.t("thinkingNotConfirmed")));
-            return;
-          }
-          acceptThinking(result);
-          thinkingTarget = null;
-          set({ thinkingPendingLevel: null });
-          scheduleSnapshotRefresh();
-          return;
-        }
-      } finally {
-        if (flushToken === thinkingFlushToken) thinkingInFlight = false;
-      }
-    };
+    const thinking = createThinkingCoordinator({
+      client,
+      get,
+      set,
+      getEpoch: () => sessionEpoch,
+      showError,
+      scheduleSnapshotRefresh,
+    });
 
     const applyRuntimeEvent = (event: WebEvent) => {
       let current = get();
@@ -1093,7 +948,7 @@ export function createWebStore(
             current.snapshot?.selectedSession?.path === current.selectedPath
           ) {
             clearCommandDiscovery();
-            resetThinking();
+            thinking.resetPending();
             set({
               ...resetLivePatch(),
               liveMessages: ownPendingMessages(
@@ -1116,7 +971,7 @@ export function createWebStore(
           }
           clearCommandDiscovery();
           const epoch = ++sessionEpoch;
-          resetThinking();
+          thinking.resetPending();
           promptAdmissionToken = null;
           promptAdmission = null;
           set({
@@ -1332,10 +1187,10 @@ export function createWebStore(
         set({ liveRetry: null });
       }
       if (event.type === "thinking_level_changed") {
-        const thinking = get().snapshot?.thinking;
-        if (thinking && typeof detail.level === "string") {
-          acceptThinking({
-            ...thinking,
+        const projection = get().snapshot?.thinking;
+        if (projection && typeof detail.level === "string") {
+          thinking.accept({
+            ...projection,
             level: detail.level,
             revision: event.sequence,
           });
@@ -1463,7 +1318,7 @@ export function createWebStore(
         streamController = null;
         if (refreshTimer !== null) window.clearTimeout(refreshTimer);
         refreshTimer = null;
-        resetThinking();
+        thinking.resetPending();
         clearCommandDiscovery();
       },
       async refreshSnapshot(options = {}) {
@@ -1551,14 +1406,14 @@ export function createWebStore(
           ) {
             // Canonical recovery can change files without a switch event,
             // including copies with the same embedded Session ID.
-            resetThinking();
-            clearThinkingGate();
+            thinking.resetPending();
+            thinking.resetGate();
           }
           if (shouldReset) {
             // A cursor reset means a fresh stream (e.g. host restart), whose
             // sequence restarts at 0. The old revision gate would reject every
             // projection below the old floor and freeze the picker.
-            clearThinkingGate();
+            thinking.resetGate();
           }
           const previousSessionId = get().snapshot?.currentSessionId;
           const previousController = get().snapshot?.sessions.find((session) =>
@@ -1607,8 +1462,8 @@ export function createWebStore(
               snapshot.truncation.modelsOmitted;
           if (controllerChanged) {
             clearCommandDiscovery();
-            resetThinking();
-            clearThinkingGate();
+            thinking.resetPending();
+            thinking.resetGate();
           }
           const recoveredSnapshotNotice =
             snapshotFailureNotice !== null &&
@@ -1675,7 +1530,7 @@ export function createWebStore(
             );
             if (retained) set(retained);
           }
-          acceptThinking();
+          thinking.accept();
           return true;
         } catch (error) {
           if (epoch !== sessionEpoch || generation !== snapshotGeneration)
@@ -1720,7 +1575,7 @@ export function createWebStore(
           return;
         ++sessionEpoch;
         creationRetry = null;
-        resetThinking();
+        thinking.resetPending();
         clearCommandDiscovery();
         promptAdmissionToken = null;
         promptAdmission = null;
@@ -1788,7 +1643,7 @@ export function createWebStore(
       async createSession(workspacePath) {
         if (!workspacePath || get().modelSelectionPending) return null;
         const epoch = ++sessionEpoch;
-        resetThinking();
+        thinking.resetPending();
         clearCommandDiscovery();
         const commandId =
           (creationRetry?.workspacePath === workspacePath
@@ -1956,7 +1811,7 @@ export function createWebStore(
           modelSelectionPending: false,
         });
         const epoch = sameView ? sessionEpoch : ++sessionEpoch;
-        resetThinking();
+        thinking.resetPending();
         if (!sameView) {
           promptAdmissionToken = null;
           promptAdmission = null;
@@ -2255,7 +2110,7 @@ export function createWebStore(
           ownedEpoch = nextEpoch;
           promptAdmission = null;
           promptAdmissionToken = null;
-          resetThinking();
+          thinking.resetPending();
           clearCommandDiscovery();
           set({
             ...resetLivePatch(),
@@ -2509,7 +2364,7 @@ export function createWebStore(
           }
           if (epoch === sessionEpoch && get().selectedPath === path) {
             ++sessionEpoch;
-            resetThinking();
+            thinking.resetPending();
             clearCommandDiscovery();
             promptAdmissionToken = null;
             promptAdmission = null;
@@ -2690,7 +2545,7 @@ export function createWebStore(
           state.selectedPath !== state.snapshot?.selectedSession?.path
         )
           return false;
-        resetThinking();
+        thinking.resetPending();
         return applyModel(
           { provider, id: modelId },
           sessionEpoch,
@@ -2767,30 +2622,7 @@ export function createWebStore(
       clearModelSearch() {
         set(resetModelSearch());
       },
-      selectThinking(level) {
-        const state = get();
-        const thinking = state.snapshot?.thinking;
-        const sessionId = state.snapshot?.selectedSession?.id;
-        if (
-          !level ||
-          !thinking?.supported ||
-          state.sessionSwitching ||
-          state.modelSelectionPending ||
-          state.workspaceDraft ||
-          !sessionId ||
-          !isControlledSession(state.snapshot) ||
-          sessionId !== state.snapshot?.currentSessionId ||
-          state.selectedPath !== state.snapshot?.selectedSession?.path ||
-          state.liveRunning ||
-          state.snapshot?.runtime.status === "running"
-        )
-          return;
-        if (level === (state.thinkingPendingLevel ?? thinking.level)) return;
-        thinkingTarget = level;
-        thinkingSeq++;
-        set({ thinkingPendingLevel: level });
-        void flushThinking();
-      },
+      selectThinking: thinking.select,
       async selectPlanMode(enabled) {
         const state = get();
         const snapshot = state.snapshot;

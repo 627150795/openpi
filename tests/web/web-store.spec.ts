@@ -5216,6 +5216,62 @@ describe("thinking level selection", () => {
     store.getState().actions.stop();
   });
 
+  for (const outcome of ["success", "ambiguous rejection"] as const) {
+    it(`confirms a return to the original level after a superseded ${outcome}`, async () => {
+      const { client, store } = await harness({ level: "medium", revision: 4 });
+      const first = deferred<WebThinkingState & { sessionId: string }>();
+      const latest = deferred<WebThinkingState & { sessionId: string }>();
+      client.setThinkingResults.push(first.promise, latest.promise);
+      try {
+        store.getState().actions.selectThinking("low");
+        store.getState().actions.selectThinking("medium");
+        expect(store.getState().thinkingPendingLevel).toBe("medium");
+        expect(client.thinkings).toEqual([
+          { sessionId: "session-1", level: "low" },
+        ]);
+
+        // The first native write can complete before its event/snapshot reaches
+        // the browser, including when its response is lost after applying it.
+        if (outcome === "success") {
+          first.resolve({
+            ...store.getState().snapshot!.thinking!,
+            sessionId: "session-1",
+            level: "low",
+            revision: 5,
+          });
+        } else {
+          first.reject(new Error("response lost after applying the level"));
+        }
+        await vi.waitFor(() =>
+          expect(client.thinkings).toEqual([
+            { sessionId: "session-1", level: "low" },
+            { sessionId: "session-1", level: "medium" },
+          ]),
+        );
+        expect(store.getState().thinkingPendingLevel).toBe("medium");
+        expect(store.getState().snapshot?.thinking?.revision).toBe(4);
+        expect(store.getState().notice).toBeNull();
+
+        latest.resolve({
+          ...store.getState().snapshot!.thinking!,
+          sessionId: "session-1",
+          level: "medium",
+          revision: 6,
+        });
+        await vi.waitFor(() =>
+          expect(store.getState().thinkingPendingLevel).toBeNull(),
+        );
+        expect(store.getState().snapshot?.thinking).toMatchObject({
+          level: "medium",
+          revision: 6,
+        });
+        expect(store.getState().notice).toBeNull();
+      } finally {
+        store.getState().actions.stop();
+      }
+    });
+  }
+
   it("clears pending on a Session switch without touching the new Session", async () => {
     const { client, store } = await harness();
     const first = deferred<WebThinkingState & { sessionId: string }>();

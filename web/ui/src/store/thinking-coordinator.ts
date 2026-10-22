@@ -135,13 +135,6 @@ export function createThinkingCoordinator({
           resetThinking();
           return;
         }
-        if (get().snapshot?.thinking?.level === target) {
-          if (seq === thinkingSeq) {
-            thinkingTarget = null;
-            set({ thinkingPendingLevel: null });
-          }
-          continue;
-        }
         let result: WebThinkingState;
         try {
           result = await client.setThinkingLevel(

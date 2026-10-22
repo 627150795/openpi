@@ -26,20 +26,24 @@ const fixture = vi.hoisted(() => ({
   revision: "a".repeat(64),
 }));
 const destroy = vi.hoisted(() => vi.fn(async () => {}));
+const getPage = vi.hoisted(() => vi.fn());
 const readingByScope = new Map<string, WorkbarReadingState>();
+function pdfPage(rendered = Promise.resolve()) {
+  return {
+    getViewport: ({ scale }: { scale: number }) => ({
+      width: 600 * scale,
+      height: 800 * scale,
+    }),
+    render: () => ({ promise: rendered, cancel: vi.fn() }),
+  };
+}
 vi.mock("pdfjs-dist", () => ({
   GlobalWorkerOptions: {},
   getDocument: () => ({
     destroy,
     promise: Promise.resolve({
       numPages: 4,
-      getPage: async () => ({
-        getViewport: ({ scale }: { scale: number }) => ({
-          width: 600 * scale,
-          height: 800 * scale,
-        }),
-        render: () => ({ promise: Promise.resolve(), cancel: () => {} }),
-      }),
+      getPage,
     }),
   }),
 }));
@@ -54,6 +58,7 @@ beforeEach(() => {
   fixture.name = "report.pdf";
   fixture.revision = "a".repeat(64);
   destroy.mockClear();
+  getPage.mockReset().mockImplementation(async () => pdfPage());
   readingByScope.clear();
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(900);
   vi.spyOn(WebClient.prototype, "workspaceFiles").mockImplementation(
@@ -143,6 +148,43 @@ async function openPdf() {
   await waitFor(() => expect(next.disabled).toBe(false));
   return next;
 }
+
+it.each(["getPage", "render"])(
+  "hides the old PDF page while %s is pending or failed and recovers on a valid page",
+  async (stage) => {
+    render(panel("files", 1));
+    const next = await openPdf();
+    const canvas = await screen.findByRole("img");
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<void>((_resolve, rejectPromise) => {
+      reject = rejectPromise;
+    });
+    if (stage === "getPage")
+      getPage.mockImplementationOnce(() => pending.then(() => pdfPage()));
+    else getPage.mockResolvedValueOnce(pdfPage(pending));
+    fireEvent.click(next);
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(canvas.isConnected).toBe(true);
+    expect(getComputedStyle(canvas).display).toBe("none");
+    await act(async () => reject(new Error(`Failed ${stage}`)));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      `Failed ${stage}`,
+    );
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(getComputedStyle(canvas).display).toBe("none");
+    fireEvent.click(
+      screen.getByRole("button", { name: i18n.t("filesPreviousPage") }),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("img")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("img")).toBe(canvas));
+    expect(canvas.getAttribute("aria-label")).toBe(
+      i18n.t("filesPdfPage", { page: 1 }),
+    );
+    expect(getComputedStyle(canvas).display).not.toBe("none");
+    expect(screen.queryByRole("alert")).toBeNull();
+  },
+);
 
 it.each(["download", "decode"])(
   "recovers a failed document %s when refreshing the same file revision",
@@ -259,7 +301,7 @@ it("restores PDF page and zoom through a real Files → Browser → Files remoun
   const view = render(panel("files", 0));
   fireEvent.click(await openPdf());
   fireEvent.click(screen.getByRole("button", { name: i18n.t("filesZoomIn") }));
-  expectPdf(2, "125%");
+  await waitFor(() => expectPdf(2, "125%"));
   view.rerender(panel("browser", 1));
   expect(screen.queryByRole("img")).toBeNull();
   expect(destroy).toHaveBeenCalledTimes(1);

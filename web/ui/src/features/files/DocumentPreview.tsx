@@ -202,8 +202,25 @@ function PdfDocument({
   const [page, setPage] = useState(initialPage ?? 1);
   const [scale, setScale] = useState(initialScale ?? 1);
   useEffect(() => onReadingChange(page, scale), [onReadingChange, page, scale]);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{
+    message: string;
+    render?: { pdf: typeof pdf; page: number; scale: number };
+  } | null>(null);
+  const currentError =
+    error &&
+    (!error.render ||
+      (error.render.pdf === pdf &&
+        error.render.page === page &&
+        error.render.scale === scale))
+      ? error.message
+      : "";
   const [busy, setBusy] = useState(true);
+  const [rendered, setRendered] = useState<{
+    pdf: typeof pdf;
+    data: ArrayBuffer;
+    page: number;
+    scale: number;
+  } | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     let stopped = false;
@@ -228,9 +245,12 @@ function PdfDocument({
       .catch((reason: unknown) => {
         if (!stopped) {
           setBusy(false);
-          setError(
-            reason instanceof Error ? reason.message : t("filesPreviewFailed"),
-          );
+          setError({
+            message:
+              reason instanceof Error
+                ? reason.message
+                : t("filesPreviewFailed"),
+          });
         }
       });
     return () => {
@@ -244,6 +264,8 @@ function PdfDocument({
     let render: import("pdfjs-dist").RenderTask | undefined;
     const target = canvas.current;
     setBusy(true);
+    setError(null);
+    setRendered(null);
     void pdf
       .getPage(page)
       .then(async (documentPage) => {
@@ -260,23 +282,28 @@ function PdfDocument({
         render = documentPage.render({ canvas: target, viewport });
         await render.promise;
         if (!stopped) {
-          setError("");
+          setRendered({ pdf, data, page, scale });
+          setError(null);
           setBusy(false);
         }
       })
       .catch((reason: unknown) => {
         if (!stopped) {
           setBusy(false);
-          setError(
-            reason instanceof Error ? reason.message : t("filesPreviewFailed"),
-          );
+          setError({
+            message:
+              reason instanceof Error
+                ? reason.message
+                : t("filesPreviewFailed"),
+            render: { pdf, page, scale },
+          });
         }
       });
     return () => {
       stopped = true;
       render?.cancel();
     };
-  }, [pdf, page, scale, t]);
+  }, [pdf, data, page, scale, t]);
   return (
     <div className="file-pdf">
       <div className="file-preview-toolbar">
@@ -323,7 +350,7 @@ function PdfDocument({
           <Plus />
         </button>
       </div>
-      {error && <p role="alert">{error}</p>}
+      {currentError && <p role="alert">{currentError}</p>}
       {busy && <p role="status">{t("readingFile")}</p>}
       <section
         className="file-media-viewport"
@@ -333,6 +360,19 @@ function PdfDocument({
       >
         <canvas
           ref={canvas}
+          // Keep the render target mounted, but expose only a completed current page.
+          style={{
+            display:
+              !busy &&
+              !currentError &&
+              rendered !== null &&
+              rendered.pdf === pdf &&
+              rendered.data === data &&
+              rendered.page === page &&
+              rendered.scale === scale
+                ? "block"
+                : "none",
+          }}
           aria-label={t("filesPdfPage", { page })}
           role="img"
         />

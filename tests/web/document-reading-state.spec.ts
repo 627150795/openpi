@@ -143,6 +143,65 @@ async function openPdf() {
   await waitFor(() => expect(next.disabled).toBe(false));
   return next;
 }
+
+it.each(["download", "decode"])(
+  "recovers a failed document %s when refreshing the same file revision",
+  async (failure) => {
+    let decodeFailure = true;
+    if (failure === "download")
+      vi.mocked(WebClient.prototype.downloadArtifact).mockRejectedValueOnce(
+        new Error("Temporary document download failure"),
+      );
+    else {
+      fixture.name = "report.docx";
+      vi.stubGlobal(
+        "Worker",
+        class {
+          onmessage?: (event: { data: unknown }) => void;
+          postMessage() {
+            queueMicrotask(() =>
+              this.onmessage?.({
+                data: decodeFailure
+                  ? { error: "Temporary document decode failure" }
+                  : {
+                      result: { kind: "document", html: "Recovered document" },
+                    },
+              }),
+            );
+          }
+          terminate() {}
+        },
+      );
+    }
+    const view = render(panel("files", 1));
+    fireEvent.click(await screen.findByRole("button", { name: fixture.name }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      `Temporary document ${failure} failure`,
+    );
+    decodeFailure = false;
+    fireEvent.click(
+      screen.getByRole("button", { name: i18n.t("refreshFile") }),
+    );
+    await waitFor(() =>
+      expect(WebClient.prototype.downloadArtifact).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    if (failure === "download") {
+      const next = await screen.findByRole<HTMLButtonElement>("button", {
+        name: i18n.t("filesNextPage"),
+      });
+      await waitFor(() => expect(next.disabled).toBe(false));
+    } else
+      await waitFor(() =>
+        expect(
+          view.container
+            .querySelector('iframe[title="report.docx"]')
+            ?.getAttribute("srcdoc"),
+        ).toContain("Recovered document"),
+      );
+  },
+);
+
 function expectPdf(page: number, zoom: string) {
   expect(screen.getByRole("img").getAttribute("aria-label")).toBe(
     i18n.t("filesPdfPage", { page }),

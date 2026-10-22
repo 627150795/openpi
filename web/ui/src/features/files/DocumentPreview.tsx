@@ -87,6 +87,8 @@ function OfficeDocument({
   const [page, setPage] = useState(initialPage ?? 0);
   useEffect(() => onReadingChange(page), [onReadingChange, page]);
   useEffect(() => {
+    setResult(null);
+    setError("");
     const worker = new Worker(new URL("./office-worker.ts", import.meta.url), {
       type: "module",
     });
@@ -366,6 +368,8 @@ export default function DocumentPreview({
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
+    setData(null);
+    setError("");
     void client
       .downloadArtifact(artifact, controller.signal)
       .then((blob) => blob.arrayBuffer())

@@ -1331,6 +1331,8 @@ test("serves workspaces through a runtime isolated from terminal sessions", asyn
     assert.equal(diagnosticsResponse.status, 200);
     const diagnosticsBody = await diagnosticsResponse.json();
     assert.deepEqual(diagnosticsBody, {
+      openpi: (await import("../../web/host/runtime-info.ts"))
+        .webRuntimeStartup,
       node: process.version,
       cwd,
       sessionId: sessionManager.getSessionId(),

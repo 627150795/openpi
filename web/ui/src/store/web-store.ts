@@ -2524,14 +2524,23 @@ export function createWebStore(
       },
       async unarchiveSession(path) {
         const epoch = sessionEpoch;
-        try {
-          await client.unarchiveSession(path);
+        const noticeKeys = new Set(
+          get()
+            .archiveNotices.filter((item) => item.path === path)
+            .map((item) => item.key),
+        );
+        const dismissConfirmedNotices = () =>
           set((state) => ({
             archiveNotices: state.archiveNotices.filter(
-              (item) => item.path !== path,
+              (item) => !noticeKeys.has(item.key),
             ),
           }));
-          if (epoch !== sessionEpoch) return true;
+        try {
+          await client.unarchiveSession(path);
+          if (epoch !== sessionEpoch) {
+            dismissConfirmedNotices();
+            return true;
+          }
           const generation = snapshotGeneration;
           let refreshed = await actions.refreshSnapshot({ epoch });
           // A concurrent refresh can supersede ours, which then reports false
@@ -2543,7 +2552,9 @@ export function createWebStore(
             snapshotGeneration > generation + 1
           )
             refreshed = await actions.refreshSnapshot({ epoch });
-          return epoch !== sessionEpoch || refreshed;
+          const confirmed = epoch !== sessionEpoch || refreshed;
+          if (confirmed) dismissConfirmedNotices();
+          return confirmed;
         } catch (error) {
           if (epoch === sessionEpoch) showError(error);
           return false;

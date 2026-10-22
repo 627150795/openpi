@@ -712,8 +712,21 @@ export function createWebStore(
             "Model selection was not confirmed. Please select a model again.",
           );
         }
+        const generation = snapshotGeneration;
+        let refreshed = await get().actions.refreshSnapshot({ epoch });
         if (
-          !(await get().actions.refreshSnapshot({ epoch })) ||
+          !refreshed &&
+          epoch === sessionEpoch &&
+          sessionPath === get().selectedPath &&
+          sessionId === get().snapshot?.selectedSession?.id &&
+          snapshotGeneration > generation + 1
+        ) {
+          // A background refresh can supersede this confirmation without
+          // changing the Session. Recheck once before abandoning its prompt.
+          refreshed = await get().actions.refreshSnapshot({ epoch });
+        }
+        if (
+          !refreshed ||
           epoch !== sessionEpoch ||
           sessionPath !== get().selectedPath ||
           sessionId !== get().snapshot?.selectedSession?.id

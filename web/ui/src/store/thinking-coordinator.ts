@@ -37,6 +37,7 @@ export function createThinkingCoordinator({
   let thinkingSeq = 0;
   let thinkingInFlight = false;
   let thinkingFlushToken = 0;
+  let receiptGeneration = 0;
   let lastThinkingRevision = 0;
   let acceptedThinking: WebThinkingState | null = null;
   let acceptedThinkingEpoch = -1;
@@ -47,6 +48,7 @@ export function createThinkingCoordinator({
   // regress the displayed level. The gate is scoped to the Session epoch so a
   // session switch (or host restart) cannot carry a stale value forward.
   const clearThinkingGate = () => {
+    receiptGeneration++;
     acceptedThinking = null;
     lastThinkingRevision = 0;
     acceptedThinkingEpoch = -1;
@@ -87,11 +89,14 @@ export function createThinkingCoordinator({
   const resetThinking = () => {
     thinkingTarget = null;
     thinkingSeq++;
+    thinkingFlushToken++;
     thinkingInFlight = false;
     set({ thinkingPendingLevel: null });
   };
 
   const reconcileThinking = async () => {
+    const generation = receiptGeneration;
+    const flushToken = thinkingFlushToken;
     const epoch = getEpoch();
     const sessionId = get().snapshot?.selectedSession?.id;
     const sessionPath = get().selectedPath;
@@ -102,6 +107,8 @@ export function createThinkingCoordinator({
         new AbortController().signal,
       );
       if (
+        generation !== receiptGeneration ||
+        flushToken !== thinkingFlushToken ||
         epoch !== getEpoch() ||
         sessionPath !== get().selectedPath ||
         sessionId !== get().snapshot?.selectedSession?.id
@@ -122,6 +129,7 @@ export function createThinkingCoordinator({
       while (thinkingTarget !== null) {
         const target = thinkingTarget;
         const seq = thinkingSeq;
+        const generation = receiptGeneration;
         const epoch = getEpoch();
         const sessionId = get().snapshot?.selectedSession?.id;
         const sessionPath = get().selectedPath;
@@ -146,15 +154,21 @@ export function createThinkingCoordinator({
           // A superseded session owns its own flush; drop this one instead of
           // re-looping into a duplicate POST. Same-epoch newer intent still
           // re-reads the latest target below.
-          if (epoch !== getEpoch() || sessionPath !== get().selectedPath)
+          if (
+            flushToken !== thinkingFlushToken ||
+            epoch !== getEpoch() ||
+            sessionPath !== get().selectedPath ||
+            sessionId !== get().snapshot?.selectedSession?.id
+          )
             return;
-          if (seq !== thinkingSeq) continue;
+          if (generation !== receiptGeneration || seq !== thinkingSeq) continue;
           resetThinking();
           showError(error);
           void reconcileThinking();
           return;
         }
         if (
+          flushToken !== thinkingFlushToken ||
           epoch !== getEpoch() ||
           sessionPath !== get().selectedPath ||
           sessionId !== get().snapshot?.selectedSession?.id
@@ -164,7 +178,9 @@ export function createThinkingCoordinator({
           // rather than re-looping and issuing a duplicate POST.
           return;
         }
-        if (seq !== thinkingSeq) continue;
+        // A reconnect can reset the receipt revision while preserving intent.
+        // Confirm that intent again instead of importing an old host's floor.
+        if (generation !== receiptGeneration || seq !== thinkingSeq) continue;
         if (result.level !== target) {
           resetThinking();
           showError(new Error(i18n.t("thinkingNotConfirmed")));

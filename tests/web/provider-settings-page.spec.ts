@@ -735,6 +735,37 @@ it("filters settings by translated setting names and preserves the active page u
 });
 
 it.each([
+  { language: "en", queries: ["runtime", "version", "build"] },
+  { language: "zh", queries: ["运行信息", "版本", "构建"] },
+])(
+  "finds runtime information from settings search in $language",
+  async ({ language, queries }) => {
+    const previousLanguage = i18n.language;
+    await i18n.changeLanguage(language);
+    try {
+      vi.stubGlobal("fetch", settingsFetcher());
+      renderSettings({ entry: "appearance" });
+      const search = screen.getByRole("searchbox", {
+        name: i18n.t("settingsSearch"),
+      });
+      for (const query of queries) {
+        fireEvent.change(search, { target: { value: query } });
+        fireEvent.click(
+          screen.getByRole("tab", { name: i18n.t("generalSettings") }),
+        );
+        expect(
+          screen.getByRole("region", { name: i18n.t("runtimeIdentity") }),
+        ).toBeTruthy();
+        expect((search as HTMLInputElement).value).toBe("");
+      }
+    } finally {
+      cleanup();
+      await i18n.changeLanguage(previousLanguage);
+    }
+  },
+);
+
+it.each([
   { setupWritable: false, settingsErrors: 0 },
   { setupWritable: true, settingsErrors: 1 },
 ])(

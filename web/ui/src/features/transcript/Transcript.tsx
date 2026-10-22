@@ -89,6 +89,7 @@ import {
   buildEntries,
   type DisplayEntry,
   displayedThinkingDuration,
+  type TranscriptPresentationState,
 } from "./transcript-entries.ts";
 import { UserImageAttachments } from "./UserImageAttachments.tsx";
 import { UserMessageContent } from "./UserMessageContent.tsx";
@@ -2396,12 +2397,17 @@ export function Transcript(props: TranscriptProps) {
           ? (props.liveRetry ?? undefined)
           : undefined
       : undefined;
-  const nativeRowKeys = useRef({
+  const presentation = useRef<TranscriptPresentationState & { scope: string }>({
     scope: hydrationScope,
-    keys: new Map<string, string>(),
+    nativeRowKeys: new Map(),
+    ambiguousTimingIds: new Set(),
   });
-  if (nativeRowKeys.current.scope !== hydrationScope)
-    nativeRowKeys.current = { scope: hydrationScope, keys: new Map() };
+  if (presentation.current.scope !== hydrationScope)
+    presentation.current = {
+      scope: hydrationScope,
+      nativeRowKeys: new Map(),
+      ambiguousTimingIds: new Set(),
+    };
   const { entries, projectedPrompts } = useMemo(
     () =>
       buildEntries(
@@ -2414,7 +2420,7 @@ export function Transcript(props: TranscriptProps) {
                   entry.optimistic.sessionPath === selected?.path
                 : active,
             ),
-        nativeRowKeys.current.keys,
+        presentation.current,
       ),
     [props.snapshot, selected, active, historyPaused, props.liveMessages],
   );

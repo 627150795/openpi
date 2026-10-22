@@ -19,6 +19,7 @@ export interface DisplayEntry {
   key: string;
   entryId?: string;
   timingKey?: string;
+  ambiguousTimingIdentity?: true;
   timestamp?: string;
   message: WebLiveMessage;
   timing?: WebTurnTiming;
@@ -68,12 +69,18 @@ function legacySignature(message: WebLiveMessage) {
     : JSON.stringify({ ...message, timestamp: undefined });
 }
 
+export interface TranscriptPresentationState {
+  nativeRowKeys: Map<string, string>;
+  ambiguousTimingIds: Set<string>;
+}
+
 interface PersistedProjection {
   nativeById: Map<string, PersistedEntry>;
   exactNative: Map<string, PersistedEntry[]>;
   baseEntries: DisplayEntry[];
   indexById: Map<string, number>;
   lookupIndexes: Map<string, number[]>;
+  ambiguousNativeIds: string[];
   customIndexes: Map<string, number[]>;
   nativeByIdentity: Map<string, number[]>;
   nativeByLegacySignature: Map<string, number[]>;
@@ -189,6 +196,14 @@ function persistedTranscriptProjection(
     indexes.push(index);
     lookupIndexes.set(lookup, indexes);
   });
+  const ambiguousNativeIds: string[] = [];
+  for (const indexes of lookupIndexes.values()) {
+    if (indexes.length < 2) continue;
+    for (const index of indexes) {
+      const id = baseEntries[index]!.entryId;
+      if (id) ambiguousNativeIds.push(id);
+    }
+  }
   const customIndexes = new Map<string, number[]>();
   let customIndex = 0;
   for (const entry of persisted) {
@@ -253,6 +268,7 @@ function persistedTranscriptProjection(
     baseEntries,
     indexById,
     lookupIndexes,
+    ambiguousNativeIds,
     customIndexes,
     nativeByIdentity,
     nativeByLegacySignature,
@@ -289,7 +305,7 @@ export function displayedThinkingDuration(
     entry.timingKey,
     entry.key,
     entry.entryId,
-    messageIdentity(entry.message),
+    entry.ambiguousTimingIdentity ? undefined : messageIdentity(entry.message),
   ];
   for (const key of keys) {
     if (!key) continue;
@@ -302,13 +318,16 @@ export function displayedThinkingDuration(
 export function buildEntries(
   snapshot: WebSnapshot,
   liveMessages: LiveEntry[],
-  nativeRowKeys: Map<string, string>,
+  presentation: TranscriptPresentationState,
 ) {
+  const { nativeRowKeys, ambiguousTimingIds } = presentation;
   const selected = snapshot.selectedSession;
   const persisted = selected?.entries ?? [];
   const projection = persistedTranscriptProjection(persisted, selected?.id);
   for (const id of nativeRowKeys.keys())
     if (!projection.nativeById.has(id)) nativeRowKeys.delete(id);
+  for (const id of ambiguousTimingIds)
+    if (!projection.nativeById.has(id)) ambiguousTimingIds.delete(id);
   // Native IDs own historic rows. A live disclosure can keep its existing DOM
   // only when both sides contain exactly one complete, equal projected payload.
   const exactLive = new Map<string, LiveEntry[]>();
@@ -321,13 +340,14 @@ export function buildEntries(
     exactLive.set(signature, group);
   }
   const aliasedKeys = new Set(nativeRowKeys.values());
-  for (const [signature, native] of projection.exactNative) {
-    const live = exactLive.get(signature);
-    if (native.length !== 1 || live?.length !== 1) continue;
+  for (const [signature, live] of exactLive) {
+    const native = projection.exactNative.get(signature);
+    if (native?.length !== 1 || live.length !== 1) continue;
     const id = native[0]!.id;
     const key = live[0]!.key;
     if (
       nativeRowKeys.has(id) ||
+      ambiguousTimingIds.has(id) ||
       aliasedKeys.has(key) ||
       projection.nativeById.has(key)
     )
@@ -335,13 +355,47 @@ export function buildEntries(
     nativeRowKeys.set(id, key);
     aliasedKeys.add(key);
   }
-  const timingAt = new Map<number, string>();
+  for (const id of projection.ambiguousNativeIds) ambiguousTimingIds.add(id);
+  const timingAt = new Map<number, string | null>();
+  const ambiguousLiveTiming = new Set<string>();
   for (const live of liveMessages) {
     const lookup = messageIdentity(live.message) ?? live.key;
     const indexes = projection.lookupIndexes.get(lookup);
     if (!indexes) continue;
-    for (const index of indexes) timingAt.set(index, live.key);
+    // Provider timestamps can repeat; timing must follow the same payload
+    // qualification as native/live message reconciliation.
+    const signature = legacySignature(live.message);
+    const matches = indexes.filter(
+      (index) => projection.nativeMessages[index]?.signature === signature,
+    );
+    if (matches.length !== indexes.length || indexes.length > 1)
+      ambiguousLiveTiming.add(lookup);
+    if (matches.length === 1) {
+      const index = matches[0]!;
+      const id = projection.baseEntries[index]!.entryId;
+      const establishedKey = id ? nativeRowKeys.get(id) : undefined;
+      if (
+        (establishedKey && establishedKey !== live.key) ||
+        (id && ambiguousTimingIds.has(id) && !establishedKey && live.key !== id)
+      ) {
+        ambiguousLiveTiming.add(lookup);
+        continue;
+      }
+      const previous = timingAt.get(index);
+      if (previous === undefined || previous === live.key)
+        timingAt.set(index, live.key);
+      else {
+        // Equal payloads still cannot identify which live message owns timing.
+        timingAt.set(index, null);
+        ambiguousLiveTiming.add(lookup);
+      }
+    }
   }
+  for (const identity of ambiguousLiveTiming)
+    for (const index of projection.lookupIndexes.get(identity) ?? []) {
+      const id = projection.baseEntries[index]!.entryId;
+      if (id) ambiguousTimingIds.add(id);
+    }
   const acknowledgedPrompts = new Set(
     liveMessages.flatMap((entry) =>
       entry.optimistic?.projectedEntryId
@@ -463,6 +517,11 @@ export function buildEntries(
     const next: DisplayEntry = {
       key: live.key,
       timingKey: live.key,
+      ambiguousTimingIdentity: ambiguousLiveTiming.has(
+        messageIdentity(message) ?? live.key,
+      )
+        ? true
+        : undefined,
       timestamp: live.timestamp ?? new Date().toISOString(),
       message,
       optimistic: live.optimistic,
@@ -501,7 +560,15 @@ export function buildEntries(
       persistedRows = projection.baseEntries.slice();
     persistedRows[index] = entry;
   };
+  for (const id of ambiguousTimingIds) {
+    const index = projection.indexById.get(id);
+    if (index === undefined) continue;
+    const current = persistedRows[index];
+    if (!current || current.ambiguousTimingIdentity) continue;
+    rewrite(index, { ...current, ambiguousTimingIdentity: true });
+  }
   for (const [index, timingKey] of timingAt) {
+    if (timingKey === null) continue;
     const current = persistedRows[index];
     if (!current || current.timingKey === timingKey) continue;
     rewrite(index, { ...current, timingKey });

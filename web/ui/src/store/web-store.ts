@@ -555,6 +555,8 @@ export function createWebStore(
   const terminalPromptIds = new Set<string>();
   const completedActivationIds = new Set<string>();
   let pendingTimingKeys: string[] = [];
+  // Object identity owns one cancellation request, even across retries of a turn.
+  let turnCancellation: WebStoreState["activeTurn"] = null;
 
   const rememberBounded = (set: Set<string>, value: unknown) => {
     if (typeof value !== "string") return;
@@ -565,7 +567,24 @@ export function createWebStore(
     }
   };
 
+  const retainTurnCancellation = (turn: WebStoreState["activeTurn"]) => {
+    if (
+      turnCancellation &&
+      (turn?.sessionId !== turnCancellation.sessionId ||
+        turn.commandId !== turnCancellation.commandId ||
+        turn.epoch !== turnCancellation.epoch ||
+        (turn.sessionPath !== undefined &&
+          turnCancellation.sessionPath !== undefined &&
+          turn.sessionPath !== turnCancellation.sessionPath))
+    ) {
+      turnCancellation = null;
+      return { turnCancellationPending: false };
+    }
+    return {};
+  };
+
   const resetLivePatch = () => {
+    turnCancellation = null;
     planSelectionGeneration++;
     pendingTimingKeys = [];
     return {
@@ -1028,24 +1047,26 @@ export function createWebStore(
         });
       } else if (event.type === "turn_started") {
         liveTurnSequence = event.sequence;
+        const activeTurn = {
+          sessionId: String(detail.sessionId),
+          commandId: String(detail.commandId),
+          epoch: Number(detail.epoch),
+          ...(typeof detail.sessionPath === "string"
+            ? { sessionPath: detail.sessionPath }
+            : {}),
+          ...(typeof detail.promptEntryId === "string"
+            ? { promptEntryId: detail.promptEntryId }
+            : {}),
+          ...(typeof detail.startedAt === "number"
+            ? { startedAt: detail.startedAt }
+            : {}),
+          ...(typeof detail.elapsedMs === "number"
+            ? { elapsedMs: detail.elapsedMs }
+            : {}),
+        };
         set({
-          activeTurn: {
-            sessionId: String(detail.sessionId),
-            commandId: String(detail.commandId),
-            epoch: Number(detail.epoch),
-            ...(typeof detail.sessionPath === "string"
-              ? { sessionPath: detail.sessionPath }
-              : {}),
-            ...(typeof detail.promptEntryId === "string"
-              ? { promptEntryId: detail.promptEntryId }
-              : {}),
-            ...(typeof detail.startedAt === "number"
-              ? { startedAt: detail.startedAt }
-              : {}),
-            ...(typeof detail.elapsedMs === "number"
-              ? { elapsedMs: detail.elapsedMs }
-              : {}),
-          },
+          ...retainTurnCancellation(activeTurn),
+          activeTurn,
           liveRunning: true,
           livePhase: "running",
           liveRetry: null,
@@ -1053,9 +1074,10 @@ export function createWebStore(
         });
       } else if (event.type === "agent_start") {
         liveTurnSequence = event.sequence;
+        const activeTurn = detail.activeTurn as WebStoreState["activeTurn"];
         set({
-          ...(detail.activeTurn
-            ? { activeTurn: detail.activeTurn as WebStoreState["activeTurn"] }
+          ...(activeTurn
+            ? { ...retainTurnCancellation(activeTurn), activeTurn }
             : {}),
           liveRunning: true,
           livePhase: "running",
@@ -1071,6 +1093,7 @@ export function createWebStore(
         ) {
           liveTurnSequence = event.sequence;
           set({
+            ...retainTurnCancellation(null),
             activeTurn: null,
             liveRunning: false,
             livePhase: "idle",
@@ -1485,6 +1508,9 @@ export function createWebStore(
           if (shouldReset || controllerChanged || selectionChanged)
             liveTurnSequence = 0;
           const preserveLiveTurn = liveTurnSequence > snapshot.cursor;
+          const activeTurn = preserveLiveTurn
+            ? get().activeTurn
+            : (snapshot.runtime.activeTurn ?? null);
           set({
             ...(recoveredSnapshotNotice ? { notice: null } : {}),
             ...(shouldReset || controllerChanged || selectionChanged
@@ -1504,9 +1530,8 @@ export function createWebStore(
               shouldReset || get().cursor === null
                 ? snapshot.cursor
                 : Math.max(get().cursor ?? 0, snapshot.cursor),
-            activeTurn: preserveLiveTurn
-              ? get().activeTurn
-              : (snapshot.runtime.activeTurn ?? null),
+            ...retainTurnCancellation(activeTurn),
+            activeTurn,
             livePhase: preserveLiveTurn
               ? get().livePhase
               : snapshot.runtime.status === "running"
@@ -2781,15 +2806,25 @@ export function createWebStore(
         )
           return;
         const epoch = sessionEpoch;
+        const sessionPath = get().selectedPath;
+        const request = { ...turn };
+        turnCancellation = request;
+        const ownsCancellation = () =>
+          turnCancellation === request &&
+          epoch === sessionEpoch &&
+          sessionPath === get().selectedPath;
         set({ turnCancellationPending: true });
         try {
           await client.cancelActiveTurn(turn);
         } catch (error) {
-          if (epoch !== sessionEpoch) return;
+          if (!ownsCancellation()) return;
           await actions.refreshSnapshot({ epoch });
-          if (epoch === sessionEpoch) showError(error);
+          if (ownsCancellation()) showError(error);
         } finally {
-          if (epoch === sessionEpoch) set({ turnCancellationPending: false });
+          if (turnCancellation === request) {
+            turnCancellation = null;
+            set({ turnCancellationPending: false });
+          }
         }
       },
       async sendPrompt(

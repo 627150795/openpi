@@ -4355,6 +4355,143 @@ describe("OpenPI Web store", () => {
     store.getState().actions.stop();
   });
 
+  for (const transition of ["events", "snapshot", "Session switch"] as const) {
+    for (const outcome of ["success", "rejection"] as const) {
+      it(`keeps the next turn cancellable after ${transition} and ignores an old cancellation ${outcome}`, async () => {
+        const client = new FakeClient();
+        client.snapshots.push(Promise.resolve(snapshot()));
+        const first = deferred<{ state: "accepted" }>();
+        const second = deferred<{ state: "accepted" }>();
+        const cancel = vi
+          .spyOn(client, "cancelActiveTurn")
+          .mockReturnValueOnce(first.promise)
+          .mockReturnValueOnce(second.promise);
+        const stream = eventStreamHarness();
+        const store = createWebStore(client, {
+          consumeEvents: stream.consumeEvents,
+        });
+        await store.getState().actions.refreshSnapshot();
+        store.getState().actions.start();
+        const firstTurn = {
+          sessionId: "session-1",
+          sessionPath: "/tmp/ws/session.jsonl",
+          commandId: "turn-1",
+          epoch: 1,
+        };
+        const secondTurn = {
+          sessionId:
+            transition === "Session switch" ? "session-2" : "session-1",
+          sessionPath:
+            transition === "Session switch"
+              ? "/tmp/ws/b.jsonl"
+              : "/tmp/ws/session.jsonl",
+          commandId: "turn-2",
+          epoch: 2,
+        };
+        stream.emit(runtimeEvent(5, "turn_started", firstTurn));
+        const stoppingFirst = store.getState().actions.cancelActiveTurn();
+        let stoppingSecond: Promise<void> | undefined;
+        try {
+          if (transition === "events") {
+            stream.emit(
+              runtimeEvent(6, "turn_settled", {
+                ...firstTurn,
+                commandId: "another-turn",
+                outcome: "cancelled",
+              }),
+            );
+            stream.emit(
+              runtimeEvent(7, "turn_settled", {
+                ...firstTurn,
+                epoch: 99,
+                outcome: "cancelled",
+              }),
+            );
+            expect(store.getState().turnCancellationPending).toBe(true);
+            stream.emit(
+              runtimeEvent(8, "turn_settled", {
+                ...firstTurn,
+                outcome: "cancelled",
+              }),
+            );
+            expect(store.getState().turnCancellationPending).toBe(false);
+            stream.emit(runtimeEvent(9, "turn_started", secondTurn));
+          } else {
+            const next = activeSnapshot(
+              secondTurn.sessionId,
+              secondTurn.sessionPath,
+              { cursor: 9 },
+            );
+            next.runtime = {
+              ...next.runtime,
+              status: "running",
+              activeTurn: secondTurn,
+            };
+            client.snapshots.push(Promise.resolve(next));
+            if (transition === "Session switch") {
+              client.selectionResults.push(Promise.resolve({}));
+              expect(
+                await store
+                  .getState()
+                  .actions.selectSession(secondTurn.sessionPath),
+              ).toBe(true);
+            } else {
+              expect(await store.getState().actions.refreshSnapshot()).toBe(
+                true,
+              );
+            }
+            expect(store.getState().turnCancellationPending).toBe(false);
+          }
+          stoppingSecond = store.getState().actions.cancelActiveTurn();
+          expect(cancel.mock.calls.map(([turn]) => turn)).toEqual([
+            firstTurn,
+            secondTurn,
+          ]);
+          expect(store.getState().turnCancellationPending).toBe(true);
+          if (transition === "events") {
+            const stale = snapshot();
+            stale.cursor = 8;
+            stale.runtime = {
+              ...stale.runtime,
+              status: "running",
+              activeTurn: firstTurn,
+            };
+            client.snapshots.push(Promise.resolve(stale));
+            await store.getState().actions.refreshSnapshot();
+            expect(store.getState().activeTurn).toEqual(secondTurn);
+            expect(store.getState().turnCancellationPending).toBe(true);
+          }
+          stream.emit(
+            runtimeEvent(10, "turn_settled", {
+              ...firstTurn,
+              outcome: "cancelled",
+            }),
+          );
+          expect(store.getState().turnCancellationPending).toBe(true);
+          const snapshotsBeforeReceipt = client.snapshotPaths.length;
+          if (outcome === "success") first.resolve({ state: "accepted" });
+          else first.reject(new Error("old cancellation response lost"));
+          await stoppingFirst;
+          expect(store.getState().turnCancellationPending).toBe(true);
+          expect(store.getState().activeTurn).toEqual(secondTurn);
+          expect(store.getState().notice).toBeNull();
+          expect(client.snapshotPaths).toHaveLength(snapshotsBeforeReceipt);
+          second.resolve({ state: "accepted" });
+          await stoppingSecond;
+          expect(store.getState().turnCancellationPending).toBe(false);
+          expect(store.getState().activeTurn).toEqual(secondTurn);
+          expect(store.getState().liveRunning).toBe(true);
+        } finally {
+          first.resolve({ state: "accepted" });
+          second.resolve({ state: "accepted" });
+          await stoppingFirst;
+          await stoppingSecond;
+          store.getState().actions.stop();
+        }
+      });
+    }
+  }
+
   it.each([true, false])(
     "clears retry presentation on native retry end (success %s), keeping execution until settled",
     async (success) => {
